@@ -101,12 +101,8 @@ function inkHTML(opts) {
     <div class="ink-bar"><b>✍️ 計算區</b>${inkToolsHTML()}</div>
     <div id="ink-flash" class="ink-flash" style="display:none"></div>
     <div class="ink-scroll"><canvas id="ink-cv" data-h="${small ? 240 : 0}"></canvas></div>
-    <p class="dim ink-hint">觸控筆書寫（手掌不會誤觸）、兩指上下捲動；寫錯就劃掉或按復原。過程留在這裡，AI 才分析得到你的卡點。</p>
+    <p class="dim ink-hint">觸控筆書寫（手掌不會誤觸）、兩指上下捲動；寫錯就劃掉或按復原。<b>最終答案寫在計算的最後（圈起來更好認）</b>——AI 會看完整過程、從結尾認答案。</p>
   </div>`;
-}
-function ansZoneHTML(label) {
-  return `<div class="ans-zone"><div class="ans-zone-head">🖊 ${label || '最終答案寫這裡（寫大、寫清楚）'}</div>
-    <canvas id="ans-cv"></canvas></div>`;
 }
 function inkSurface(key, cv, h) {
   const sur = { key, cv, ctx: cv.getContext('2d'), h, cur: null, touches: new Map() };
@@ -483,21 +479,19 @@ function stripTags(s) { return String(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g
 function escH(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 // 放進 inline onclick 單引號字串裡的 id（extbank 題 id 來源不可控，要跳脫）
 function jsA(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
-async function aiGradeCall(q, correctTxt, ansB64, calcB64) {
+async function aiGradeCall(q, correctTxt, calcB64) {
   const content = [];
-  if (ansB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: ansB64 } });
   if (calcB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: calcB64 } });
   const teach = S.teach && S.teach[q.id];
   content.push({
     type: 'text',
-    text: `你是嚴謹但溫暖的數學閱卷老師。以下是一位學測考生的手寫作答。
+    text: `你是嚴謹但溫暖的數學閱卷老師。以下是一位學測考生的完整手寫計算過程（單張圖）。
 題目：${stripTags(q.q)}
 正確答案：${correctTxt}
 ${q.sol ? `參考詳解：${stripTags(q.sol)}` : ''}
 ${teach && teach.sol ? `他補習班老師教這題的方法（指出錯誤或建議路線時優先對照這個教法）：${stripTags(teach.sol)}${teach.tip ? '｜老師口訣：' + stripTags(teach.tip) : ''}` : ''}
-圖1＝考生手寫的「最終答案區」${calcB64 ? '，圖2＝考生的完整手寫計算過程' : '（沒有計算過程圖）'}。
 任務：
-1. 辨識答案區的最終答案（若答案區空白，從計算過程末尾找最終結果）。
+1. 辨識最終答案：考生會把答案寫在計算的末尾（可能圈起來或另起一行）；有多個候選時以最末、被圈選者為準。
 2. 判定對錯：所有等價形式都算對——多根/多解順序不同（如「5,-1」vs「-1,5」）、分數/小數、未化簡但數值相等、有沒有寫 x= 都算對。但**座標/有序數對（如 (3,4)）順序不可交換**，題目明確要求特定形式時依題目。
 3. 答錯時：對照計算過程，指出「從哪一步開始出錯」（引用他寫的式子），一句話講清楚錯在哪。
 4. 答對時：從過程裡挑一個值得保留的好習慣具體稱讚；過程若有繞遠路或危險寫法也提醒一句。
@@ -1620,7 +1614,8 @@ function drillNext() {
   drill.t0 = Date.now();
   drill.qid = `drill:${drill.key}:${drill.t0}`;
   const input = it.kind === 'num'
-    ? ansZoneHTML('答案寫這裡') + `<div class="actr"><button class="btn primary big" onclick="drillSubmit()">✅ 算完了</button></div>
+    ? `<p class="dim">✍️ 在下方計算區作答，答案寫在最後：</p>
+       <div class="actr"><button class="btn primary big" onclick="drillSubmit()">✅ 算完了</button></div>
        <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
        <input id="din" class="ans-input" inputmode="text" autocomplete="off" placeholder="答案" onkeydown="if(event.key==='Enter')drillSubmit()"></details>`
     : it.opts.map((o, idx) => `<button class="btn opt" onclick="drillSubmit(${idx})">${o}</button>`).join('');
@@ -1888,7 +1883,8 @@ function renderQuestion(q, cfg) {
       `<label class="opt block check"><input type="checkbox" value="${i}"> (${i + 1}) ${o}</label>`).join('')
       + `<div class="actr"><button class="btn primary" onclick="qSubmit()">送出（多選）</button></div>`;
   } else {
-    ansUI = ansZoneHTML() + `<div class="actr"><button class="btn primary big" onclick="qSubmit()">✅ 算完了，開始批改</button></div>
+    ansUI = `<p class="dim">✍️ 在下方計算區作答，<b>最終答案寫在最後</b>，寫完按：</p>
+      <div class="actr"><button class="btn primary big" onclick="qSubmit()">✅ 算完了，開始批改</button></div>
       <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
       <input id="qin" class="ans-input" autocomplete="off" placeholder="輸入答案（分數用 a/b）" onkeydown="if(event.key==='Enter')qSubmit()"></details>`;
   }
@@ -1949,12 +1945,11 @@ function qGrade(optIdx) {
   const typed = $('#qin') ? $('#qin').value.trim() : '';
   if (typed) { qsess.yourAns = typed; qResolve(checkFill(typed, q.ans)); return; }
   qsess.yourAns = '（手寫作答）';
-  const ansB64 = inkCapture(q.id, 'a');
   const calcB64 = inkCapture(q.id, 's');
-  if (aiKey() && (ansB64 || calcB64)) {
+  if (aiKey() && calcB64) {
     $('#qfb').innerHTML = '<p class="dim">🤖 AI 批改中…（認字、對答案、檢查過程哪裡開始錯）</p>';
     const sess = qsess; // 綁定本題：離開或換題後，遲到的回應直接丟棄
-    aiGradeCall(q, q.ans.join(' 或 '), ansB64, calcB64)
+    aiGradeCall(q, q.ans.join(' 或 '), calcB64)
       .then((v) => { if (qsess !== sess) return; qsess.ai = v; qShowJudge(true); })
       .catch((e) => { if (qsess !== sess) return; qsess.aiErr = (e && e.message) || String(e); qShowJudge(false); });
   } else qShowJudge(false);
@@ -1969,7 +1964,9 @@ function qShowJudge(hasAI) {
       <div class="actr"><button class="btn" onclick="qResolve(${!v.correct})">改判：其實我${v.correct ? '錯了' : '對了'}</button>
       <button class="btn primary" onclick="qResolve(${!!v.correct})">${v.correct ? '✓ 沒錯，我答對了' : '✗ 對，我答錯了'}——繼續</button></div>`;
   } else {
-    $('#qfb').innerHTML = `${qsess.aiErr ? `<p class="warnc">⚠ AI 批改失敗：${escH(qsess.aiErr)}——先自評，key 問題到「📊 數據」頁按「測試連線」檢查。</p>` : ''}${peek}
+    const noKeyHint = !qsess.aiErr && !aiKey() && supa && syncState.user
+      ? '<p class="warnc">⚠ 這台裝置還沒拿到 AI key——如果你已在別台填過，重新整理此頁同步後就會自動批改。</p>' : '';
+    $('#qfb').innerHTML = `${qsess.aiErr ? `<p class="warnc">⚠ AI 批改失敗：${escH(qsess.aiErr)}——先自評，key 問題到「📊 數據」頁按「測試連線」檢查。</p>` : noKeyHint}${peek}
       <p><b>對照你答案區寫的——答對了嗎？</b><span class="dim">（等價形式都算對：多根順序不同、沒化簡、有沒有寫 x= 都算；座標類順序要照題目）</span></p>
       <div class="actr"><button class="btn err" onclick="qResolve(false)">✗ 我錯了</button>
       <button class="btn primary" onclick="qResolve(true)">✓ 我對了</button></div>`;
@@ -2096,7 +2093,8 @@ function mockQ() {
     ansUI = q.opts.map((o, i) => `<label class="opt block check"><input type="checkbox" value="${i}"> (${i + 1}) ${o}</label>`).join('')
       + `<div class="actr"><button class="btn primary" onclick="mockAns()">送出此題</button></div>`;
   } else {
-    ansUI = ansZoneHTML() + `<div class="actr"><button class="btn primary big" onclick="mockAns()">✅ 算完了 → 下一題</button></div>
+    ansUI = `<p class="dim">✍️ 在下方計算區作答，<b>最終答案寫在最後</b>，寫完按：</p>
+      <div class="actr"><button class="btn primary big" onclick="mockAns()">✅ 算完了 → 下一題</button></div>
       <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
       <input id="qin" class="ans-input" autocomplete="off" placeholder="答案（分數用 a/b）" onkeydown="if(event.key==='Enter')mockAns()"></details>`;
   }
@@ -2212,9 +2210,9 @@ function mockJudgePanel(list) {
   sessionChrome(false);
   mock.toJudge = list;
   const items = list.map((q, i) => {
-    const img = inkCapture(q.id, 'a', true) || inkCapture(q.id, 's', true);
+    const img = inkCapture(q.id, 's', true);
     return `<div class="judge-item">
-      <div class="judge-img">${img ? `<img src="${img}" alt="手寫答案">` : '<span class="dim">（答案區空白）</span>'}</div>
+      <div class="judge-img">${img ? `<img src="${img}" alt="手寫過程">` : '<span class="dim">（沒有筆跡）</span>'}</div>
       <div class="judge-info">
         <p class="dim">${TOPICS[q.topic]}｜正解：<b class="big">${q.ans[0]}</b></p>
         <div id="jai-${i}"></div>
@@ -2250,7 +2248,7 @@ async function mockAIJudge() {
     const q = m.toJudge[i];
     if (msgEl) msgEl.textContent = `🤖 AI 批改中… ${i + 1} / ${m.toJudge.length}`;
     try {
-      const v = await aiGradeCall(q, q.ans.join(' 或 '), inkCapture(q.id, 'a'), inkCapture(q.id, 's'));
+      const v = await aiGradeCall(q, q.ans.join(' 或 '), inkCapture(q.id, 's'));
       if (mock !== m || sessionMode !== 'judging') return;
       m.aiv[q.id] = v;
       const box = $('#jai-' + i);
@@ -2568,6 +2566,8 @@ function supaInit() {
   window.addEventListener('online', () => { if (syncState.user) { syncPush(); flushInkQueue(); } });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && syncState.user) { clearTimeout(syncTimer); syncPush(); }
+    // 切回前景：重新拉雲端狀態（拿到別台裝置剛存的 key／紀錄），做題中不打擾
+    else if (document.visibilityState === 'visible' && syncState.user && !sessionActive) syncPull();
   });
   syncPill();
 }

@@ -131,10 +131,7 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 .typed-opt { margin-top: 4px; font-size: 13px; }
 .typed-opt summary { cursor: pointer; color: var(--dim); }
 
-/* ✍️ 手寫答案區 */
-.ans-zone { border: 1.5px dashed var(--accent); border-radius: 10px; background: #fff; margin: 10px 0 6px; overflow: hidden; }
-.ans-zone-head { padding: 3px 10px; font-size: 12px; color: var(--dim); border-bottom: 1px dashed var(--border); }
-#ans-cv { display: block; width: 100%; touch-action: none; cursor: crosshair; }
+/* （手寫答案區已併入計算區——2026-07-10 飼主指示：單一書寫區、答案寫在過程最後） */
 
 .sol {
   background: var(--panel2); border-left: 3px solid var(--accent);
@@ -197,7 +194,7 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 
 /* 📝 手寫題批改面板 */
 .judge-item { display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px solid var(--border); padding: 10px 0; flex-wrap: wrap; }
-.judge-img { flex: 0 1 42%; min-width: 140px; }
+.judge-img { flex: 0 1 46%; min-width: 160px; max-height: 42vh; overflow-y: auto; }
 .judge-img img { max-width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
 .judge-info { flex: 1; min-width: 200px; }
 
