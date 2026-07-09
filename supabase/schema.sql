@@ -44,3 +44,29 @@ create policy "own ink" on public.ink_sessions
 
 create index if not exists ink_sessions_user_time
   on public.ink_sessions (user_id, created_at desc);
+
+-- ── 老師方法庫：42 堂課逐字稿蒸餾出的 1662 條方法（概念洞 UI 用） ──
+-- 建表後資料用 supabase/upload_methodlib.py 灌入（來源檔在 E:\C槽冷資料\Desktop\重考\_matha_backup\teacher-methodlib.json）
+create table if not exists public.teacher_methods (
+  id         bigint generated always as identity primary key,
+  user_id    uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  unit       text not null,            -- 14 單元鍵（num line poly seq comb prob data trig1 trig2 exp vec svec splane mat）
+  lec        int,                      -- 第幾堂課
+  concept    text not null,            -- 這條方法對付的概念
+  method     text not null,            -- 老師的方法本體
+  mnemonic   text,                     -- 口訣
+  black      text,                     -- 黑板答案
+  ex         text,                     -- 例題標號
+  created_at timestamptz not null default now()
+);
+
+alter table public.teacher_methods enable row level security;
+
+drop policy if exists "own methods" on public.teacher_methods;
+create policy "own methods" on public.teacher_methods
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create index if not exists teacher_methods_user_unit
+  on public.teacher_methods (user_id, unit);

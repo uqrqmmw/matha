@@ -58,8 +58,9 @@ function importData(input) {
 }
 function backupCard() {
   return `<div class="card"><h2>💾 資料備份</h2>
-    <p class="dim">所有紀錄只存在<b>這台裝置、這個瀏覽器</b>的 localStorage（跟著網址的網域走）——
-    換裝置、換網址、清瀏覽器資料都<b>不會自動帶走</b>。養成習慣：每週日匯出一份，存進雲端硬碟或傳給自己。</p>
+    <p class="dim"><b>登入雲端同步後，所有紀錄自動跨裝置同步</b>——做題紀錄、錯題本、筆跡、AI key，桌機/手機/平板拿到的都是同一份，
+    這就是你的主要備份。下面的手動匯出是<b>額外保險</b>（雲端之外再留一份離線副本），不再是必要動作；
+    只有「離線 artifact 版」或未登入時，資料才只存本機。</p>
     <div class="actr"><button class="btn" onclick="exportData()">匯出備份（.json）</button>
     <button class="btn" onclick="$('#impfile').click()">匯入備份</button>
     <button class="btn" onclick="exportInk()">匯出今日筆跡</button></div>
@@ -425,23 +426,42 @@ function praiseFor(q, ok, ms, target) {
   return `<p class="praise">🎉 ${msgs.slice(0, 2).join('；')}！</p>`;
 }
 
-/* ═══════════ 🤖 AI 批改（Anthropic API，key 只存本機） ═══════════ */
-const AI_LS = 'mathA13_aikey';
+/* ═══════════ 🤖 AI 批改（Anthropic API） ═══════════
+   key 存進 S.aikey → 跟著雲端 app_state 同步（RLS 保護、只有本人登入讀得到）：
+   桌機/手機/平板任一台填一次，全部裝置都能用。離線版（artifact）只存本機。 */
+const AI_LS = 'mathA13_aikey'; // 舊版本機儲存位置，boot 時自動搬進 S.aikey
 const AI_MODEL_LS = 'mathA13_aimodel';
-function aiKey() { try { return localStorage.getItem(AI_LS) || ''; } catch (e) { return ''; } }
+function aiKey() {
+  if (S.aikey) return S.aikey;
+  try { return localStorage.getItem(AI_LS) || ''; } catch (e) { return ''; }
+}
+function aiKeyMigrate() {
+  try {
+    const lk = localStorage.getItem(AI_LS);
+    if (lk && !S.aikey) { S.aikey = lk; S.aikeyTs = Date.now(); save(); }
+  } catch (e) {}
+}
 function aiKeySave() {
   const v = $('#aikey').value.trim();
   if (!v || v.startsWith('••')) { alert('沒有變更。'); return; }
-  localStorage.setItem(AI_LS, v);
-  alert('已儲存在這台裝置。之後手寫作答按「算完了」就會自動 AI 批改。');
+  S.aikey = v;
+  S.aikeyTs = Date.now();
+  save(); // → 雲端同步，所有裝置生效
+  alert('已儲存。登入同一帳號的每台裝置（桌機/手機/平板）都會自動拿到這支 key，手寫作答按「算完了」就會 AI 批改。');
   renderStats();
 }
-function aiKeyClear() { localStorage.removeItem(AI_LS); renderStats(); }
+function aiKeyClear() {
+  S.aikey = '';
+  S.aikeyTs = Date.now();
+  try { localStorage.removeItem(AI_LS); } catch (e) {}
+  save();
+  renderStats();
+}
 function aiCard() {
   return `<div class="card"><h2>🤖 AI 批改設定</h2>
     <p class="dim">填入 Anthropic API key（sk-ant-…）後：手寫答案按「算完了」就由 AI 即時批改——認你的字、判對錯（不限定答案順序與形式）、
-    從計算過程指出<b>從哪一步開始算錯</b>、該稱讚時稱讚。key 只存在這台裝置的瀏覽器，不會進雲端也不會進備份檔。
-    沒填也能用：改為「看正解自評」模式（一樣不用打字）。</p>
+    從計算過程指出<b>從哪一步開始算錯</b>、該稱讚時稱讚。<b>key 跟著雲端同步：任一台裝置填一次，桌機/手機/平板全部生效</b>（存在你的
+    RLS 保護資料列，只有你登入後讀得到；離線 artifact 版除外）。沒填也能用：改為「看正解自評」模式（一樣不用打字）。</p>
     <input id="aikey" class="ans-input" type="password" autocomplete="off" placeholder="sk-ant-..." value="${aiKey() ? '••••••••（已設定）' : ''}">
     <div class="actr">
       ${aiKey() ? '<button class="btn" onclick="aiKeyClear()">清除 key</button>' : ''}
@@ -503,6 +523,67 @@ function aiFeedbackHTML(v) {
     ${v.firstError ? `<p class="badc"><b>從這裡開始錯：</b>${escH(v.firstError)}</p>` : ''}
     ${v.praise ? `<p class="praise">🎉 ${escH(v.praise)}</p>` : ''}
     ${v.habit ? `<p class="warnc">✏️ 習慣提醒：${escH(v.habit)}</p>` : ''}</div>`;
+}
+
+/* ═══════════ 🧑‍🏫 老師方法庫（1662 條，Supabase teacher_methods 表） ═══════════
+   概念洞 UI：答錯看詳解時、或錯題本頁，一鍵調出該單元老師的所有方法與口訣。
+   雲端載一次後快取到本機（localStorage），之後離線也能看。 */
+let METHODLIB = null;
+const MLIB_LS = 'mathA13_mlib_v1';
+async function loadMethodLib() {
+  if (METHODLIB) return METHODLIB;
+  try {
+    const c = localStorage.getItem(MLIB_LS);
+    if (c) { METHODLIB = JSON.parse(c); return METHODLIB; }
+  } catch (e) {}
+  if (!supa || !syncState.user) return null;
+  try {
+    const rows = [];
+    for (let page = 0; page < 5; page++) { // 分頁抓（PostgREST 單次上限 1000）
+      const { data, error } = await supa.from('teacher_methods')
+        .select('unit,lec,concept,method,mnemonic,black,ex')
+        .order('id').range(page * 1000, page * 1000 + 999);
+      if (error || !data) break;
+      rows.push(...data);
+      if (data.length < 1000) break;
+    }
+    if (!rows.length) return null;
+    const lib = {};
+    for (const m of rows) (lib[m.unit] = lib[m.unit] || []).push(m);
+    METHODLIB = lib;
+    try { localStorage.setItem(MLIB_LS, JSON.stringify(lib)); } catch (e) {}
+    return lib;
+  } catch (e) { return null; }
+}
+function mlibEmptyMsg() {
+  if (!supa) return '離線版無法載入方法庫——請用正式站 yen-2cats.github.io/matha13。';
+  if (!syncState.user) return '登入雲端同步後，才能載入老師方法庫。';
+  return '方法庫資料還沒上雲（teacher_methods 表未建立或還沒灌資料）——跟接手的 Claude 說一聲就能補上。';
+}
+function mlibCard() {
+  return `<div class="card"><h2>🧑‍🏫 老師方法庫</h2>
+      <p class="dim">概念不熟（概念洞）就先調出該單元老師的方法與口訣，看懂再限時重做——1662 條，從 42 堂課逐字稿蒸餾。</p>
+      <div class="chips r">${Object.keys(TOPICS).map((k) => `<button class="btn sm" onclick="showMethods('${k}')">${TOPICS[k]}</button>`).join('')}</div>
+      <div id="mlib-box"></div></div>`;
+}
+async function showMethods(unit) {
+  const box = $('#mlib-box');
+  if (!box) return;
+  box.innerHTML = '<p class="dim">🧑‍🏫 載入老師方法庫…</p>';
+  const lib = await loadMethodLib();
+  const cur = $('#mlib-box');
+  if (!cur) return; // 載入期間已換頁
+  if (!lib) { cur.innerHTML = `<p class="dim">${mlibEmptyMsg()}</p>`; return; }
+  const ms = lib[unit] || [];
+  if (!ms.length) { cur.innerHTML = `<p class="dim">「${TOPICS[unit]}」沒有對應的老師方法（課程未涵蓋這單元）。</p>`; return; }
+  cur.innerHTML = `<div class="mlib">
+    <p><b>🧑‍🏫 ${TOPICS[unit]}</b>｜老師方法 <b>${ms.length}</b> 條（42 堂課逐字稿蒸餾）——點開概念看他怎麼教：</p>
+    ${ms.map((m) => `<details><summary>${escH(m.concept)}${m.ex ? ` <span class="dim">（${escH(m.ex)}）</span>` : ''}</summary>
+      <p>${escH(m.method)}</p>
+      ${m.mnemonic ? `<p class="teach-tip">🔑 ${escH(m.mnemonic)}</p>` : ''}
+      ${m.black ? `<p class="dim">黑板答案：${escH(m.black)}</p>` : ''}</details>`).join('')}
+  </div>`;
+  cur.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function today() { return new Date().toISOString().slice(0, 10); }
@@ -1360,6 +1441,8 @@ function qResolve(ok) {
       <p><b>詳解：</b>${q.sol}</p>
       ${q.tip ? `<p class="tip">💡 <b>快解：</b>${q.tip}</p>` : ''}
       ${teachBlock(q.id)}
+      <div class="actr"><button class="btn sm" onclick="showMethods('${q.topic}')">🧑‍🏫 調出老師方法庫：${TOPICS[q.topic]}</button></div>
+      <div id="mlib-box"></div>
       ${inkSummary(qsess.proc)}
       ${qsess.proc && qsess.proc.n ? `<div class="actr"><button class="btn sm" onclick="inkReplay('${jsA(q.id)}', ${qsess.t0})">▶ 回放解題過程</button></div>` : ''}
       ${qsess.exclude ? '<p class="warnc">（依你的選擇，這筆不列入紀錄）</p>' : ''}
@@ -1698,7 +1781,7 @@ function renderWrong() {
   const ids = Object.keys(S.wrong);
   const due = dueWrong();
   if (!ids.length) {
-    app().innerHTML = `<h1>📓 錯題本</h1><div class="card"><p>目前沒有錯題。去「主題刷題」或「模擬實戰」產生一些吧——錯題是最高價值的訓練材料。</p></div>`;
+    app().innerHTML = `<h1>📓 錯題本</h1><div class="card"><p>目前沒有錯題。去「主題刷題」或「模擬實戰」產生一些吧——錯題是最高價值的訓練材料。</p></div>${mlibCard()}`;
     return;
   }
   const rows = ids.map((id) => {
@@ -1716,6 +1799,7 @@ function renderWrong() {
     ${due.length ? `<div class="card warn"><b>${due.length} 題今天到期。</b>先清這些，再刷新題——重測到期錯題的投報率是刷新題的 3 倍。
       <div class="actr"><button class="btn primary" onclick="reviewDue()">開始重測到期題（${due.length}）</button></div></div>` : '<div class="card good">今天沒有到期的錯題 ✅</div>'}
     <div class="card"><table class="tbl"><tr><th>題目</th><th>錯因</th><th>次數</th><th>下次重測</th><th></th></tr>${rows}</table></div>
+    ${mlibCard()}
     <div class="card"><p class="dim"><b>訂正標準（名師版）：</b>不是「看懂詳解」，是能自己說出<b>題目的關鍵條件 → 對應的工具（公式/定理）→ 第一步</b>這條鏈。
     說不出來就還沒訂正完，重測時會原形畢露。</p></div>`;
 }
@@ -1792,7 +1876,7 @@ function renderStats() {
       <div class="bar"><div class="bar-fill y" style="width:${(errCount[e] / errTotal * 100).toFixed(0)}%"></div></div>
       <span class="bar-val">${errCount[e]} 次</span></div>`).join('') || '<p class="dim">尚無錯因紀錄</p>';
   const ERR_RX = {
-    '概念不熟': '回去看該單元的觀念（這是唯一該回頭看課的情況），看完立刻限時重做同型題。',
+    '概念不熟': '先到「📓 錯題本」頁調出該單元的老師方法庫（口訣＋方法），看完立刻限時重做同型題——看懂不算數，寫出來才算。',
     '計算失誤': '不是粗心，是計算量訓練不足——加練「⚡兩位數心算」與該單元速度特訓。',
     '看錯題意': '養成「動筆前圈出問句關鍵字」的固定動作：求什麼？最大最小？正確錯誤？',
     '用猜的': '該題型完全沒把握——列入概念補強清單，優先級最高。',
@@ -2006,7 +2090,10 @@ function mergeState(a, b) {
   for (const m of b.mocks || []) if (!mset.has(JSON.stringify(m))) mocks.push(m);
   const daily = { ...(b.daily || {}) };
   for (const d of Object.keys(a.daily || {})) daily[d] = { ...(daily[d] || {}), ...a.daily[d] };
-  return { ...b, ...a, attempts, wrong, drills, mocks, daily, extbank };
+  const merged = { ...b, ...a, attempts, wrong, drills, mocks, daily, extbank };
+  // AI key：取「最後修改時間較新」的一方（避免舊裝置的舊 key 蓋掉新換的 key）
+  if ((b.aikeyTs || 0) > (a.aikeyTs || 0)) { merged.aikey = b.aikey; merged.aikeyTs = b.aikeyTs; }
+  return merged;
 }
 let inkQueue = []; // 上傳失敗的筆跡列，連上網或下次同步時補傳（上限 200 筆防爆記憶體）
 function supaInkInsert(row) {
@@ -2074,6 +2161,7 @@ function boot() {
   navEl.innerHTML = Object.keys(VIEWS).map((v) =>
     `<button data-view="${v}" onclick="nav('${v}')">${VIEWS[v].label}</button>`).join('');
   applyExtBank();
+  aiKeyMigrate();
   supaInit();
   nav('home');
 }

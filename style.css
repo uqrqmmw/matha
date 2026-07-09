@@ -220,6 +220,12 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 #syncpill.off { color: var(--dim); border-color: var(--dim); }
 @media (max-width: 600px) { #syncpill { top: auto; bottom: 10px; right: 10px; } }
 
+/* 🧑‍🏫 老師方法庫（概念洞 UI） */
+.mlib { max-height: 55vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; background: #fff; }
+.mlib details { margin: 6px 0; border-bottom: 1px dashed var(--border); padding-bottom: 6px; }
+.mlib summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.mlib details p { margin: 6px 0 4px; }
+
 /* 🧑‍🏫 老師蒸餾 */
 .teach { background: rgba(15, 118, 110, 0.07); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 10px 14px; margin: 10px 0; }
 .teach-tip { color: var(--accent); font-size: 0.95em; }
