@@ -229,6 +229,9 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 .pomo-pill { position: fixed; left: 10px; bottom: 10px; z-index: 60; background: #fff; border: 1.5px solid var(--accent); color: var(--accent); border-radius: 999px; padding: 6px 12px; font-weight: 700; font-variant-numeric: tabular-nums; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08); }
 .pomo-pill.warn { border-color: var(--bad); color: var(--bad); }
 .pomo-pill.done { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* 根號蓋線 */
+.rt { white-space: nowrap; }
+.rt .rtv { border-top: 1.6px solid currentColor; padding: 0 0.1em; }
 /* 直式數學：分數與 C/P 上下標 */
 .vfrac { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1.15; margin: 0 0.15em; font-size: 0.9em; font-variant-numeric: tabular-nums; }
 .vfrac > .vn { padding: 0 0.3em 0.06em; border-bottom: 1.6px solid currentColor; }

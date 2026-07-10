@@ -1,7 +1,7 @@
 /* 數A特訓 PWA service worker
    策略：network-first（連得上就拿最新版，改版即時生效）、斷網退回快取（離線也能開）。
    只碰同源 GET；Supabase/Anthropic 等跨域請求一律直通不快取。 */
-const CACHE = 'matha13-v2';
+const CACHE = 'matha13-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'bank.js', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -794,9 +794,15 @@ function mlibCard() {
       <div class="chips r">${Object.keys(TOPICS).map((k) => `<button class="btn sm" onclick="showMethods('${k}')">${TOPICS[k]}</button>`).join('')}</div>
       <div id="mlib-box"></div></div>`;
 }
-/* 方法庫等純文字內的分數轉直式（保守：只轉 a/b、√a/b 形式） */
+/* 根號加上蓋線：√48、√(x²+y²) → 被開方數上方畫線（顯示用） */
+function rtTxt(s) {
+  return String(s)
+    .replace(/√\(([^()<>]+)\)/g, '<span class="rt">√<span class="rtv">$1</span></span>')
+    .replace(/√(\d+(?:\.\d+)?)/g, '<span class="rt">√<span class="rtv">$1</span></span>');
+}
+/* 方法庫等純文字內的分數轉直式＋根號蓋線（保守：只轉 a/b、√a/b 形式） */
 function mathTxt(s) {
-  return escH(s).replace(/(√?\d{1,3})\/(√?\d{1,3})(?![\d/])/g, (m, a, b) => fracH(a, b));
+  return rtTxt(escH(s).replace(/(√?\d{1,3})\/(√?\d{1,3})(?![\d/])/g, (m, a, b) => fracH(a, b)));
 }
 async function showMethods(unit, noScroll) {
   const box = $('#mlib-box');
@@ -1595,8 +1601,9 @@ function fracH(n, d) { return `<span class="vfrac"><span class="vn">${n}</span><
 function cpH(L, n, k) { return `<span class="cpk">${L}<span class="ss"><span>${n}</span><span>${k}</span></span></span>`; }
 /* 選項/正解顯示轉直式：只轉「整串就是一個分數」的安全情形，如 1/2、-√3/2、11/72、3/√5 */
 function mDispOpt(s) {
-  const m = typeof s === 'string' && s.match(/^(-?(?:\d+)?(?:√\d+)?)\/((?:\d+)?(?:√\d+)?)$/);
-  return m && m[1] && m[2] ? fracH(m[1], m[2]) : s;
+  if (typeof s !== 'string') return s;
+  const m = s.match(/^(-?(?:\d+)?(?:√\d+)?)\/((?:\d+)?(?:√\d+)?)$/);
+  return m && m[1] && m[2] ? `<span class="vfrac"><span class="vn">${rtTxt(m[1])}</span><span class="vd">${rtTxt(m[2])}</span></span>` : rtTxt(s);
 }
 
 /* ═══════════ 📱 手機專區 ═══════════
@@ -1763,7 +1770,7 @@ function phoneQuizNext() {
     <div class="session-head"><span>⚡ 心算快答｜第 ${phone.i + 1} / ${phone.items.length} 題</span>
       <span class="shr"><span id="ptimer" class="timer">0.0s</span>
       <button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
-    <div class="card qcard"><div class="qtext big">${it.q}</div>
+    <div class="card qcard"><div class="qtext big">${rtTxt(it.q)}</div>
       <div class="pbtns">${it.opts.map((o, i) => `<button class="btn pbtn" onclick="phoneTap(${i})">${o}</button>`).join('')}</div>
       <div id="pfb"></div></div>
     ${inkHTML({ phone: true })}
@@ -1837,7 +1844,8 @@ function startPhoneFlash(kind) {
     if (!lib) { alert(mlibEmptyMsg()); return; }
     const deck = [];
     for (const u of Object.keys(lib)) lib[u].forEach((m, i) => {
-      if (m.mnemonic) deck.push({ id: `mn:${u}:${m.lec}:${i}`, unit: u, front: m.concept, back: `🔑 ${m.mnemonic}`, extra: m.method });
+      // 只收「真的背得起來」的短口訣（長段落是方法說明，不是口訣，放進卡片不合理）
+      if (m.mnemonic && m.mnemonic.length <= 24) deck.push({ id: `mn:${u}:${m.lec}:${i}`, unit: u, front: m.concept, back: `🔑 ${m.mnemonic}`, extra: m.method });
     });
     go(deck);
   });
@@ -1994,7 +2002,7 @@ function drillNext() {
       <span class="shr"><span id="dtimer" class="timer">0.0s</span>
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
-    <div class="card qcard"><div class="qwrap"><div class="qtext big">${it.q}</div></div>
+    <div class="card qcard"><div class="qwrap"><div class="qtext big">${rtTxt(it.q)}</div></div>
       <div class="ansrow">${input}</div>
       <div id="dfb"></div>
       <canvas id="qink-cv" class="qink"></canvas>
@@ -2309,7 +2317,7 @@ function renderQuestion(q, cfg) {
     <div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>
     <div id="q-flash" class="ink-flash" style="display:none"></div>
     <div class="card qcard">
-      <div class="qwrap"><div class="qtext">${q.q}${q.fig ? `<div class="qfig">${q.fig}</div>` : ''}</div></div>
+      <div class="qwrap"><div class="qtext">${rtTxt(q.q)}${q.fig ? `<div class="qfig">${q.fig}</div>` : ''}</div></div>
       <div class="ansarea">${ansUI}
         <div class="actr"><button class="btn sm skip" onclick="qGiveUp()">🏳 放棄，看答案</button></div></div>
       <div id="qfb"></div>
@@ -2537,7 +2545,7 @@ function mockQ() {
     </div>
     <div id="q-flash" class="ink-flash" style="display:none"></div>
     <div class="card qcard">
-      <div class="qwrap"><div class="qtext">${q.q}${q.fig ? `<div class="qfig">${q.fig}</div>` : ''}</div></div>
+      <div class="qwrap"><div class="qtext">${rtTxt(q.q)}${q.fig ? `<div class="qfig">${q.fig}</div>` : ''}</div></div>
       <div class="ansarea">${ansUI}</div>
       <div class="mock-actions">
         ${mock.round === 1 ? `<button class="btn skip" onclick="mockSkip()">跳過 → 第二輪</button>` : `<button class="btn skip" onclick="mockGiveup()">放棄此題</button>`}
