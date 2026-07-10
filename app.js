@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711i'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711j'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -2488,8 +2488,13 @@ function qResolve(ok) {
   // 筆跡一律上傳（珍貴分析資料）；改判會重跑 qResolve，用旗標避免重複上傳
   if (!qsess.inkSynced) {
     syncInk(q.id, qsess.t0, Object.assign(
-      { mode: qsess.cfg.review ? 'review' : 'practice', ok, excluded: !!qsess.exclude, ai: qsess.ai || null }, qsess.proc || {}));
+      { mode: qsess.cfg.side ? 'side' : (qsess.cfg.review ? 'review' : 'practice'), ok, excluded: !!qsess.exclude, ai: qsess.ai || null }, qsess.proc || {}));
     qsess.inkSynced = true;
+  }
+  // 🎯 類題支線：只記到獨立桶（S.sidePractice），絕不進 attempts／錯題本／每日點數／本輪成績
+  if (qsess.cfg.side && !qsess.sideRecorded) {
+    (S.sidePractice = S.sidePractice || []).push({ qid: q.id, origId: qsess.cfg.origId || null, ok, ms, ts: Date.now(), d: today() });
+    qsess.sideRecorded = true; save();
   }
   const fb = $('#qfb');
   const v = qsess.ai; // AI 批改結果（只有手寫填充題有）：{read,correct,firstError,praise,nextTime,marks}
@@ -2503,10 +2508,12 @@ function qResolve(ok) {
   const reJudge = v
     ? `<p class="rejudge">🤖 AI 讀到「<b>${v.read != null ? escH(v.read) : '—'}</b>」→ 判${ok ? '對' : '錯'}　<a onclick="qResolve(${!ok})">判錯了？改判</a></p>`
     : '';
-  // ③ 主要動作——緊接判定，一按就走，不用往下拉
-  const action = !ok
-    ? `<p class="dim" style="margin:8px 0 4px">錯因？（點一個就進下一題）</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="btn err" onclick="qFinish(false, ${ms}, '${e}')">${e}</button>`).join('')}</div>`
-    : `<div class="actr"><button class="btn primary big" onclick="qFinish(true, ${ms}, ${overtime ? "'超時'" : 'null'})">下一題 →</button></div>`;
+  // ③ 主要動作——緊接判定，一按就走，不用往下拉；類題支線用不同按鈕（不進主流程）
+  const action = qsess.cfg.side
+    ? `<div class="actr"><button class="btn primary big" onclick="sideNext()">🎯 再來一題類題</button><button class="btn" onclick="sideReturn()">↩ 回到原題</button></div>`
+    : (!ok
+      ? `<p class="dim" style="margin:8px 0 4px">錯因？（點一個就進下一題）</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="btn err" onclick="qFinish(false, ${ms}, '${e}')">${e}</button>`).join('')}</div><div class="actr" style="margin-top:8px"><button class="btn" onclick="qSideStart()">🎯 先練一題類題再繼續</button></div>`
+      : `<div class="actr"><button class="btn primary big" onclick="qFinish(true, ${ms}, ${overtime ? "'超時'" : 'null'})">下一題 →</button><button class="btn" onclick="qSideStart()">🎯 再練一題類題</button></div>`);
   // ④ 中段（批改的靈魂）：先肯定你做得好的 → 錯在哪（圈在你字上）→ 🎯 下次這樣做（可記的關鍵路徑）。詳解不塞這、收摺疊。
   const willProc = aiKey() && !v && qsess.proc && qsess.proc.n; // 選擇/打字題稍後由 AI 過程點評接手稱讚＋下次，這裡就不重複
   const praiseHTML = v && v.praise ? `<p class="praise">🎉 你做得好：${escH(v.praise)}</p>` : (willProc ? '' : praiseFor(q, ok, ms, target));
@@ -2548,6 +2555,45 @@ function qFinish(ok, ms, err) {
     else recordAttempt(q, ok, ms, err, prac ? prac.mode : 'practice', qsess.proc);
   }
   cfg.onDone({ ok, ms, err, target: qTarget(q), excluded: !!qsess.exclude });
+}
+
+/* ═══════════ 🎯 類題支線練習 ═══════════
+   看完解答後立刻練一題同主題類題，驗證是不是真的會了。做完可再來一題或回原題。
+   完全獨立：只記到 S.sidePractice，絕不碰 attempts／錯題本／每日點數／本輪成績表。 */
+function pickSimilar(origQ, doneIds) {
+  const ex = new Set([origQ.id, ...(doneIds || [])]);
+  const variant = (q) => q.id.indexOf('v-' + origQ.id) === 0 || (q.src && /類題/.test(q.src));
+  let cands = BANK.filter((q) => q.topic === origQ.topic && !ex.has(q.id) && q.type === origQ.type);
+  if (!cands.length) cands = BANK.filter((q) => q.topic === origQ.topic && !ex.has(q.id)); // 放寬：同主題不同題型也行
+  if (!cands.length) return null;
+  cands.sort((a, b) => {
+    const va = variant(a) ? 1 : 0, vb = variant(b) ? 1 : 0;
+    if (va !== vb) return vb - va;                             // 真類題變體最優先
+    const da = a.diff === origQ.diff ? 1 : 0, db = b.diff === origQ.diff ? 1 : 0;
+    if (da !== db) return db - da;                            // 同難度次之
+    return attemptsOf(a.id).length - attemptsOf(b.id).length; // 少做過的優先
+  });
+  const top = cands.slice(0, Math.min(5, cands.length));
+  return top[Math.floor(Math.random() * top.length)];        // 前幾名裡隨機，避免每次同一題
+}
+let sideState = null; // { html, sess, origQ, doneIds }：支線期間暫存原題解答畫面與 session，回得去
+function qSideStart() {
+  if (!qsess) return;
+  sideState = { html: app().innerHTML, sess: qsess, origQ: qsess.q, doneIds: [qsess.q.id] };
+  sideNext();
+}
+function sideNext() {
+  if (!sideState) return;
+  const sq = pickSimilar(sideState.origQ, sideState.doneIds);
+  if (!sq) { modal('<h2>沒有更多類題了</h2><p>這個單元目前沒有其他可練的類題，先回原題吧。</p>', [['回到原題', sideReturn]]); return; }
+  sideState.doneIds.push(sq.id);
+  renderQuestion(sq, { head: '🎯 類題練習（不列入本輪成績）', side: true, origId: sideState.origQ.id, onDone() {} });
+}
+function sideReturn() {
+  if (!sideState) return;
+  app().innerHTML = sideState.html; // 還原原題解答畫面（靜態，按鈕 onclick 用回全域 qsess）
+  qsess = sideState.sess;
+  sideState = null;
 }
 
 /* ═══════════ 模擬實戰 ═══════════ */
