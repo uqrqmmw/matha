@@ -1611,7 +1611,7 @@ function texVal(s) { return T(texBody(s)); }
 /* 2×2：det→行列式直線 vmatrix，否則矩陣方括號 bmatrix */
 function m2H(a, b, c, d, det) { const L = det ? 'vmatrix' : 'bmatrix'; return T('\\begin{' + L + '}' + a + ' & ' + b + ' \\\\ ' + c + ' & ' + d + '\\end{' + L + '}'); }
 function fracH(n, d) { return T('\\frac{' + texBody(String(n)) + '}{' + texBody(String(d)) + '}'); }
-function cpH(L, n, k) { return T(L === 'C' ? '\\binom{' + n + '}{' + k + '}' : '{}^{' + n + '}\\!P_{' + k + '}'); }
+function cpH(L, n, k) { return T(L + '^{' + n + '}_{' + k + '}'); } // 台灣寫法：C/P 右上 n、右下 k（非美式 \binom 括號）
 /* 選項/正解字串 → LaTeX 島（給程式產生的選項與答案；DB 內容已是 LaTeX，不要再過這裡） */
 function mDispOpt(s) { return typeof s === 'string' ? texVal(s) : s; }
 
