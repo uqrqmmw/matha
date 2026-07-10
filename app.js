@@ -1636,7 +1636,6 @@ const FLASH = [
   { id: 'f20', unit: 'seq', front: '等差數列 aₙ 與前 n 項和', back: 'aₙ = a₁+(n−1)d；Sₙ = n(a₁+aₙ)/2' },
   { id: 'f21', unit: 'seq', front: '等比數列 aₙ 與前 n 項和', back: 'aₙ = a₁·rⁿ⁻¹；Sₙ = a₁(1−rⁿ)/(1−r)（r≠1）' },
   { id: 'f22', unit: 'seq', front: '1+2+…+n 與 1²+2²+…+n²', back: 'n(n+1)/2；n(n+1)(2n+1)/6' },
-  { id: 'f23', unit: 'seq', front: '無窮等比級數和（|r|<1）', back: 'a₁/(1−r)' },
   // 排列組合
   { id: 'f24', unit: 'comb', front: 'C(n,k) 與 P(n,k) 的公式', back: 'C(n,k)=n!/(k!(n−k)!)；P(n,k)=n!/(n−k)!；C(n,k)=C(n,n−k)' },
   { id: 'f25', unit: 'comb', front: '環狀排列', back: 'n 人圍圓桌 = (n−1)!' },
@@ -2434,8 +2433,7 @@ function qResolve(ok) {
       ${q.tip ? `<p class="tip">💡 <b>快解：</b>${q.tip}</p>` : ''}
       ${teachBlock(q.id)}
       <div id="ai-proc"></div>
-      <div class="actr"><button class="btn sm" onclick="showMethods('${q.topic}')">🧑‍🏫 調出老師方法庫：${TOPICS[q.topic]}</button></div>
-      <div id="mlib-box"></div>
+      <details class="mlib-fold" ontoggle="if(this.open){const b=this.querySelector('#mlib-box');if(b&&!b.innerHTML)showMethods('${q.topic}',true)}"><summary class="dim">🧑‍🏫 老師方法庫：${TOPICS[q.topic]}（點開看）</summary><div id="mlib-box"></div></details>
       ${inkSummary(qsess.proc)}
       ${qsess.proc && qsess.proc.n ? `<div class="actr"><button class="btn sm" onclick="inkReplay('${jsA(q.id)}', ${qsess.t0})">▶ 回放解題過程</button></div>` : ''}
       ${qsess.exclude ? '<p class="warnc">（依你的選擇，這筆不列入紀錄）</p>' : ''}
