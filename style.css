@@ -136,6 +136,15 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 .bk-opt:has(:checked) .bk-op { color: var(--accent); }
 .qcard.booklet .ansarea { padding: 0 16px 14px; }
 .qcard.booklet #qfb { padding: 0 16px; }
+/* 統一計算紙卡：題目正下方就是一張連續的書寫紙 */
+.qcard.booklet.sheet .sheet-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding: 10px 16px 0; font-size: 13px; color: #6b6b6b; }
+.qcard.booklet.sheet .sheet-scroll { margin: 6px 16px 0; min-height: 44vh; }
+.qcard.booklet.sheet .ansarea { padding: 12px 16px 14px; }
+.qcard.booklet.sheet #qfb:not(:empty) { padding: 8px 16px 0; }
+/* 批改後（#qfb 有內容）：收起計算紙與作答鈕，批改結果直接顯示在題目正下方，不用滑過整張紙 */
+.qcard.booklet.sheet:has(#qfb:not(:empty)) .sheet-bar,
+.qcard.booklet.sheet:has(#qfb:not(:empty)) .sheet-scroll,
+.qcard.booklet.sheet:has(#qfb:not(:empty)) .ansarea { display: none; }
 /* 整卡書寫層：蓋住題目讓你能在題目上/旁邊寫 */
 .qink { position: absolute; inset: 0; touch-action: none; cursor: crosshair; z-index: 2; }
 /* 但選項、動作按鈕、輸入欄、回饋疊到畫布上面，直接一次點到（不用靠穿透、不用點兩下）——刷題/模擬/速訓通用 */

@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711f'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -2316,15 +2316,17 @@ function bkOpts(q, submitFn) {
   }
   return '';
 }
-/* 題本卡：段落標頭 + 題號 + 題幹 + 選項；bodyId 讓 canvas/回饋掛得上 */
+/* 統一計算紙卡：題目印在最上 → 批改結果槽（就在題目正下方）→ 計算紙工具 → 一大張書寫畫布 → 按鈕沉底。
+   一整張連續的紙、題目正下方就能寫；批改後用 :has() 自動收起計算紙與按鈕，結果直接顯示在題目下。 */
 function bkCard(q, head, submitFn, actions) {
-  return `<div class="card qcard booklet">
+  return `<div class="card qcard booklet sheet">
     <div class="bk-head"><span class="bk-exam">數學Ａ</span><span class="bk-sect">${sectionLabel(q)}</span></div>
     <div class="bk-item"><span class="bk-num">${bkNum(head)}</span>
       <div class="bk-content">${rtTxt(q.q)}${q.fig ? `<div class="qfig">${q.fig}</div>` : ''}${bkOpts(q, submitFn)}</div></div>
-    <div class="ansarea">${actions}</div>
     <div id="qfb"></div>
-    <canvas id="qink-cv" class="qink"></canvas>
+    <div class="sheet-bar"><b>✍️ 計算紙${q.type === 'fill' ? '　·　答案寫在最後、圈起來' : ''}</b>${inkToolsHTML()}</div>
+    <div class="ink-scroll sheet-scroll"><canvas id="ink-cv" data-h="0"></canvas></div>
+    <div class="ansarea">${actions}</div>
   </div>`;
 }
 let qsess = null;
@@ -2338,8 +2340,7 @@ function renderQuestion(q, cfg) {
   } else if (q.type === 'multi') {
     actions = `<div class="actr">${giveUp}<button class="btn primary" onclick="qSubmit()">送出（多選）</button></div>`;
   } else {
-    actions = `<p class="dim">✍️ 整頁可寫，<b>答案寫在最後</b>：</p>
-      <div class="actr">${giveUp}<button class="btn primary big" onclick="qSubmit()">✅ 算完了，開始批改</button></div>
+    actions = `<div class="actr">${giveUp}<button class="btn primary big" onclick="qSubmit()">✅ 算完了，開始批改</button></div>
       <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
       <input id="qin" class="ans-input" autocomplete="off" placeholder="輸入答案（分數用 a/b）" onkeydown="if(event.key==='Enter')qSubmit()"></details>`;
   }
@@ -2351,8 +2352,7 @@ function renderQuestion(q, cfg) {
     </div>
     ${timerOn() ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
     <div id="q-flash" class="ink-flash" style="display:none"></div>
-    ${bkCard(q, cfg.head, 'qSubmit', actions)}
-    ${inkHTML()}`;
+    ${bkCard(q, cfg.head, 'qSubmit', actions)}`;
   sessionChrome(true);
   inkStart(q.id, qsess.t0);
   if (!timerOn()) return; // 計時器隱藏：不跑碼表、不出時間警示（時間仍在 qSubmit 幕後量測）
@@ -2606,8 +2606,7 @@ function mockQ() {
   } else if (q.type === 'multi') {
     actions = `<div class="actr"><button class="btn primary" onclick="mockAns()">送出此題</button></div>${mockRow}`;
   } else {
-    actions = `<p class="dim">✍️ 整頁可寫，<b>答案寫在最後</b>：</p>
-      <div class="actr"><button class="btn primary big" onclick="mockAns()">✅ 算完了 → 下一題</button></div>
+    actions = `<div class="actr"><button class="btn primary big" onclick="mockAns()">✅ 算完了 → 下一題</button></div>
       <details class="typed-opt"><summary class="dim">改用打字（選用）</summary>
       <input id="qin" class="ans-input" autocomplete="off" placeholder="答案（分數用 a/b）" onkeydown="if(event.key==='Enter')mockAns()"></details>${mockRow}`;
   }
@@ -2618,8 +2617,7 @@ function mockQ() {
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
     <div id="q-flash" class="ink-flash" style="display:none"></div>
-    ${bkCard(q, '第 ' + (mock.i + 1) + ' 題', 'mockAns', actions)}
-    ${inkHTML()}`;
+    ${bkCard(q, '第 ' + (mock.i + 1) + ' 題', 'mockAns', actions)}`;
   sessionChrome(true);
   inkStart(q.id, mock.t0, mock.sessT0); // 第二輪回頭時保留第一輪筆跡；更早的舊筆跡歸檔
   startTicker(() => {
