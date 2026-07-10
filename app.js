@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -674,9 +674,10 @@ async function aiProcCall(q, ok, correctTxt, calcB64) {
 ${q.sol ? `參考詳解：${stripTags(q.sol)}` : ''}
 ${teach && teach.sol ? `他補習班老師教這題的方法（點評時優先對照這個教法）：${stripTags(teach.sol)}${teach.tip ? '｜老師口訣：' + stripTags(teach.tip) : ''}` : ''}
 任務：${ok
-  ? '從過程挑一個值得保留的好習慣具體稱讚；若有繞遠路、跳步驟、危險寫法也提醒一句。'
+  ? '從過程挑一個值得保留的好習慣具體稱讚；若有繞遠路、跳步驟、危險寫法也提醒一句。答對但過程有算錯/寫錯的地方（僥倖對）也要指出。'
   : '對照過程指出「從哪一步開始出錯」（引用他寫的式子），一句話講清楚錯在哪；若過程其實對但選錯/抄錯，也要指出。'}
-只回傳 JSON（不要其他文字）：{"firstError":"哪一步開始錯（答對或看不出來就 null）","praise":"具體稱讚（沒有就 null）","habit":"要注意的計算習慣（沒有就 null）"}` },
+若過程裡有具體寫錯的地方，用 marks 標出位置：每個 box 是 [左,上,右,下] 四個 0~1 的小數（相對整張圖、原點左上），框住寫錯那段；label 是 ≤8 字短標。最多 2 個，沒有就 []。
+只回傳 JSON（不要其他文字）：{"firstError":"哪一步開始錯（答對或看不出來就 null）","praise":"具體稱讚（沒有就 null）","habit":"要注意的計算習慣（沒有就 null）","marks":[]}` },
   ]);
 }
 function qProcReview(ok) {
@@ -684,17 +685,20 @@ function qProcReview(ok) {
   const q = sess.q;
   const calcB64 = inkCaptureFull(q.id); // 題卡＋計算區整卷一起分析
   if (!calcB64) { const el = document.getElementById('ai-proc'); if (el) el.innerHTML = ''; return; }
+  const imgSrc = 'data:image/png;base64,' + calcB64; // 同一張圖，供畫紅圈
   const correctTxt = q.type === 'fill' ? q.ans[0] : q.ans.map((a) => `(${a + 1})`).join('');
   aiProcCall(q, ok, correctTxt, calcB64)
     .then((v) => {
       if (qsess !== sess) return;
       const el = document.getElementById('ai-proc');
       if (!el) return;
+      const marked = Array.isArray(v.marks) && v.marks.length ? markedImgHTML(imgSrc, v.marks, v.firstError) : ''; // 有座標框就圈在手寫上
       el.innerHTML = `<div class="ai-fb"><p><b>🤖 AI 看你的手寫過程：</b></p>
-        ${v.firstError ? `<p class="badc"><b>從這裡開始錯：</b>${escH(v.firstError)}</p>` : ''}
+        ${marked}
+        ${!marked && v.firstError ? `<p class="badc"><b>從這裡開始錯：</b>${escH(v.firstError)}</p>` : ''}
         ${v.praise ? `<p class="praise">🎉 ${escH(v.praise)}</p>` : ''}
         ${v.habit ? `<p class="warnc">✏️ 習慣提醒：${escH(v.habit)}</p>` : ''}
-        ${!v.firstError && !v.praise && !v.habit ? '<p class="dim">過程看起來乾淨，沒什麼好挑的。</p>' : ''}</div>`;
+        ${!marked && !v.firstError && !v.praise && !v.habit ? '<p class="dim">過程看起來乾淨，沒什麼好挑的。</p>' : ''}</div>`;
     })
     .catch((e) => {
       if (qsess !== sess) return;
@@ -2524,10 +2528,10 @@ function qResolve(ok) {
     </details>`;
   fb.innerHTML = `<div class="sol">${verdict}${reJudge}${action}${mid}<div id="ai-proc"></div>${full}${qsess.exclude ? '<p class="warnc">（依你的選擇，這筆不列入紀錄）</p>' : ''}</div>`;
   fbInView();
-  // AI 過程分析只在「有需要改進」時跑（答錯或太慢）：答對又準時不打擾、也省 API
-  if (aiKey() && !qsess.ai && qsess.proc && qsess.proc.n && (!ok || overtime)) {
+  // 選擇/打字題：答案已判定，但只要有寫手寫過程就讓 AI 看並點評（答對也看——飼主要的就是這個）
+  if (aiKey() && !qsess.ai && qsess.proc && qsess.proc.n) {
     const el = document.getElementById('ai-proc');
-    if (el) { el.innerHTML = '<p class="dim">🤖 AI 過程分析中…（不用等，可先按下一題）</p>'; qProcReview(ok); }
+    if (el) { el.innerHTML = '<p class="dim">🤖 AI 正在看你的手寫過程…（不用等，可先按下一題）</p>'; qProcReview(ok); }
   }
 }
 function qFinish(ok, ms, err) {
