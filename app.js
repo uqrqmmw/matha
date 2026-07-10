@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711j'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711k'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -465,43 +465,51 @@ function mergeProc(a, b) {
 }
 async function inkReplay(qid, t0) {
   const cv = $('#ink-cv'); if (!cv || replaying) return;
+  const scroll = cv.closest('.ink-scroll'); // 批改後計算紙被 :has 收起：回放前先掀開，結束再收回，否則在隱藏畫布上畫＝看不到
+  const prevDisp = scroll ? scroll.style.display : '';
+  if (scroll) { scroll.style.display = 'block'; try { scroll.scrollIntoView({ block: 'center' }); } catch (e) {} }
   replaying = true;
   const ctx = cv.getContext('2d');
   const st = inkStore(qid);
   const all = st.s.filter((s) => s.t0 >= t0);
   const evs = all.filter((s) => !s.sub).sort((a, b) => a.t0 - b.t0);
   const deaths = all.filter((s) => s.dead).map((s) => s.dead);
-  const f = $('#ink-flash');
+  const f = $('#ink-flash') || $('#q-flash'); // 統一計算紙卡沒有 #ink-flash，退回 #q-flash
   const flash = (msg) => { if (f) { f.textContent = msg; f.style.display = 'block'; } };
   const unflash = () => { if (f) f.style.display = 'none'; };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const gone = () => !cv.isConnected; // 換頁/換題後舊 canvas 脫離 DOM → 中止回放（replaying 由 inkStart 重設）
+  const gone = () => !cv.isConnected; // 換頁/換題後舊 canvas 脫離 DOM → 中止回放
   const aliveAt = (t) => all.filter((s) => s.t0 <= t && (!s.dead || s.dead > t));
-  inkWipe(cv, ctx);
-  let prevEnd = null;
-  for (const s of evs) {
-    if (prevEnd !== null) {
-      if (deaths.some((d) => d > prevEnd && d <= s.t0)) {
-        inkWipe(cv, ctx);
-        for (const a of aliveAt(s.t0)) inkDrawStroke(ctx, a);
-        flash('🧽 這裡塗改了'); await sleep(600); unflash();
+  try {
+    inkWipe(cv, ctx);
+    let prevEnd = null;
+    for (const s of evs) {
+      if (prevEnd !== null) {
+        if (deaths.some((d) => d > prevEnd && d <= s.t0)) {
+          inkWipe(cv, ctx);
+          for (const a of aliveAt(s.t0)) inkDrawStroke(ctx, a);
+          flash('🧽 這裡塗改了'); await sleep(600); unflash();
+          if (gone()) return;
+        }
+        const gap = s.t0 - prevEnd;
+        if (gap >= HES_GAP) { flash(`⏸ 這裡停頓了 ${Math.round(gap / 1000)} 秒`); await sleep(1000); unflash(); }
+        else await sleep(Math.min(250, gap / 8));
         if (gone()) return;
       }
-      const gap = s.t0 - prevEnd;
-      if (gap >= HES_GAP) { flash(`⏸ 這裡停頓了 ${Math.round(gap / 1000)} 秒`); await sleep(1000); unflash(); }
-      else await sleep(Math.min(250, gap / 8));
-      if (gone()) return;
+      ctx.strokeStyle = INK_COLORS[s.c] || INK_COLORS.k; ctx.lineWidth = INK_W;
+      for (let i = 1; i < s.pts.length; i++) {
+        ctx.beginPath(); ctx.moveTo(s.pts[i - 1][0], s.pts[i - 1][1]); ctx.lineTo(s.pts[i][0], s.pts[i][1]); ctx.stroke();
+        if (i % 6 === 0) { await sleep(8); if (gone()) return; }
+      }
+      prevEnd = s.t1;
     }
-    ctx.strokeStyle = INK_COLORS[s.c] || INK_COLORS.k; ctx.lineWidth = INK_W;
-    for (let i = 1; i < s.pts.length; i++) {
-      ctx.beginPath(); ctx.moveTo(s.pts[i - 1][0], s.pts[i - 1][1]); ctx.lineTo(s.pts[i][0], s.pts[i][1]); ctx.stroke();
-      if (i % 6 === 0) { await sleep(8); if (gone()) return; }
-    }
-    prevEnd = s.t1;
+    inkWipe(cv, ctx);
+    for (const a of aliveAt(Date.now())) inkDrawStroke(ctx, a);
+  } finally { // 任何中止點都要收乾淨：解鎖、還原計算紙的收合、關字幕
+    replaying = false;
+    if (scroll && scroll.isConnected) scroll.style.display = prevDisp;
+    unflash();
   }
-  inkWipe(cv, ctx);
-  for (const a of aliveAt(Date.now())) inkDrawStroke(ctx, a);
-  replaying = false;
 }
 function exportInk() {
   const qids = Object.keys(sessionInk);
@@ -688,24 +696,22 @@ function qProcReview(ok) {
   if (!calcB64) { const el = document.getElementById('ai-proc'); if (el) el.innerHTML = ''; return; }
   const imgSrc = 'data:image/png;base64,' + calcB64; // 同一張圖，供畫紅圈
   const correctTxt = q.type === 'fill' ? q.ans[0] : q.ans.map((a) => `(${a + 1})`).join('');
+  // 結果存在 session 上（sess.aiProcHTML），不靠 qsess 物件比對：類題支線把 qsess 換掉後，回原題（sideReturn）能重新貼上，不會卡在「正在看…」
+  const paint = (html) => {
+    sess.aiProcHTML = html;
+    if (qsess === sess) { const el = document.getElementById('ai-proc'); if (el) el.innerHTML = html; }
+  };
   aiProcCall(q, ok, correctTxt, calcB64)
     .then((v) => {
-      if (qsess !== sess) return;
-      const el = document.getElementById('ai-proc');
-      if (!el) return;
       const marked = Array.isArray(v.marks) && v.marks.length ? markedImgHTML(imgSrc, v.marks, v.firstError) : ''; // 有座標框就圈在手寫上
-      el.innerHTML = `<div class="ai-fb"><p><b>🤖 AI 看你的手寫過程：</b></p>
+      paint(`<div class="ai-fb"><p><b>🤖 AI 看你的手寫過程：</b></p>
         ${v.praise ? `<p class="praise">🎉 你做得好：${escH(v.praise)}</p>` : ''}
         ${marked}
         ${!marked && v.firstError ? `<p class="badc"><b>你這裡跑掉了：</b>${escH(v.firstError)}</p>` : ''}
         ${v.nextTime ? `<div class="next-step"><b>🎯 下次這樣做：</b>${escH(v.nextTime)}</div>` : ''}
-        ${!v.praise && !marked && !v.firstError && !v.nextTime ? '<p class="dim">過程乾淨，沒什麼好挑的——這題你穩。</p>' : ''}</div>`;
+        ${!v.praise && !marked && !v.firstError && !v.nextTime ? '<p class="dim">過程乾淨，沒什麼好挑的——這題你穩。</p>' : ''}</div>`);
     })
-    .catch((e) => {
-      if (qsess !== sess) return;
-      const el = document.getElementById('ai-proc');
-      if (el) el.innerHTML = `<p class="dim">（AI 過程分析失敗：${escH((e && e.message) || e)}）</p>`;
-    });
+    .catch((e) => { paint(`<p class="dim">（AI 過程分析失敗：${escH((e && e.message) || e)}）</p>`); });
 }
 /* 兩種憑證都支援：sk-ant-api03（API key → x-api-key）與 sk-ant-oat（OAuth token → Bearer） */
 function aiAuthHeaders() {
@@ -1180,7 +1186,7 @@ function dayAgg() {
   const add = (d, n, ok, ms, pts) => {
     if (!d) return;
     const x = (days[d] = days[d] || { n: 0, ok: 0, ms: 0, pts: 0 });
-    x.n += n; x.ok += ok; x.ms += ms; x.pts += pts;
+    x.n += n; x.ok += ok; x.ms += ms; x.pts += pts || 0; // 防呆：pts 沒傳也不要污染成 NaN
   };
   const W = { 1: 1, 2: 2, 3: 4 }; // 難度加權：sin30 一秒 vs 難題十分鐘，只算題數不合理
   for (const a of S.attempts) {
@@ -1191,7 +1197,7 @@ function dayAgg() {
     for (const h of S.drills[k]) add(h.d, 12, Math.round(12 * (h.acc || 0) / 100), (h.med || 0) * 12, 3); // 速訓一輪=3點
   }
   if (S.phone && S.phone.days) {
-    for (const d of Object.keys(S.phone.days)) { const p = S.phone.days[d]; add(d, p.n, p.ok, p.ms || 0); }
+    for (const d of Object.keys(S.phone.days)) { const p = S.phone.days[d]; add(d, p.n, p.ok, p.ms || 0, p.n || 0); } // 手機專區每題算 1 點
   }
   return days;
 }
@@ -2492,9 +2498,12 @@ function qResolve(ok) {
     qsess.inkSynced = true;
   }
   // 🎯 類題支線：只記到獨立桶（S.sidePractice），絕不進 attempts／錯題本／每日點數／本輪成績
-  if (qsess.cfg.side && !qsess.sideRecorded) {
-    (S.sidePractice = S.sidePractice || []).push({ qid: q.id, origId: qsess.cfg.origId || null, ok, ms, ts: Date.now(), d: today() });
-    qsess.sideRecorded = true; save();
+  if (qsess.cfg.side) {
+    if (!qsess.sideRecord) { // 首次：新增一筆
+      qsess.sideRecord = { qid: q.id, origId: qsess.cfg.origId || null, ok, ms, ts: Date.now(), d: today() };
+      (S.sidePractice = S.sidePractice || []).push(qsess.sideRecord);
+    } else { qsess.sideRecord.ok = ok; qsess.sideRecord.ms = ms; } // 改判：更新同一筆（陣列裡是同一個物件參照），不新增
+    save();
   }
   const fb = $('#qfb');
   const v = qsess.ai; // AI 批改結果（只有手寫填充題有）：{read,correct,firstError,praise,nextTime,marks}
@@ -2594,6 +2603,8 @@ function sideReturn() {
   app().innerHTML = sideState.html; // 還原原題解答畫面（靜態，按鈕 onclick 用回全域 qsess）
   qsess = sideState.sess;
   sideState = null;
+  const el = document.getElementById('ai-proc'); // 支線期間原題的 AI 過程點評若才回來，重新貼上（否則會卡在「正在看…」）
+  if (el && qsess.aiProcHTML) el.innerHTML = qsess.aiProcHTML;
 }
 
 /* ═══════════ 模擬實戰 ═══════════ */
@@ -2809,7 +2820,9 @@ async function mockAIJudge() {
     const q = m.toJudge[i];
     if (msgEl) msgEl.textContent = `🤖 AI 批改中… ${i + 1} / ${m.toJudge.length}`;
     try {
-      const v = await aiGradeCall(q, q.ans.join(' 或 '), inkCaptureFull(q.id));
+      const img = inkCaptureFull(q.id);
+      if (!img) { const box = $('#jai-' + i); if (box) box.innerHTML = '<p class="dim">（這題沒有手寫作答，AI 不亂猜——請你人工判 ✓/✗）</p>'; continue; } // 沒圖不送批改、更不盲判
+      const v = await aiGradeCall(q, q.ans.join(' 或 '), img);
       if (mock !== m || sessionMode !== 'judging') return;
       m.aiv[q.id] = v;
       const box = $('#jai-' + i);
@@ -2865,7 +2878,7 @@ function mockFinal() {
   }).filter(Boolean).join('');
   const aiNotes = mock.aiv ? paper.map((q) => {
     const v = mock.aiv[q.id];
-    return v && v.firstError ? `<li>${TOPICS[q.topic]}：<b>從這裡開始錯</b>——${v.firstError}</li>` : '';
+    return v && v.firstError ? `<li>${TOPICS[q.topic]}：<b>從這裡開始錯</b>——${escH(v.firstError)}</li>` : '';
   }).filter(Boolean).join('') : '';
   const rows = detail.map((x) => `
     <tr><td>${TOPICS[x.q.topic]} ${'★'.repeat(x.q.diff)}</td>
@@ -3276,7 +3289,11 @@ function mergeState(a, b) {
   for (const m of b.extMocks || []) if (!emset.has(JSON.stringify(m))) extMocks.push(m);
   const daily = { ...(b.daily || {}) };
   for (const d of Object.keys(a.daily || {})) daily[d] = { ...(daily[d] || {}), ...a.daily[d] };
-  const merged = { ...b, ...a, attempts, wrong, drills, mocks, extMocks, daily, extbank };
+  // 🎯 類題支線紀錄：兩裝置聯集（以 ts 去重），別讓其中一方蓋掉另一方
+  const spset = new Set((a.sidePractice || []).map((x) => x.ts));
+  const sidePractice = [...(a.sidePractice || [])];
+  for (const x of b.sidePractice || []) if (!spset.has(x.ts)) sidePractice.push(x);
+  const merged = { ...b, ...a, attempts, wrong, drills, mocks, extMocks, daily, extbank, sidePractice };
   // AI key：取「最後修改時間較新」的一方（避免舊裝置的舊 key 蓋掉新換的 key）
   if ((b.aikeyTs || 0) > (a.aikeyTs || 0)) { merged.aikey = b.aikey; merged.aikeyTs = b.aikeyTs; }
   // 手機專區數據：days 逐日取較大者、hist 聯集、卡片記憶取看過較多的一方
