@@ -14,6 +14,7 @@
   --border: #d7dee8;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { overflow-x: hidden; max-width: 100%; } /* 手機版：長 KaTeX / 長內容不得把整頁撐出橫向捲動 */
 body {
   background: var(--bg);
   color: var(--text);
@@ -21,6 +22,9 @@ body {
   line-height: 1.6;
   padding-bottom: 16px;
 }
+/* 長內容自動換行；展示型數學過寬時自己內捲，不外溢 */
+.bk-content, .qtext, .sol, .one-method, .next-step, .teach { overflow-wrap: anywhere; }
+.katex-display { overflow-x: auto; overflow-y: hidden; max-width: 100%; }
 header {
   position: sticky; top: 0; z-index: 10;
   background: rgba(255, 255, 255, 0.96);
