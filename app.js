@@ -1404,7 +1404,7 @@ function renderHome() {
   }
   app().innerHTML = `
   <div class="hero">
-    <h1>數A特訓</h1>
+    <h1>數A特訓 <span class="dim" style="font-size:12px">${APP_VER}</span></h1>
     <p>距離 116 學測還有 <b class="accent">${days} 天</b></p>
   </div>
   ${todayCard()}
