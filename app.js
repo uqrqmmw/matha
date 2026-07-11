@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711t'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711u'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -720,9 +720,10 @@ function qProcReview(ok) {
   aiProcCall(q, ok, correctTxt, calcB64)
     .then((v) => {
       const marked = Array.isArray(v.marks) && v.marks.length ? markedImgHTML(imgSrc, v.marks, v.firstError) : ''; // 有座標框就圈在手寫上
+      const handImg = marked || `<div class="ai-marked"><div class="am-wrap"><img src="${imgSrc}" alt="你的手算"></div></div>`; // 沒框（含答對、座標壞）也要秀手算——書寫層收起後這裡是唯一看得到手算的地方
       paint(`<div class="ai-fb"><p><b>🤖 AI 看你的手寫過程：</b></p>
         ${v.praise ? `<p class="praise">🎉 你做得好：${escH(v.praise)}</p>` : ''}
-        ${marked}
+        ${handImg}
         ${!marked && v.firstError ? `<p class="badc"><b>你這裡跑掉了：</b>${escH(v.firstError)}</p>` : ''}
         ${v.nextTime ? `<div class="next-step"><b>🎯 下次這樣做：</b>${escH(v.nextTime)}</div>` : ''}
         ${!v.praise && !marked && !v.firstError && !v.nextTime ? '<p class="dim">過程乾淨，沒什麼好挑的——這題你穩。</p>' : ''}</div>`);
@@ -1892,7 +1893,7 @@ function phoneTap(idx) {
     fb.innerHTML = `<p class="ok">✔（${(ms / 1000).toFixed(1)}s）</p>`;
     phone.nextTimer = setTimeout(() => { if (phone && sessionMode === 'phone') { phone.i++; phoneQuizNext(); } }, 450);
   } else {
-    fb.innerHTML = `<p class="bad">✘ 正解：<b>${it.opts[it.ans]}</b></p>
+    fb.innerHTML = `<p class="bad">✘ 正解：<b>${mDispOpt(it.opts[it.ans])}</b></p>
       <div class="actr"><button class="btn primary" onclick="phone.i++;phoneQuizNext()">下一題</button></div>`;
   }
 }
@@ -2610,13 +2611,12 @@ function qResolve(ok) {
   // 填充題 qGrade 已存 qsess.calcImg；其他有手寫的補抓一次。選擇題（willProc）改由 #ai-proc 顯示手算，這裡不重複。
   if (!qsess.calcImg && qsess.proc && qsess.proc.n) { const _b = inkCaptureFull(q.id); qsess.calcImg = _b ? 'data:image/png;base64,' + _b : null; }
   const hasMarks = v && Array.isArray(v.marks) && v.marks.length;
-  const handImg = (qsess.calcImg && !willProc)
-    ? (hasMarks ? markedImgHTML(qsess.calcImg, v.marks, v.firstError)
-      : `<div class="ai-marked"><div class="am-wrap"><img src="${qsess.calcImg}" alt="你的手算"></div></div>`)
-    : '';
+  const marked = hasMarks ? markedImgHTML(qsess.calcImg, v.marks, v.firstError) : ''; // 座標全無效時 markedImgHTML 回 ''
+  const plainImg = qsess.calcImg ? `<div class="ai-marked"><div class="am-wrap"><img src="${qsess.calcImg}" alt="你的手算"></div></div>` : '';
+  const handImg = (qsess.calcImg && !willProc) ? (marked || plainImg) : ''; // 圈畫不出來(座標壞)時退回純手算圖，不讓手算消失
   let mid = '';
   if (!ok) {
-    const errLine = !hasMarks && v && v.firstError ? `<p class="badc" style="margin:8px 0 4px"><b>你這裡跑掉了：</b>${escH(v.firstError)}</p>` : ''; // 有紅圈時 firstError 已是圈的說明
+    const errLine = !marked && v && v.firstError ? `<p class="badc" style="margin:8px 0 4px"><b>你這裡跑掉了：</b>${escH(v.firstError)}</p>` : ''; // 有紅圈時 firstError 已是圈的說明；圈畫不出時退回文字錯誤行
     const method = !v ? `<div class="one-method"><b>一種最簡單的算法：</b>${rtTxt(q.sol)}</div>` : ''; // 沒 AI 看手寫時才補完整方法
     mid = `${praiseHTML}${handImg}${errLine}${method}${nextHTML}`;
   } else if (overtime) {
