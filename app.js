@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711r'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711s'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -839,7 +839,9 @@ const FRAC_RE = (function () {
 function fracTxt(s) {
   const parts = String(s).split(/(\\\([\s\S]*?\\\)|√\([^()]*\))/); // 偶數格＝散文可轉；奇數格＝受保護（既有島／√群）
   for (let i = 0; i < parts.length; i += 2) {
-    parts[i] = parts[i].replace(FRAC_RE, (m, pre, num, den) => pre + '\\(\\frac{' + fracInner(num) + '}{' + fracInner(den) + '}\\)');
+    parts[i] = parts[i]
+      .replace(/\blog_([A-Za-z0-9]+)/g, '\\(\\log_{$1}\\)') // 純文字下標 log_a → \(\log_{a}\)（只動島外，不碰既有 \log_a 島）
+      .replace(FRAC_RE, (m, pre, num, den) => pre + '\\(\\frac{' + fracInner(num) + '}{' + fracInner(den) + '}\\)');
   }
   return parts.join('');
 }
@@ -1810,7 +1812,7 @@ function optionize(it) {
   if (three.length < 3) return null;
   const opts = shuffle([s, ...three]);
   const ai = opts.indexOf(s);
-  return { q: it.q, opts: opts.map(mDispOpt), ans: ai, fk: it.fk };
+  return { q: it.q, opts, ans: ai, fk: it.fk }; // 回傳原始字串；phoneQuizNext 會 mDispOpt 一次（別在這裡先包，否則雙重島 \(\(56\)\) KaTeX 排不出）
 }
 function phoneLog(ok, ms) {
   S.phone = S.phone || { days: {}, hist: [], cards: {} };
