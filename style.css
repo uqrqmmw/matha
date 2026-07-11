@@ -146,11 +146,11 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 .qcard.booklet.sheet .sheet-tools { padding: 8px 16px 0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; color: #6b6b6b; }
 .qcard.booklet.sheet .ansarea { padding: 10px 16px 14px; }
 .qcard.booklet.sheet #qfb:not(:empty), .qcard.booklet.sheet #dfb:not(:empty) { padding: 8px 16px; background: var(--panel); }
-/* 批改後（#qfb 有內容）：收起整個書寫層＋作答鈕，只留題目＋結果（速訓用 #dfb、故意不收——自評要看得到自己寫的字） */
-.qcard.booklet.sheet:has(#qfb:not(:empty)) .sheet-tools,
-.qcard.booklet.sheet:has(#qfb:not(:empty)) .write-pad,
-.qcard.booklet.sheet:has(#qfb:not(:empty)) .ansarea,
-.qcard.booklet.sheet:has(#qfb:not(:empty)) #ink-cv { display: none; }
+/* 批改「完成」（#qfb 出現 .graded 最終結果）才收起書寫層＋作答鈕；「批改中…」和自評（正解對照）時手算照樣看得到，不會消失 */
+.qcard.booklet.sheet:has(#qfb .graded) .sheet-tools,
+.qcard.booklet.sheet:has(#qfb .graded) .write-pad,
+.qcard.booklet.sheet:has(#qfb .graded) .ansarea,
+.qcard.booklet.sheet:has(#qfb .graded) #ink-cv { display: none; }
 /* 回放解題過程時掀開書寫層（覆蓋上面的收起） */
 .qcard.booklet.sheet.replaying .write-pad, .qcard.booklet.sheet.replaying #ink-cv { display: block !important; }
 /* 書寫層畫布：絕對定位蓋滿整卡 */

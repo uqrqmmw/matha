@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711p'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711q'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -2598,16 +2598,23 @@ function qResolve(ok) {
   const praiseHTML = v && v.praise ? `<p class="praise">🎉 你做得好：${escH(v.praise)}</p>` : (willProc ? '' : praiseFor(q, ok, ms, target));
   const nextTxt = v && v.nextTime ? escH(v.nextTime) : (!willProc && q.tip ? rtTxt(q.tip) : '');
   const nextHTML = nextTxt ? `<div class="next-step"><b>🎯 下次這樣做：</b>${nextTxt}</div>` : '';
+  // 你的手算圖：批改後書寫層會收起（畫布藏起來），所以把手算放進批改結果裡讓你還看得到——答錯有紅圈、答對就純手算。
+  // 填充題 qGrade 已存 qsess.calcImg；其他有手寫的補抓一次。選擇題（willProc）改由 #ai-proc 顯示手算，這裡不重複。
+  if (!qsess.calcImg && qsess.proc && qsess.proc.n) { const _b = inkCaptureFull(q.id); qsess.calcImg = _b ? 'data:image/png;base64,' + _b : null; }
+  const hasMarks = v && Array.isArray(v.marks) && v.marks.length;
+  const handImg = (qsess.calcImg && !willProc)
+    ? (hasMarks ? markedImgHTML(qsess.calcImg, v.marks, v.firstError)
+      : `<div class="ai-marked"><div class="am-wrap"><img src="${qsess.calcImg}" alt="你的手算"></div></div>`)
+    : '';
   let mid = '';
   if (!ok) {
-    const marked = v && Array.isArray(v.marks) && v.marks.length && qsess.calcImg ? markedImgHTML(qsess.calcImg, v.marks, v.firstError) : '';
-    const errLine = !marked && v && v.firstError ? `<p class="badc" style="margin:8px 0 4px"><b>你這裡跑掉了：</b>${escH(v.firstError)}</p>` : '';
+    const errLine = !hasMarks && v && v.firstError ? `<p class="badc" style="margin:8px 0 4px"><b>你這裡跑掉了：</b>${escH(v.firstError)}</p>` : ''; // 有紅圈時 firstError 已是圈的說明
     const method = !v ? `<div class="one-method"><b>一種最簡單的算法：</b>${rtTxt(q.sol)}</div>` : ''; // 沒 AI 看手寫時才補完整方法
-    mid = `${praiseHTML}${marked}${errLine}${method}${nextHTML}`;
+    mid = `${praiseHTML}${handImg}${errLine}${method}${nextHTML}`;
   } else if (overtime) {
-    mid = `${praiseHTML}${nextHTML || (willProc ? '' : '<p class="dim">多做幾次讓步驟變反射就會更快。</p>')}`;
+    mid = `${praiseHTML}${handImg}${nextHTML || (willProc ? '' : '<p class="dim">多做幾次讓步驟變反射就會更快。</p>')}`;
   } else {
-    mid = `${praiseHTML}${nextHTML}`;
+    mid = `${praiseHTML}${handImg}${nextHTML}`;
   }
   // ⑤ 完整解說——永遠收起（答對又準時完全不擋路）；只放上面沒秀的部分，避免重複
   const solInFull = ok ? `<p><b>詳解：</b>${rtTxt(q.sol)}</p>` : ''; // 答錯已在上面用人話講過
@@ -2619,7 +2626,7 @@ function qResolve(ok) {
       ${inkSummary(qsess.proc)}
       ${qsess.proc && qsess.proc.n ? `<div class="actr"><button class="btn sm" onclick="inkReplay('${jsA(q.id)}', ${qsess.t0})">▶ 回放解題過程</button></div>` : ''}
     </details>`;
-  fb.innerHTML = `<div class="sol">${verdict}${reJudge}${action}${mid}<div id="ai-proc"></div>${full}${qsess.exclude ? '<p class="warnc">（依你的選擇，這筆不列入紀錄）</p>' : ''}</div>`;
+  fb.innerHTML = `<div class="sol graded">${verdict}${reJudge}${action}${mid}<div id="ai-proc"></div>${full}${qsess.exclude ? '<p class="warnc">（依你的選擇，這筆不列入紀錄）</p>' : ''}</div>`;
   fbInView();
   // 選擇/打字題：答案已判定，但只要有寫手寫過程就讓 AI 看並點評（答對也看——飼主要的就是這個）
   if (aiKey() && !qsess.ai && qsess.proc && qsess.proc.n) {
