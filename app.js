@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0711q'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0711r'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -826,10 +826,27 @@ function mlibCard() {
 }
 /* 根號 → KaTeX 正式根式（√ 上有橫線蓋住被開方數）。殘留的 √ 原字轉成 \(\sqrt{}\) 島。
    已是 \sqrt 的（工作流轉好的內容）不含 √ 字元，不會被重複處理。 */
+// 裸分數 → \(\frac{}{}\) 島（保守版；在 rtTxt 的 √ 解析「之前」跑，所以 √2/2 會整包成 \frac{\sqrt{2}}{2}）。
+// 分子/分母各為：〔可選 +/-/−〕＋〔一串數字 | 單一拉丁字母 | √數字 | 簡單括號群〕。用島切割保護既有 \(...\) 島與 √(...) 群，不碰既有 \frac、比例 2:3、日期、URL、多斜線、小數、上標/希臘字母運算元。
+function fracInner(t) {
+  return t.replace(/−/g, '-').replace(/√(\d+)/g, '\\sqrt{$1}').replace(/^\(([A-Za-z0-9+\-]+)\)$/, '$1');
+}
+const FRAC_RE = (function () {
+  const SIGN = '[+\\-−]?';
+  const OPD = '(?:\\([A-Za-z0-9]+(?:[+\\-−][A-Za-z0-9]+)*\\)|√\\d+|\\d+|[A-Za-z])';
+  return new RegExp('(^|[^A-Za-z0-9√\\\\/.])(' + SIGN + OPD + ')/(' + SIGN + OPD + ')(?![A-Za-z0-9√/]|\\.\\d)', 'g');
+})();
+function fracTxt(s) {
+  const parts = String(s).split(/(\\\([\s\S]*?\\\)|√\([^()]*\))/); // 偶數格＝散文可轉；奇數格＝受保護（既有島／√群）
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(FRAC_RE, (m, pre, num, den) => pre + '\\(\\frac{' + fracInner(num) + '}{' + fracInner(den) + '}\\)');
+  }
+  return parts.join('');
+}
 // 把純文字根號（√數字、係數√數字、√(算式)）轉成 KaTeX \(\sqrt{...}\)。用小 parser 取代舊 regex：
 // 舊版遇到「巢狀根號」√(a+√b) 會拆成島中島＋\sqrt 裡塞 \( 而爆掉；parser 版遞迴處理內層、只包一層島。
 function rtTxt(s) {
-  s = String(s);
+  s = fracTxt(String(s)); // 先把裸分數轉成 \frac 島（必須在下面 √ 逐字解析之前）
   let out = '';
   for (let i = 0; i < s.length;) {
     const c = s[i];
@@ -1943,10 +1960,10 @@ function flashShow() {
       <span class="shr"><button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
     <div class="card flashcard" onclick="flashFlip()">
       <p class="dim">${TOPICS[c.unit] || ''}</p>
-      <div class="flash-front">${escH(c.front)}</div>
+      <div class="flash-front">${rtTxt(escH(c.front))}</div>
       <div id="flash-back" style="display:none">
-        <div class="flash-backtxt">${escH(c.back)}</div>
-        ${c.extra ? `<p class="dim flash-extra">${escH(c.extra)}</p>` : ''}
+        <div class="flash-backtxt">${rtTxt(escH(c.back))}</div>
+        ${c.extra ? `<p class="dim flash-extra">${rtTxt(escH(c.extra))}</p>` : ''}
       </div>
     </div>
     <div class="flash-btns" id="flash-btns"><button class="btn primary big" onclick="flashFlip()">翻面看答案</button></div>
