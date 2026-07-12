@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0712g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0712h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -127,8 +127,12 @@ async function idbWriteAll(packs) {
 }
 async function contentInit() {
   if (!splitOn()) return;
-  try { CONTENT.packs = await idbReadAll(); return; } catch (e) {}
-  try { CONTENT.packs = JSON.parse(localStorage.getItem(CONTENT_LS) || '{}'); } catch (e) { CONTENT.packs = {}; }
+  // 取「較新」的來源，別因 IDB 讀成功就短路——IDB 可讀但寫失敗時，剛匯入的內容只在 localStorage 後備裡
+  let idb = null, ls = null;
+  try { idb = await idbReadAll(); } catch (e) {}
+  try { const raw = localStorage.getItem(CONTENT_LS); if (raw) ls = JSON.parse(raw); } catch (e) {}
+  const packRev = (p) => Math.max(0, ...Object.values(p || {}).map((x) => x.rev || 0));
+  CONTENT.packs = (ls && packRev(ls) > packRev(idb)) ? ls : (idb || ls || {});
 }
 function persistContent() {
   // 回傳 promise：匯入/停用後要「等寫完再 reload」，否則 IDB 交易還沒 commit 就重載＝內容遺失
@@ -153,26 +157,31 @@ async function reloadAfterContent() {
   location.reload();
 }
 /* 匯入/遷移共用：把 items 併進（或建立）一個 pack；unionById.last 供回報 */
+/* 併入（或建立）一個 pack。只有 items 真的增/改時才 bump rev＋回傳 true，
+   否則保留舊 rev——避免過渡期反覆遷移同一份 extbank 時每次都製造新 rev、觸發整包重傳。 */
 function upsertPack(pid, kind, name, items) {
   const old = CONTENT.packs[pid];
-  CONTENT.packs[pid] = { kind, name: name || (old && old.name) || pid, rev: Date.now(), items: unionById(items, old ? old.items : []) };
+  const merged = unionById(items, old ? old.items : []);
+  const st = unionById.last || {};
+  const changed = !old || (st.added || 0) > 0 || (st.updated || 0) > 0;
+  CONTENT.packs[pid] = { kind, name: name || (old && old.name) || pid, rev: changed ? Date.now() : old.rev, items: merged };
+  return changed;
 }
 /* 舊資料遷移：S 裡的 extbank/extflash/extnotes 搬進內容層（跨裝置 merge 進來的舊包也走這裡） */
 function migrateContentFromS() {
-  let moved = false;
+  let moved = false; const changedPids = [];
+  const doPack = (pid, kind, nm, items) => { if (upsertPack(pid, kind, nm, items)) changedPids.push(pid); moved = true; };
   if (Array.isArray(S.extbank) && S.extbank.length) {
     const bySrc = {};
     for (const q of S.extbank) (bySrc[q.src || '未標來源'] = bySrc[q.src || '未標來源'] || []).push(q);
-    for (const src of Object.keys(bySrc)) upsertPack('legacy-' + strHash(src), 'qpack', src, bySrc[src]);
-    moved = true;
+    for (const src of Object.keys(bySrc)) doPack('legacy-' + strHash(src), 'qpack', src, bySrc[src]);
   }
-  if (Array.isArray(S.extflash) && S.extflash.length) { upsertPack('legacy-flash', 'flash', '匯入公式卡', S.extflash); moved = true; }
-  if (Array.isArray(S.extnotes) && S.extnotes.length) { upsertPack('legacy-notes', 'notes', '匯入重點', S.extnotes); moved = true; }
+  if (Array.isArray(S.extflash) && S.extflash.length) doPack('legacy-flash', 'flash', '匯入公式卡', S.extflash);
+  if (Array.isArray(S.extnotes) && S.extnotes.length) doPack('legacy-notes', 'notes', '匯入重點', S.extnotes);
   if (moved) {
     delete S.extbank; delete S.extflash; delete S.extnotes;
     save(); // S 瘦身上雲
-    persistContent();
-    for (const pid of Object.keys(CONTENT.packs)) pushPack(pid);
+    if (changedPids.length) { persistContent(); for (const pid of changedPids) pushPack(pid); } // 只在內容真的變了才重傳
   }
   return moved;
 }
@@ -206,7 +215,12 @@ async function pullContent() {
       const local = CONTENT.packs[r.pack_id];
       if (local && (local.rev || 0) >= (r.rev || 0)) continue;
       const { data: row } = await supa.from('content_packs').select('*').eq('pack_id', r.pack_id).maybeSingle();
-      if (row && Array.isArray(row.items)) { CONTENT.packs[r.pack_id] = { kind: row.kind, name: row.name, rev: row.rev, items: row.items }; changed = true; }
+      if (row && Array.isArray(row.items)) {
+        // 聯集而非整包覆蓋：兩台各自離線塞進同名 pack 時，本地獨有題不被雲端版丟掉（跟 app 其他合併路徑一致）
+        const merged = local ? unionById(row.items, local.items) : row.items;
+        CONTENT.packs[r.pack_id] = { kind: row.kind, name: row.name, rev: Math.max(row.rev || 0, (local && local.rev) || 0), items: merged };
+        changed = true;
+      }
     }
     for (const pid of Object.keys(CONTENT.packs)) { // 本地較新（離線匯入過）→ 補推
       const remote = data.find((r) => r.pack_id === pid);
@@ -294,9 +308,24 @@ function importData(input) {
       if (!d || !Array.isArray(d.attempts)) { alert('這不是本系統的備份檔（缺 attempts 欄位）。'); return; }
       const cur = S.attempts.length;
       if (!confirm(`備份檔含 ${d.attempts.length} 筆作答紀錄、${Object.keys(d.wrong || {}).length} 題錯題。\n匯入會覆蓋目前這個瀏覽器裡的 ${cur} 筆紀錄，確定？`)) return;
-      if (d.__content) { // 分家版備份：內容層還原到 IndexedDB，不留在 S
-        if (splitOn()) { CONTENT.packs = d.__content; persistContent(); }
-        delete d.__content;
+      const content = d.__content; // 分家版備份的內容層（qpack/notes/flash 包）
+      delete d.__content;
+      if (splitOn()) {
+        // 分家裝置：內容進 IDB。備份自帶內容層就用它；否則把備份 S 裡的 legacy ext* 搬進內容層（不然分家模式讀不到）
+        CONTENT.packs = content || {};
+        S = d;
+        if (!content) migrateContentFromS(); // 會用 S.ext* 建 pack、清掉 S.ext*、save
+        else { save(); }
+        reloadAfterContent(); // 等 IDB 寫完＋讀回驗證再 reload
+        return;
+      }
+      // 非分家裝置：若備份帶內容層，把它攤回 S 的 legacy 欄位，別丟失
+      if (content) {
+        for (const pid of Object.keys(content)) {
+          const p = content[pid]; if (!p || !Array.isArray(p.items)) continue;
+          const f = p.kind === 'flash' ? 'extflash' : p.kind === 'notes' ? 'extnotes' : 'extbank';
+          d[f] = unionById(p.items, d[f]);
+        }
       }
       S = d; save(); location.reload();
     } catch (e) { alert('讀取失敗：' + e.message); }
@@ -439,12 +468,13 @@ function inkDown(e, sur) {
         return;
       }
       if (sur.cur && sur.cur.tid != null) { sur.cur = null; inkRedraw(sur); } // 第二指加入＝改捲動，作廢進行中的指畫
-      sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
+      sur.scroll = true; // 進入捲動手勢：一路捲到所有指離開（放開第二指剩一指仍能捲，不會變死指）
+      sur.touches.set(e.pointerId, { t: Date.now() });
       return;
     }
     // 手指/手掌：永不畫線。筆活躍（正在寫、或 0.8 秒內寫過）時手掌觸點完全忽略——不殺筆、不捲動。
     if (sur.cur || Date.now() - ink.penAt < 800) return;
-    sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
+    sur.touches.set(e.pointerId, { t: Date.now() });
     return;
   }
   ink.penAt = Date.now();
@@ -470,10 +500,11 @@ function inkMove(e, sur) {
     e.preventDefault();
     if (Date.now() - ink.penAt < 800) return; // 筆剛寫過：手掌移動不捲動
     const tp = sur.touches.get(e.pointerId);
-    const prev = tp.y;
-    tp.y = e.clientY;
-    if (sur.touches.size >= 2) {
-      const dy = (e.clientY - prev) / sur.touches.size; // 每指各觸發一次，除以指數避免加倍
+    if (sur.scroll || sur.touches.size >= 2) { // 捲動手勢（含放開一指剩一指的續捲）
+      sur.scroll = true;
+      if (tp.sy == null) { tp.sy = e.clientY; return; } // 每指首幀只建基準、不捲——消除第二指加入時的暴衝
+      const dy = (e.clientY - tp.sy) / Math.max(1, sur.touches.size); // 多指同時 move 會各觸發一次，除以指數避免加倍
+      tp.sy = e.clientY;
       const box = sur.key === 'calc' ? sur.cv.closest('.ink-scroll') : null;
       if (box) {
         const before = box.scrollTop;
@@ -506,6 +537,7 @@ function inkUp(e, sur) {
       return;
     }
     sur.touches.delete(e.pointerId);
+    if (sur.touches.size === 0) sur.scroll = false; // 所有指離開才結束捲動手勢
     return; // 按鈕/選項都以 z-index 浮在畫布上層，觸點會直接落在它們身上，不需要穿透
   }
   if (!sur.cur) return;
@@ -1915,6 +1947,7 @@ function exitFlow(view) {
     if (sessionMode === 'mock' && mock) { mock.t0 += d; mock.tEnd += d; }
     else if (sessionMode === 'drill' && drill) drill.t0 += d;
     else if (sessionMode === 'phone' && phone) phone.t0 += d;
+    else if (mnq) mnq.t0 += d; // 口訣快答暫停時間不算進本題耗時
     else if (qsess) qsess.t0 += d;
     if (ink) ink.t0 += d; // 書寫時間軸一起平移：否則暫停後 fi/停頓/卡點秒數會跟耗時對不上
     if (lastTickerFn) startTicker(lastTickerFn); // 恢復碼錶顯示
@@ -2480,8 +2513,10 @@ function startPhoneFlash(kind) {
 let mnq = null;
 async function startMnQuiz() {
   if (!syncGate()) return;
+  if (sessionActive) return; // 已有活動在跑，別重入
   const lib = await loadMethodLib();
   if (!lib) { alert(mlibEmptyMsg()); return; }
+  if (sessionActive) return; // 讀方法庫這段期間若使用者已開別的活動（心算/公式卡），別蓋掉它
   const pool = [];
   for (const u of Object.keys(lib)) for (const m of lib[u]) {
     if (m.mnemonic && m.mnemonic.length <= 40 && m.concept) pool.push({ u, mn: m.mnemonic, concept: m.concept, method: m.method });
@@ -3489,21 +3524,32 @@ function buildPaper() {
   // 學測數A結構＝單選＋多選＋選填三段。講義 8 成是填充，純難度抽會抽出一整卷填充——
   // 這裡先按「題型配額」抽（盡量 3 單選＋2 多選＋7 選填），配額不足才用別型補滿 12 題，
   // 每型內部仍求難度分散、不同單元、題組不拆。
-  const usedGrp = new Set(), used = new Set(), picked = [];
-  const take = (q) => { if (picked.includes(q)) return false; picked.push(q); used.add(q.topic); if (q.grp) usedGrp.add(q.grp); return true; };
-  const avail = (q) => !picked.includes(q) && !(q.grp && usedGrp.has(q.grp));
-  // 難度排序器：同型內盡量涵蓋易中難、不同單元
-  const pickN = (pool, n) => {
-    pool = shuffle(pool).sort((a, b) => a.diff - b.diff);
+  const usedGrp = new Set(), used = new Set(), picked = new Set();
+  const take = (q) => { picked.add(q); used.add(q.topic); if (q.grp) usedGrp.add(q.grp); };
+  const avail = (q) => !picked.has(q) && !(q.grp && usedGrp.has(q.grp));
+  // 從 pool 依「難度配額」挑 n 題：同單元後挑、難度分散（近似整卷 易5中5難2）。
+  const pickN = (pool, n, diffQuota) => {
+    const buckets = { 1: [], 2: [], 3: [] };
+    for (const q of shuffle(pool)) if (avail(q)) buckets[q.diff].push(q);
+    const grab = (d) => {
+      const b = buckets[d]; if (!b || !b.length) return false;
+      let i = b.findIndex((q) => avail(q) && !used.has(q.topic)); // 先挑沒出現過的單元
+      if (i < 0) i = b.findIndex((q) => avail(q));
+      if (i < 0) return false;
+      take(b[i]); return true;
+    };
     let got = 0;
-    for (const q of pool) { if (got >= n) break; if (avail(q) && !used.has(q.topic)) { take(q); got++; } }
-    for (const q of pool) { if (got >= n) break; if (avail(q)) { take(q); got++; } }
+    for (const d of [1, 2, 3]) { let q = diffQuota[d] || 0; while (q-- > 0 && got < n && grab(d)) got++; }
+    // 難度配額湊不滿（某難度題不夠）→ 任何難度補滿本型
+    for (const d of [2, 1, 3]) while (got < n && grab(d)) got++;
     return got;
   };
-  const quota = [['single', 3], ['multi', 2], ['fill', 7]];
-  for (const [type, n] of quota) pickN(BANK.filter((q) => q.type === type), n);
-  if (picked.length < 12) pickN(BANK.slice(), 12 - picked.length); // 某型不夠就用任何型補滿
-  return shuffle(picked.slice(0, 12));
+  // 每型分配難度：single3=易1中1難1、multi2=易1中1、fill7=易3中3難1 → 合計 易5中5難2
+  pickN(BANK.filter((q) => q.type === 'single'), 3, { 1: 1, 2: 1, 3: 1 });
+  pickN(BANK.filter((q) => q.type === 'multi'), 2, { 1: 1, 2: 1, 3: 0 });
+  pickN(BANK.filter((q) => q.type === 'fill'), 7, { 1: 3, 2: 3, 3: 1 });
+  if (picked.size < 12) pickN(BANK.slice(), 12 - picked.size, { 1: 4, 2: 4, 3: 4 }); // 某型不夠就用任何型補滿
+  return shuffle([...picked].slice(0, 12));
 }
 function startMock() {
   if (!syncGate()) return;
