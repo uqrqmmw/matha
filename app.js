@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0712d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0712e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -331,14 +331,15 @@ function inkHTML(opts) {
   return `<div class="card ink-card">
     <div class="ink-bar"><b>${phone ? '✍️ 筆記區' : '✍️ 計算區'}</b>${inkToolsHTML()}</div>
     <div id="ink-flash" class="ink-flash" style="display:none"></div>
-    <div class="ink-scroll"><canvas id="ink-cv" data-h="${phone ? 170 : small ? 240 : 0}"></canvas></div>
+    <div class="ink-scroll"><canvas id="ink-cv" data-h="${phone ? 170 : small ? 240 : 0}"${phone ? ' data-touch="1"' : ''}></canvas></div>
     <p class="dim ink-hint">${phone
-      ? '隨手算用，不批改。'
+      ? '手指直接畫；隨手算用，不批改。'
       : '兩指捲動；<b>答案寫在最後、圈起來</b>。'}</p>
   </div>`;
 }
 function inkSurface(key, cv, h) {
-  const sur = { key, cv, ctx: cv.getContext('2d'), h, cur: null, touches: new Map() };
+  // allowTouch＝手機筆記卡：手指就是筆（單指畫、第二指加入改捲動）；平板題卡維持只認筆、手掌免疫
+  const sur = { key, cv, ctx: cv.getContext('2d'), h, cur: null, touches: new Map(), allowTouch: cv.dataset.touch === '1' };
   cv.style.pointerEvents = '';
   cv.onpointerdown = (e) => inkDown(e, sur);
   cv.onpointermove = (e) => inkMove(e, sur);
@@ -415,6 +416,17 @@ function inkDown(e, sur) {
   e.preventDefault();
   try { sur.cv.setPointerCapture(e.pointerId); } catch (_) {}
   if (e.pointerType === 'touch') {
+    if (sur.allowTouch) { // 手機筆記卡：第一指＝畫線
+      if (sur.touches.size === 0 && !sur.cur) {
+        sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
+        const [x, y] = inkPos(e, sur);
+        sur.cur = { t0: Date.now(), c: inkColor, pts: [[x, y]], tid: e.pointerId };
+        return;
+      }
+      if (sur.cur && sur.cur.tid != null) { sur.cur = null; inkRedraw(sur); } // 第二指加入＝改捲動，作廢進行中的指畫
+      sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
+      return;
+    }
     // 手指/手掌：永不畫線。筆活躍（正在寫、或 0.8 秒內寫過）時手掌觸點完全忽略——不殺筆、不捲動。
     if (sur.cur || Date.now() - ink.penAt < 800) return;
     sur.touches.set(e.pointerId, { y: e.clientY, x0: e.clientX, y0: e.clientY, t: Date.now() });
@@ -428,6 +440,17 @@ function inkDown(e, sur) {
 function inkMove(e, sur) {
   if (!ink) return;
   if (e.pointerType === 'touch') {
+    if (sur.allowTouch && sur.cur && sur.cur.tid === e.pointerId) { // 指畫進行中：照筆的畫法走
+      e.preventDefault();
+      const [x, y] = inkPos(e, sur);
+      const pts = sur.cur.pts; const p = pts[pts.length - 1];
+      if (Math.abs(x - p[0]) + Math.abs(y - p[1]) < 2) return;
+      pts.push([x, y]);
+      const c = sur.ctx;
+      c.strokeStyle = INK_COLORS[sur.cur.c] || INK_COLORS.k; c.lineWidth = INK_W;
+      c.beginPath(); c.moveTo(p[0], p[1]); c.lineTo(x, y); c.stroke();
+      return;
+    }
     if (!sur.touches.has(e.pointerId)) return;
     e.preventDefault();
     if (Date.now() - ink.penAt < 800) return; // 筆剛寫過：手掌移動不捲動
@@ -461,6 +484,12 @@ function inkMove(e, sur) {
 function inkUp(e, sur) {
   if (!ink) return;
   if (e.pointerType === 'touch') {
+    if (sur.allowTouch && sur.cur && sur.cur.tid === e.pointerId) { // 指畫收筆
+      const cur = sur.cur; sur.cur = null;
+      sur.touches.delete(e.pointerId);
+      if (cur.pts.length > 1) { cur.t1 = Date.now(); delete cur.tid; inkArr(sur).push(cur); }
+      return;
+    }
     sur.touches.delete(e.pointerId);
     return; // 按鈕/選項都以 z-index 浮在畫布上層，觸點會直接落在它們身上，不需要穿透
   }
@@ -1842,6 +1871,7 @@ function endSession() {
   if (drill && drill.nextTimer) { clearTimeout(drill.nextTimer); drill.nextTimer = null; }
   if (phone && phone.nextTimer) clearTimeout(phone.nextTimer);
   phone = null; // 手機專區進行中的輪次作廢
+  mnq = null; // 口訣快答同理
   wflash = null; // 衝刺複習中途離開即作廢（無紀錄可丟）
   qsess = null; // 讓遲到的 AI 批改回呼認得出「這一題已經結束了」
   sessionChrome(false);
@@ -2303,13 +2333,13 @@ function renderPhone() {
       <div class="card drill-card"><b>🧠 公式必背卡</b>
         <p class="dim">${FLASH.length + extFlashArr().length} 張，忘過的更常出現。</p>
         <button class="btn primary" onclick="startPhoneFlash('formula')">抽 10 張</button></div>
-      <div class="card drill-card"><b>🧑‍🏫 老師口訣卡</b>
-        <p class="dim">1500+ 條老師口訣。${supa && !syncState.user ? '<b class="warnc">需登入才能載入</b>' : ''}</p>
-        <button class="btn primary" onclick="startPhoneFlash('mn')">抽 10 張</button></div>
+      <div class="card drill-card"><b>🧑‍🏫 口訣快答</b>
+        <p class="dim">看口訣選「它在解什麼」，答完看老師怎麼用。${supa && !syncState.user ? '<b class="warnc">需登入才能載入</b>' : ''}</p>
+        <button class="btn primary" onclick="startMnQuiz()">來 10 題</button></div>
     </div>
     ${p ? `<div class="card"><p>📅 今日手機練：<b>${p.n}</b> 題/卡｜答對/記得 <b>${p.ok}</b>（${p.n ? Math.round(100 * p.ok / p.n) : 0}%）</p></div>` : ''}
     ${hist.length ? `<div class="card"><h2>近幾輪</h2><table class="tbl"><tr><th>日期</th><th>模式</th><th>成績</th></tr>
-      ${hist.map((h) => `<tr><td>${h.d}</td><td>${h.mode === 'quiz' ? '⚡ 心算' : h.mode === 'mn' ? '🧑‍🏫 口訣' : '🧠 公式'}</td><td>${h.ok}/${h.n}</td></tr>`).reverse().join('')}</table></div>` : ''}`;
+      ${hist.map((h) => `<tr><td>${h.d}</td><td>${h.mode === 'quiz' ? '⚡ 心算' : (h.mode === 'mn' || h.mode === 'mnq') ? '🧑‍🏫 口訣' : '🧠 公式'}</td><td>${h.ok}/${h.n}</td></tr>`).reverse().join('')}</table></div>` : ''}`;
 }
 let phone = null;
 function startPhoneQuiz() {
@@ -2420,16 +2450,84 @@ function startPhoneFlash(kind) {
     flashShow();
   };
   if (kind === 'formula') { go(FLASH.concat(extFlashArr())); return; } // 匯入的公式卡包一起進 deck（承諾過的）
-  loadMethodLib().then((lib) => {
-    if (!lib) { alert(mlibEmptyMsg()); return; }
-    const deck = [];
-    for (const u of Object.keys(lib)) lib[u].forEach((m, i) => {
-      // 只收「真的背得起來」的短口訣（長段落是方法說明，不是口訣，放進卡片不合理）
-      // id 用內容 hash（不用陣列索引 i）：方法庫重灌/增補後，同一張卡的間隔複習記憶不會錯位
-      if (m.mnemonic && m.mnemonic.length <= 24) deck.push({ id: `mn:${strHash(u + '|' + (m.lec || '') + '|' + m.concept)}`, unit: u, front: m.concept, back: `🔑 ${m.mnemonic}`, extra: m.method });
-    });
-    go(deck);
+}
+/* ═══ 🧑‍🏫 口訣快答：看口訣選「它在解什麼」——舊版「看概念回想口訣」召回難度太高，反轉成辨識方向才答得出來，
+   答完立刻看老師方法全文，把 1662 條資料變成可用的零碎複習 ═══ */
+let mnq = null;
+async function startMnQuiz() {
+  if (!syncGate()) return;
+  const lib = await loadMethodLib();
+  if (!lib) { alert(mlibEmptyMsg()); return; }
+  const pool = [];
+  for (const u of Object.keys(lib)) for (const m of lib[u]) {
+    if (m.mnemonic && m.mnemonic.length <= 40 && m.concept) pool.push({ u, mn: m.mnemonic, concept: m.concept, method: m.method });
+  }
+  if (pool.length < 8) { alert('口訣資料不足。'); return; }
+  S.phone = S.phone || { days: {}, hist: [], cards: {} };
+  const st = (S.phone.cards = S.phone.cards || {});
+  const scored = pool.map((c) => { // 答錯過的優先回鍋（沿用卡片記憶桶）
+    const key = 'mnq:' + strHash(c.u + '|' + c.mn);
+    const r = st[key];
+    return { c, key, w: (r ? r.m * 5 - r.s * 0.5 : 2) + Math.random() * 3 };
   });
+  scored.sort((a, b) => b.w - a.w);
+  const items = shuffle(scored.slice(0, 10)).map(({ c, key }) => {
+    let others = [...new Set(pool.filter((x) => x.u === c.u && x.concept !== c.concept).map((x) => x.concept))];
+    if (others.length < 3) others = others.concat([...new Set(pool.filter((x) => x.u !== c.u && x.concept !== c.concept).map((x) => x.concept))]);
+    const opts = shuffle([c.concept, ...shuffle(others).slice(0, 3)]);
+    return { key, u: c.u, mn: c.mn, method: c.method, opts, ans: opts.indexOf(c.concept) };
+  });
+  mnq = { items, i: 0, ok: 0, t0: 0, tapped: false };
+  sessionActive = true;
+  sessionMode = 'phone';
+  mnqShow();
+}
+function mnqShow() {
+  if (!mnq) return;
+  if (mnq.i >= mnq.items.length) return mnqDone();
+  const it = mnq.items[mnq.i];
+  mnq.t0 = Date.now(); mnq.tapped = false;
+  app().innerHTML = `
+    <div class="session-head"><span>🧑‍🏫 口訣快答｜第 ${mnq.i + 1} / ${mnq.items.length} 題</span>
+      <span class="shr"><button class="btn sm xbtn" onclick="exitFlow()">✕</button></span></div>
+    <div class="card qcard"><p class="dim">${TOPICS[it.u] || ''}｜老師的這句口訣，是在解哪種問題？</p>
+      <div class="qtext big">🔑 ${mathTxt(it.mn)}</div>
+      <div class="ansrow">${it.opts.map((o, i) => `<button class="btn opt block" onclick="mnqTap(${i})">${mathTxt(o)}</button>`).join('')}</div>
+      <div id="pfb"></div></div>`;
+  sessionChrome(true);
+}
+function mnqTap(idx) {
+  if (!mnq || mnq.tapped) return;
+  mnq.tapped = true;
+  const it = mnq.items[mnq.i];
+  const ok = idx === it.ans;
+  const ms = Date.now() - mnq.t0;
+  if (ok) mnq.ok++;
+  const st = (S.phone.cards[it.key] = S.phone.cards[it.key] || { s: 0, m: 0 });
+  st.s++; if (!ok) st.m++;
+  phoneLog(ok, ms);
+  document.querySelectorAll('.ansrow .btn').forEach((b, i) => {
+    b.disabled = true;
+    if (i === it.ans) b.classList.add('good');
+    else if (i === idx) b.classList.add('badpick');
+  });
+  $('#pfb').innerHTML = `${ok ? '<p class="ok">✔ 對！</p>' : '<p class="bad">✘ 不是這個。</p>'}
+    <div class="teach"><p><b>🧑‍🏫 老師怎麼用：</b>${mathTxt(it.method || '')}</p></div>
+    <div class="actr"><button class="btn primary" onclick="mnq.i++;mnqShow()">下一題 →</button></div>`;
+}
+function mnqDone() {
+  sessionActive = false; sessionMode = null; sessionChrome(false);
+  const n = mnq.items.length;
+  S.phone.hist.push({ d: today(), mode: 'mnq', n, ok: mnq.ok });
+  if (S.phone.hist.length > 200) S.phone.hist = S.phone.hist.slice(-200);
+  save();
+  const okN = mnq.ok;
+  mnq = null;
+  app().innerHTML = `<h1>口訣快答 — 結果</h1>${goalCrossBanner()}<div class="card ${okN === n ? 'good' : ''}">
+    <p class="big">答對 <b>${okN} / ${n}</b></p>
+    ${okN === n ? '<p class="praise">🎉 全對——這些口訣跟概念已經接上線了！</p>' : '<p class="dim">答錯的口訣之後會更常抽到。</p>'}
+    <div class="actr"><button class="btn" onclick="nav('phone')">回手機專區</button>
+    <button class="btn primary" onclick="startMnQuiz()">再來 10 題</button></div></div>`;
 }
 function flashShow() {
   if (!phone) return;
@@ -3015,6 +3113,7 @@ function renderQuestion(q, cfg) {
     ${cfg.review && S.wrong[q.id] && !S.wrong[q.id].grad ? `<p class="dim fs13" style="margin:0 0 4px">📓 上次錯因：${S.wrong[q.id].err || '—'}${S.wrong[q.id].err === '超時' ? `｜⚡ 這次要在 ${fmtSec(target)} 內完成才過關` : ''}</p>` : ''}
     ${timerOn() ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
     <div id="q-flash" class="ink-flash" style="display:none"></div>
+    ${cfg.redo ? `<div class="card redo-sol"><p><b>📖 解答攤開著——照它的路，自己再走一遍（寫完照樣批改）：</b></p>${rtTxt(q.sol)}${q.solFig ? `<div class="qfig">${q.solFig}</div>` : ''}${q.tip ? `<p class="tip">💡 ${rtTxt(q.tip)}</p>` : ''}${teachBlock(q.id)}</div>` : ''}
     ${bkCard(q, cfg.head, 'qSubmit', actions)}`;
   sessionChrome(true);
   inkStart(q.id, qsess.t0);
@@ -3156,6 +3255,7 @@ function qResolve(ok) {
   if (qsess.cfg.side) {
     if (!qsess.sideRecord) { // 首次：新增一筆
       qsess.sideRecord = { qid: q.id, origId: qsess.cfg.origId || null, ok, ms, ts: Date.now(), d: today() };
+      if (qsess.cfg.redo) qsess.sideRecord.redo = 1; // 訂正重算：看著解答寫的，別跟自力類題混在一起解讀
       (S.sidePractice = S.sidePractice || []).push(qsess.sideRecord);
     } else { qsess.sideRecord.ok = ok; qsess.sideRecord.ms = ms; } // 改判：更新同一筆（陣列裡是同一個物件參照），不新增
     save();
@@ -3204,9 +3304,11 @@ function qResolve(ok) {
     : '';
   // ③ 主要動作——緊接判定，一按就走，不用往下拉；類題支線用不同按鈕（不進主流程）
   const action = qsess.cfg.side
-    ? `<div class="actr"><button class="btn primary big" onclick="sideNext()">🎯 再來一題類題</button><button class="btn" onclick="sideReturn()">↩ 回到原題</button></div>`
+    ? (qsess.cfg.redo
+      ? `<div class="actr"><button class="btn" onclick="qRedoAgain()">📝 再算一次</button><button class="btn primary big" onclick="sideReturn()">↩ 回到原題</button></div>`
+      : `<div class="actr"><button class="btn primary big" onclick="sideNext()">🎯 再來一題類題</button><button class="btn" onclick="sideReturn()">↩ 回到原題</button></div>`)
     : (!ok
-      ? `<p class="dim" style="margin:8px 0 4px">先標錯因（不會跳題——詳解看完再走）：</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="chip${qsess.errPick === e ? ' sel' : ''}" onclick="qPickErr(this,'${e}')">${e}</button>`).join('')}</div><div class="actr" style="margin-top:8px"><button class="btn" onclick="qSideStart()">🎯 先練一題類題再繼續</button><button class="btn primary big" id="errnext" ${qsess.errPick ? '' : 'disabled'} onclick="qFinish(false, ${ms}, qsess.errPick)">下一題 →</button></div>`
+      ? `<p class="dim" style="margin:8px 0 4px">先標錯因（不會跳題——詳解看完再走）：</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="chip${qsess.errPick === e ? ' sel' : ''}" onclick="qPickErr(this,'${e}')">${e}</button>`).join('')}</div><div class="actr" style="margin-top:8px"><button class="btn" onclick="qRedoStart()">📝 看解答重算一次</button><button class="btn" onclick="qSideStart()">🎯 先練一題類題</button><button class="btn primary big" id="errnext" ${qsess.errPick ? '' : 'disabled'} onclick="qFinish(false, ${ms}, qsess.errPick)">下一題 →</button></div>`
       : `<div class="actr"><button class="btn primary big" onclick="qFinish(true, ${ms}, ${overtime ? "'超時'" : 'null'})">下一題 →</button><button class="btn" onclick="qSideStart()">🎯 再練一題類題</button></div>`);
   // ④ 中段（批改的靈魂）：先肯定你做得好的 → 錯在哪（圈在你字上）→ 🧠 卡在哪 → 🎯 下次這樣做。詳解不塞這、收摺疊。
   const willProc = aiKey() && !v && qsess.proc && qsess.proc.n; // 選擇/打字題稍後由 AI 過程點評接手稱讚＋下次，這裡就不重複
@@ -3310,7 +3412,18 @@ function pickSimilar(origQ, doneIds) {
   const top = cands.slice(0, Math.min(5, cands.length));
   return top[Math.floor(Math.random() * top.length)];        // 前幾名裡隨機，避免每次同一題
 }
-let sideState = null; // { html, sess, origQ, doneIds }：支線期間暫存原題解答畫面與 session，回得去
+let sideState = null; // { html, sess, origQ, doneIds, redo? }：支線期間暫存原題解答畫面與 session，回得去
+/* 📝 訂正重算：答錯當下把解答攤開，同一題再手寫走一遍（有 key 照樣 AI 批改）。
+   跟類題共用支線機制：只記 S.sidePractice（帶 redo 旗標），不動 attempts/錯題本。 */
+function qRedoStart() {
+  if (!qsess) return;
+  sideState = { html: app().innerHTML, sess: qsess, origQ: qsess.q, doneIds: [qsess.q.id], redo: true };
+  qRedoAgain();
+}
+function qRedoAgain() {
+  if (!sideState || !sideState.redo) return;
+  renderQuestion(sideState.origQ, { head: '📝 訂正重算（解答攤開著）', side: true, redo: true, origId: sideState.origQ.id, onDone() {} });
+}
 function qSideStart() {
   if (!qsess) return;
   // 類題不可以抽到「本輪待出的題」——否則等等正輪出到同題等於白練＋灌水

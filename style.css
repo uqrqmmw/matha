@@ -481,6 +481,10 @@ sup .vfrac { font-size: 1em; margin: 0 0.05em; }
 .am-lab.below { transform: translateY(3px); } /* 靠上緣的框：標籤改放圈內、不被裁掉 */
 .am-cap { color: var(--mark); font-size: 13px; margin: 5px 0 0; }
 
+/* 📝 訂正重算：攤開的解答卡 */
+.redo-sol { background: var(--accent-soft); border: 1px solid var(--border); border-left: 4px solid var(--accent); }
+.redo-sol .tip { display: block; margin-top: 6px; }
+
 /* 🧑‍🏫 老師蒸餾 */
 .teach { background: var(--accent-soft); border-left: 3px solid var(--accent); border-radius: 0 var(--r-s) var(--r-s) 0; padding: 10px 14px; margin: 10px 0; }
 .teach-tip { color: var(--accent); font-size: 0.95em; }
