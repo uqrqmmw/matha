@@ -184,9 +184,15 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 .bk-content { flex: 1; font-size: 18px; line-height: 1.85; color: #1a1a1a; }
 .bk-content .qfig { margin: 14px auto 6px; }
 .bk-stem { border-left: 3px solid var(--paper-border); padding-left: 10px; margin-bottom: 10px; color: #2a2a28; }
-.bk-opts { margin-top: 14px; display: flex; flex-direction: column; gap: 2px; }
-.bk-opt { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; border-radius: 4px; cursor: pointer; }
+/* 選項＝窄的、只佔內容寬；容器 pointer-events:none 讓右邊/周圍空白透到畫布→可書寫，只有選項本身可點 */
+.bk-opts { margin-top: 14px; display: flex; flex-direction: column; gap: 5px; align-items: flex-start; pointer-events: none; }
+.bk-opt { display: flex; gap: 9px; align-items: center; padding: 6px 14px 6px 6px; border-radius: 9px; cursor: pointer; width: fit-content; max-width: 100%; pointer-events: auto; }
 .bk-opt:active { background: #f0ede3; }
+/* 選項前的可按方格：按下去打勾＝選它 */
+.bk-check { flex: none; width: 27px; height: 27px; border: 2px solid var(--paper-dim); border-radius: 7px; background: #fff; position: relative; }
+.bk-opt:active .bk-check { border-color: var(--accent); }
+.bk-opt:has(:checked) .bk-check, .bk-opt.picked .bk-check { background: var(--accent); border-color: var(--accent); }
+.bk-opt:has(:checked) .bk-check::after, .bk-opt.picked .bk-check::after { content: '✓'; position: absolute; inset: 0; color: #fff; font-weight: 700; font-size: 18px; display: flex; align-items: center; justify-content: center; line-height: 1; }
 .bk-op { flex: none; font-weight: 600; }
 .bk-opt:has(:checked) { background: #eaf5f2; box-shadow: inset 0 0 0 1.5px var(--accent); }
 .bk-opt:has(:checked) .bk-op { color: var(--accent); }
@@ -208,7 +214,9 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
 .qcard.booklet.sheet { position: relative; }
 .qcard.booklet.sheet .write-pad { min-height: 46vh; }
 .qcard.booklet.sheet .sheet-tools { padding: 8px 16px 0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--paper-dim); }
-.qcard.booklet.sheet .ansarea { padding: 10px 16px 14px; }
+/* 作答鈕（放棄／算完了／送出）沾底：sticky 在畫面底部→不用捲到卡片最下面找，永遠在原畫面右下角。
+   漸層底讓鈕在手寫上也讀得到；批改完成時上面的 :has(.graded) 規則照樣把它收起。 */
+.qcard.booklet.sheet .ansarea { padding: 18px 16px 12px; position: sticky; bottom: 0; z-index: 4; background: linear-gradient(to top, var(--paper) 60%, transparent); }
 .qcard.booklet.sheet #qfb:not(:empty), .qcard.booklet.sheet #dfb:not(:empty) { padding: 8px 16px; background: var(--panel); }
 /* 批改「完成」（#qfb 出現 .graded 最終結果）才收起書寫層＋作答鈕；「批改中…」和自評（正解對照）時手算照樣看得到，不會消失 */
 .qcard.booklet.sheet:has(#qfb .graded) .sheet-tools,

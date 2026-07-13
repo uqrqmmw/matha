@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713f'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -3274,11 +3274,11 @@ function bkOpts(q, submitFn) {
     // 模擬＝正式考：點選項先「劃卡」，再按送出確認（手滑點錯不會直接鎖定）；平時刷題維持點了就走的節奏
     const click = submitFn === 'mockAns' ? (i) => `mockPick(${i},this)` : (i) => `${submitFn}(${i})`;
     return `<div class="bk-opts">${q.opts.map((o, i) =>
-      `<div class="bk-opt" onclick="${click(i)}"><span class="bk-op">(${i + 1})</span><span>${rtTxt(o)}</span></div>`).join('')}</div>`;
+      `<div class="bk-opt" onclick="${click(i)}"><span class="bk-check"></span><span class="bk-op">(${i + 1})</span><span>${rtTxt(o)}</span></div>`).join('')}</div>`;
   }
   if (q.type === 'multi') {
     return `<div class="bk-opts">${q.opts.map((o, i) =>
-      `<label class="bk-opt"><input type="checkbox" value="${i}" hidden><span class="bk-op">(${i + 1})</span><span>${rtTxt(o)}</span></label>`).join('')}</div>`;
+      `<label class="bk-opt"><input type="checkbox" value="${i}" hidden><span class="bk-check"></span><span class="bk-op">(${i + 1})</span><span>${rtTxt(o)}</span></label>`).join('')}</div>`;
   }
   return '';
 }
