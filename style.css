@@ -17,6 +17,7 @@
   --warn: #b45309;
   --warn-soft: rgba(180, 83, 9, 0.08);
   --mark: #e11d48; /* AI 紅筆專用，與 --bad 分開 */
+  --insight: #4f46e5; --insight-rgb: 79, 70, 229; /* 🧠 卡點分析專用靛藍（收進 token，不再散落硬編碼） */
   --border: #d7dee8;
   /* 考卷（booklet）專用 */
   --paper: #fefefd;
@@ -420,14 +421,14 @@ sup .vfrac { font-size: 1em; margin: 0 0.05em; }
 .tile-notes:hover { background: rgba(255, 255, 255, 0.7); }
 
 /* 🧠 卡點區塊 */
-.stuck-box { background: rgba(79, 70, 229, 0.055); border: 1px solid rgba(79, 70, 229, 0.25); border-radius: 10px; padding: 9px 12px; margin: 8px 0; }
-.stuck-title { color: #4f46e5; margin: 0 0 4px; }
-.stuck-row { display: flex; gap: 10px; align-items: flex-start; padding: 5px 0; border-top: 1px dashed rgba(79, 70, 229, 0.2); }
+.stuck-box { background: rgba(var(--insight-rgb), 0.055); border: 1px solid rgba(var(--insight-rgb), 0.25); border-radius: 10px; padding: 9px 12px; margin: 8px 0; }
+.stuck-title { color: var(--insight); margin: 0 0 4px; }
+.stuck-row { display: flex; gap: 10px; align-items: flex-start; padding: 5px 0; border-top: 1px dashed rgba(var(--insight-rgb), 0.2); }
 .stuck-row:first-of-type { border-top: 0; }
-.stuck-at { flex: none; font-size: 11px; color: #4f46e5; background: rgba(79, 70, 229, 0.1); border-radius: 6px; padding: 3px 7px; text-align: center; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.stuck-at { flex: none; font-size: 11px; color: var(--insight); background: rgba(var(--insight-rgb), 0.1); border-radius: 6px; padding: 3px 7px; text-align: center; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .stuck-body { flex: 1; }
 .stuck-body p { margin: 0; }
-.stuck-ph { display: inline-block; font-size: 11px; font-weight: 700; color: #4f46e5; border: 1px solid rgba(79, 70, 229, 0.4); border-radius: 999px; padding: 0 7px; margin-bottom: 2px; }
+.stuck-ph { display: inline-block; font-size: 11px; font-weight: 700; color: var(--insight); border: 1px solid rgba(var(--insight-rgb), 0.4); border-radius: 999px; padding: 0 7px; margin-bottom: 2px; }
 .stuck-fix { color: var(--ok); font-size: 13.5px; margin-top: 2px !important; }
 
 /* 📓 錯題學習卡 */

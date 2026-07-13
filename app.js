@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -144,10 +144,11 @@ async function contentInit() {
   CONTENT.packs = (ls && packRev(ls) > packRev(idb)) ? ls : (idb || ls || {});
 }
 function persistContent() {
-  // 回傳 promise：匯入/停用後要「等寫完再 reload」，否則 IDB 交易還沒 commit 就重載＝內容遺失
-  return idbWriteAll(CONTENT.packs).catch(() => {
-    try { localStorage.setItem(CONTENT_LS, JSON.stringify(CONTENT.packs)); }
-    catch (e) { saveQuotaErr = true; try { syncPill(); } catch (_) {} }
+  // 回傳 promise<boolean>：true=已落地（IDB 或 localStorage 後備成功），false=兩者皆失敗（空間不足/隱私模式）。
+  // 匯入/停用後要「等寫完再 reload」，否則 IDB 交易還沒 commit 就重載＝內容遺失；遷移前要靠回傳值確認落地才敢刪舊副本。
+  return idbWriteAll(CONTENT.packs).then(() => true).catch(() => {
+    try { localStorage.setItem(CONTENT_LS, JSON.stringify(CONTENT.packs)); return true; }
+    catch (e) { saveQuotaErr = true; try { syncPill(); } catch (_) {} return false; }
   });
 }
 /* 等內容確實寫入本機後再重載：寫入 → 讀回驗證 → 才 reload（IDB 非同步，reload 不能搶在 commit 前）。
@@ -177,7 +178,7 @@ function upsertPack(pid, kind, name, items) {
   return changed;
 }
 /* 舊資料遷移：S 裡的 extbank/extflash/extnotes 搬進內容層（跨裝置 merge 進來的舊包也走這裡） */
-function migrateContentFromS() {
+async function migrateContentFromS() {
   let moved = false; const changedPids = [];
   const doPack = (pid, kind, nm, items) => { if (upsertPack(pid, kind, nm, items)) changedPids.push(pid); moved = true; };
   if (Array.isArray(S.extbank) && S.extbank.length) {
@@ -188,9 +189,13 @@ function migrateContentFromS() {
   if (Array.isArray(S.extflash) && S.extflash.length) doPack('legacy-flash', 'flash', '匯入公式卡', S.extflash);
   if (Array.isArray(S.extnotes) && S.extnotes.length) doPack('legacy-notes', 'notes', '匯入重點', S.extnotes);
   if (moved) {
+    if (changedPids.length) { // 先確認新副本真的落地，再刪舊的——否則 IDB 不可用又 localStorage 配額滿時會兩頭皆空
+      const durable = await persistContent();
+      if (!durable) { try { alert('這台裝置存不下匯入的內容（空間不足或隱私模式），已保留在原位置不清除、避免遺失。請釋放空間或換裝置後再登入。'); } catch (e) {} return moved; }
+    }
     delete S.extbank; delete S.extflash; delete S.extnotes;
-    save(); // S 瘦身上雲
-    if (changedPids.length) { persistContent(); for (const pid of changedPids) pushPack(pid); } // 只在內容真的變了才重傳
+    save(); // S 瘦身上雲（此時內容已在本機內容層 durable）
+    for (const pid of changedPids) pushPack(pid); // 只在內容真的變了才重傳
   }
   return moved;
 }
@@ -211,7 +216,7 @@ async function probeContent() {
     try { localStorage.setItem(SPLIT_LS, '1'); } catch (e) { return; }
     contentTableMissing = false;
   }
-  migrateContentFromS();
+  await migrateContentFromS();
   await pullContent();
 }
 async function pullContent() {
@@ -222,12 +227,13 @@ async function pullContent() {
     let changed = false;
     for (const r of data) {
       const local = CONTENT.packs[r.pack_id];
-      if (local && (local.rev || 0) >= (r.rev || 0)) continue;
+      if (local && (local.rev || 0) === (r.rev || 0)) continue; // 只有 rev 完全相同＝真同步才略過；本地較新也要拉回合併，否則另一台的離線分歧題會被此機下次回推蓋掉
       const { data: row } = await supa.from('content_packs').select('*').eq('pack_id', r.pack_id).maybeSingle();
       if (row && Array.isArray(row.items)) {
         // 聯集而非整包覆蓋：兩台各自離線塞進同名 pack 時，本地獨有題不被雲端版丟掉（跟 app 其他合併路徑一致）
         const merged = local ? unionById(row.items, local.items) : row.items;
-        CONTENT.packs[r.pack_id] = { kind: row.kind, name: row.name, rev: Math.max(row.rev || 0, (local && local.rev) || 0), items: merged };
+        const localExtra = !!local && merged.length > row.items.length; // 本地有雲端沒有的題＝這是超集，rev 要 bump 才會在下面回推迴圈傳回雲端與他機，否則永困單機
+        CONTENT.packs[r.pack_id] = { kind: row.kind, name: row.name, rev: localExtra ? Date.now() : Math.max(row.rev || 0, (local && local.rev) || 0), items: merged };
         changed = true;
       }
     }
@@ -280,7 +286,7 @@ function importQPack(items, name) {
 function importData(input) {
   const f = input.files[0]; if (!f) return;
   const r = new FileReader();
-  r.onload = () => {
+  r.onload = async () => {
     try {
       const d = JSON.parse(r.result);
       // 內容信封 v2：{kind:'qpack'|'flash'|'notes', name, items:[…]}
@@ -323,7 +329,7 @@ function importData(input) {
         // 分家裝置：內容進 IDB。備份自帶內容層就用它；否則把備份 S 裡的 legacy ext* 搬進內容層（不然分家模式讀不到）
         CONTENT.packs = content || {};
         S = d;
-        if (!content) migrateContentFromS(); // 會用 S.ext* 建 pack、清掉 S.ext*、save
+        if (!content) await migrateContentFromS(); // 會用 S.ext* 建 pack、確認落地後才清掉 S.ext*、save
         else { save(); }
         reloadAfterContent(); // 等 IDB 寫完＋讀回驗證再 reload
         return;
@@ -396,7 +402,7 @@ function inkSurface(key, cv, h) {
   cv.style.pointerEvents = '';
   cv.onpointerdown = (e) => inkDown(e, sur);
   cv.onpointermove = (e) => inkMove(e, sur);
-  cv.onpointerup = cv.onpointercancel = (e) => inkUp(e, sur);
+  cv.onpointerup = cv.onpointercancel = cv.onlostpointercapture = (e) => inkUp(e, sur); // lostpointercapture：系統邊緣手勢搶走已捕捉的指、不發 pointerup 時也清掉幽靈觸點，避免手機筆記卡卡在捲動模式（死指）。inkUp 冪等，正常收筆多跑一次無害
   cv.oncontextmenu = (e) => e.preventDefault();
   return sur;
 }
@@ -652,7 +658,7 @@ function inkStop() {
   if (ink.ro) ink.ro.disconnect();
   for (const k of Object.keys(ink.sur)) {
     const cv = ink.sur[k].cv;
-    cv.onpointerdown = cv.onpointermove = cv.onpointerup = cv.onpointercancel = null;
+    cv.onpointerdown = cv.onpointermove = cv.onpointerup = cv.onpointercancel = cv.onlostpointercapture = null;
     cv.style.pointerEvents = 'none'; // 停止書寫後畫布不再攔截點擊（批改按鈕在畫布下層）
   }
   ink = null;
@@ -800,6 +806,19 @@ async function inkReplay(qid, t0, jumpMs) {
   const gone = () => !cv.isConnected; // 換頁/換題後舊 canvas 脫離 DOM → 中止回放
   const aliveAt = (t) => all.filter((s) => s.t0 <= t && (!s.dead || s.dead > t));
   try {
+    // #14：批改後旋轉螢幕，畫布尺寸凍結在旋轉前（resize handler 因 ink=null 略過）→回放筆跡錯位/裁切。
+    // 回放前依「當前」卡片尺寸重算畫布＋dpr transform（等同 inkSizeSur），對現有尺寸則是無害重設。
+    const wrap = cv.parentElement;
+    if (wrap) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = wrap.clientWidth;
+      const h = cv.classList.contains('qink') ? wrap.clientHeight : (parseInt(cv.style.height, 10) || cv.clientHeight || wrap.clientHeight);
+      cv.width = Math.max(1, Math.round(w * dpr));
+      cv.height = Math.max(1, Math.round(h * dpr));
+      cv.style.width = w + 'px'; cv.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    }
     inkWipe(cv, ctx);
     let prevEnd = null;
     if (jumpMs) { // 跳到卡點前：先一次性畫出該時刻的畫布，再從那裡開始慢放
@@ -3859,7 +3878,7 @@ function mockFinal() {
     if (acc > prev.acc && gradeOf(acc) !== gradeOf(prev.acc)) mockTrend += `<p class="praise">🎉 體感級分推進：${gradeOf(prev.acc)} → ${gradeOf(acc)}</p>`;
     if (acc > bestBefore) mockTrend += '<p class="praise">🏆 系統模擬新高！</p>';
   }
-  if (!mock.partial) S.mocks.push({ d: today(), ok: okN, n: paper.length, acc });
+  if (!mock.partial) S.mocks.push({ d: today(), ok: okN, n: paper.length, acc, ts: Date.now() }); // ts 讓 mergeState 的 JSON.stringify 去重不會把同日同分的兩場模考塌成一筆（靜默丟一場）
   save();
   // 逐題鼓勵：只講有真實依據的（曾錯今對、難題拿下、目標內完成）
   const cheers = detail.filter((d) => d.ok).map((d) => {
@@ -4464,7 +4483,7 @@ async function syncPull() {
     if (error) { syncState.msg = '下載失敗：' + error.message; return; }
     if (data && data.data) {
       S = mergeState(S, data.data);
-      if (splitOn()) migrateContentFromS(); // 另一台舊裝置 merge 進來的內容 → 搬進內容層、S 保持輕
+      if (splitOn()) await migrateContentFromS(); // 另一台舊裝置 merge 進來的內容 → 搬進內容層、S 保持輕
       try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { saveQuotaErr = true; }
       applyExtBank();
       syncState.msg = '已從雲端合併';
@@ -4611,7 +4630,7 @@ function syncCard() {
   if (!syncState.user) return `<div class="card"><h2>☁️ 雲端同步</h2>
     <p class="dim">帳號打使用者名稱就好。</p>
     <input id="sy-email" class="ans-input" autocomplete="username" placeholder="帳號（不用打 @gmail.com）" value="${escH((() => { try { return (localStorage.getItem('mathA13_email') || '').replace(/@gmail\.com$/, ''); } catch (e) { return ''; } })())}">
-    <input id="sy-pass" class="ans-input" type="password" autocomplete="current-password" placeholder="密碼（至少 6 碼）">
+    <input id="sy-pass" class="ans-input" type="password" autocomplete="current-password" placeholder="密碼（至少 6 碼）" onkeydown="if(event.key==='Enter')syncLogin(false)">
     <div class="actr">
       <button class="btn" onclick="syncLogin(true)">註冊</button>
       <button class="btn primary" onclick="syncLogin(false)">登入</button>
