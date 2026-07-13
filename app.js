@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -751,6 +751,68 @@ function inkStuckShots(qid, t0) {
   }
   return shots;
 }
+/* 🔢 書寫順序圖：把整卷手寫按「下筆先後」分組（時間停頓 或 換地方寫的空間跳躍都算新一步），
+   每組起點標序號、最後一組（＝最後寫的）框成「答案」。給 AI 用來按時間順序讀懂解題流程、
+   並以「最後寫的那組」為最終答案——不再靠『位置最下面』猜（考生沒空位寫到右上時就會抓錯）。
+   幾何(bbox/pad/scale)刻意與 inkCaptureFull 完全一致，AI 回的 marks 座標才對得準顯示圖。 */
+function inkOrderedShot(qid) {
+  const st = sessionInk[qid];
+  if (!st) return null;
+  const arr = st.s.filter((s) => !s.dead && !s.arch && s.pts && s.pts.length);
+  if (!arr.length) return null;
+  arr.sort((a, b) => (a.t0 || 0) - (b.t0 || 0)); // 下筆先後
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const s of arr) for (const p of s.pts) {
+    if (p[0] < x0) x0 = p[0]; if (p[1] < y0) y0 = p[1];
+    if (p[0] > x1) x1 = p[0]; if (p[1] > y1) y1 = p[1];
+  }
+  const pad = 14, w = x1 - x0 + pad * 2, h = y1 - y0 + pad * 2;
+  const scale = Math.min(2, Math.max(0.4, 1100 / w));
+  const diag = Math.hypot(x1 - x0, y1 - y0) || 1;
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(w * scale));
+  cv.height = Math.max(1, Math.round(h * scale));
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(scale, 0, 0, scale, (pad - x0) * scale, (pad - y0) * scale);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const s of arr) inkDrawStroke(ctx, s, 2.2); // 原色，數學可讀
+  // 切點：時間停頓 ≥350ms 或 空間跳躍 ≥對角線 28%（＝移到別處寫）；取最強 ≤9 個 → ≤10 組
+  const cands = [];
+  for (let i = 1; i < arr.length; i++) {
+    const gap = Math.max(0, (arr[i].t0 || 0) - (arr[i - 1].t1 || 0));
+    const pe = arr[i - 1].pts[arr[i - 1].pts.length - 1], ps = arr[i].pts[0];
+    const jump = Math.hypot(ps[0] - pe[0], ps[1] - pe[1]);
+    if (gap >= 350 || jump >= diag * 0.28) cands.push({ i, score: gap + jump * 4 });
+  }
+  cands.sort((a, b) => b.score - a.score);
+  const cuts = new Set(cands.slice(0, 9).map((c) => c.i));
+  const chunks = []; let cur = [];
+  arr.forEach((s, i) => { if (cuts.has(i) && cur.length) { chunks.push(cur); cur = []; } cur.push(s); });
+  if (cur.length) chunks.push(cur);
+  // 序號徽章 + 答案框：畫在裝置像素座標，尺寸固定不隨 scale 變、放在起點外側不擋字
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const dev = (x, y) => [scale * (x + pad - x0), scale * (y + pad - y0)];
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 14px system-ui, sans-serif';
+  chunks.forEach((ch, idx) => {
+    const last = idx === chunks.length - 1;
+    const b = dev(ch[0].pts[0][0], ch[0].pts[0][1]);
+    ctx.fillStyle = last ? 'rgba(220,38,38,0.92)' : 'rgba(234,88,12,0.85)';
+    ctx.beginPath(); ctx.arc(b[0] - 13, b[1] - 13, 11, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(String(idx + 1), b[0] - 13, b[1] - 12);
+    if (last) {
+      let a0 = 1e9, b0 = 1e9, a1 = -1e9, b1 = -1e9;
+      for (const s of ch) for (const p of s.pts) {
+        if (p[0] < a0) a0 = p[0]; if (p[1] < b0) b0 = p[1];
+        if (p[0] > a1) a1 = p[0]; if (p[1] > b1) b1 = p[1];
+      }
+      const lo = dev(a0, b0), hi = dev(a1, b1);
+      ctx.strokeStyle = 'rgba(220,38,38,0.85)'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 4]);
+      ctx.strokeRect(lo[0] - 9, lo[1] - 9, (hi[0] - lo[0]) + 18, (hi[1] - lo[1]) + 18); ctx.setLineDash([]);
+    }
+  });
+  return { b64: cv.toDataURL('image/png').split(',')[1], steps: chunks.length };
+}
 /* AI 回傳的 stuck 陣列 → 正規化（以我方量測的秒數為準、截長防狀態膨脹） */
 function normStuck(v, shots) {
   const arr = Array.isArray(v && v.stuck) ? v.stuck : [];
@@ -971,20 +1033,20 @@ function aiCorrect(v) { const c = v && v.correct; return c === true || c === 1 |
 // 難度星星：clamp 到 0..3，避免髒資料 diff（如 4 或 undefined）讓 '☆'.repeat(3-diff) 丟 RangeError 把整個 render 打爆
 function stars(d) { d = Math.max(0, Math.min(3, d | 0)); return '★'.repeat(d) + '☆'.repeat(3 - d); }
 function starF(d) { return '★'.repeat(Math.max(0, Math.min(3, d | 0))); }
-async function aiGradeCall(q, correctTxt, calcB64, shots) {
+async function aiGradeCall(q, correctTxt, calcB64, shots, steps) {
   const content = [];
   if (calcB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: calcB64 } });
   const teach = S.teach && S.teach[q.id];
   const hasShots = Array.isArray(shots) && shots.length > 0;
   content.push({
     type: 'text',
-    text: `你是嚴謹但溫暖的數學閱卷老師。以下是一位學測考生的完整手寫計算過程（單張圖）。
+    text: `你是嚴謹但溫暖的數學閱卷老師。以下是一位學測考生的完整手寫計算過程（單張圖）。${steps > 0 ? '\n⚠️ 這張圖已標「書寫順序」：橘色①②③…圓圈序號＝他下筆的先後（不是位置！），紅色虛線框住、序號最大的那一組是他「最後寫的」。請先照序號順序看懂他的解題流程，再判分。' : ''}
 題目：${stripTags(q.q)}
 正確答案：${correctTxt}
 ${q.sol ? `參考詳解：${stripTags(q.sol)}` : ''}
 ${teach && teach.sol ? `他補習班老師教這題的方法（指出錯誤或建議路線時優先對照這個教法）：${stripTags(teach.sol)}${teach.tip ? '｜老師口訣：' + stripTags(teach.tip) : ''}` : ''}
 任務：
-1. 辨識最終答案：考生會把答案寫在計算的末尾（可能圈起來或另起一行）；有多個候選時以最末、被圈選者為準。
+1. 辨識最終答案：${steps > 0 ? '以**紅框（他最後寫的那一組、序號最大）**為最終答案——那才是他的答案，不管它在畫面哪個角落（他常因為下面沒空位而把答案寫到右上或旁邊）。**絕對不要**用「位置最下面」來猜答案。' : '考生會把答案寫在計算的末尾（可能圈起來或另起一行）；有多個候選時以最末、被圈選者為準。'}
 2. 判定對錯：所有等價形式都算對——多根/多解順序不同（如「5,-1」vs「-1,5」）、分數/小數、未化簡但數值相等、有沒有寫 x= 都算對。但**座標/有序數對（如 (3,4)）順序不可交換**，題目明確要求特定形式時依題目。
 3. praise（稱讚，一定要給、不管對錯）：具體指出他這次做得好的地方——對的步驟、清楚的排版、正確的起手方向、分類完整…。他是動筆寫完的人，先肯定；答錯時尤其要先講他哪裡做對，別只挑錯。
 4. nextTime（下次這樣做）：給一句最簡單、最明確、他現在就能理解並記住的關鍵路徑，讓他下次同型題能答對或更快。要具體可記（例：「先同取 6 次方再比大小」「先畫數線標出區間」），不要長、不要照抄整篇詳解。
@@ -1030,12 +1092,12 @@ async function aiJSON(content) {
   } finally { clearTimeout(tmr); }
 }
 /* 選擇題/打字題的過程分析：答案對錯已判定，AI 只看手寫過程（非同步，不擋下一題） */
-async function aiProcCall(q, ok, correctTxt, calcB64, shots) {
+async function aiProcCall(q, ok, correctTxt, calcB64, shots, steps) {
   const teach = S.teach && S.teach[q.id];
   const hasShots = Array.isArray(shots) && shots.length > 0;
   const content = [
     { type: 'image', source: { type: 'base64', media_type: 'image/png', data: calcB64 } },
-    { type: 'text', text: `你是嚴謹但溫暖的數學閱卷老師。圖＝一位學測考生此題的完整手寫計算過程。
+    { type: 'text', text: `你是嚴謹但溫暖的數學閱卷老師。圖＝一位學測考生此題的完整手寫計算過程。${steps > 0 ? '圖上橘色①②③…圓圈＝他下筆的先後順序（不是位置），紅框＝他最後寫的；請照序號順序看懂他的解題流程再點評、找卡點。' : ''}
 題目：${stripTags(q.q)}
 正確答案：${correctTxt}；此題已判定考生「${ok ? '答對' : '答錯'}」。
 ${q.sol ? `參考詳解：${stripTags(q.sol)}` : ''}
@@ -1067,7 +1129,8 @@ function qProcReview(ok) {
     sess.aiProcHTML = html;
     if (qsess === sess) { const el = document.getElementById('ai-proc'); if (el) el.innerHTML = html; }
   };
-  aiProcCall(q, ok, correctTxt, calcB64, shots)
+  const _pord = inkOrderedShot(q.id); // 給 AI 標書寫順序版；顯示/紅圈仍用上面乾淨 calcB64
+  aiProcCall(q, ok, correctTxt, (_pord && _pord.b64) || calcB64, shots, _pord ? _pord.steps : 0)
     .then((v) => {
       // 持久化：建議與卡點跟著紀錄走（這回應是非同步的——紀錄可能已寫入，rec.p 與 sess.proc 是同一物件參照）
       const adv = advFrom(v);
@@ -3297,7 +3360,8 @@ function qGrade(optIdx) {
   qsess.yourAns = '（手寫作答）';
   // 整卷截圖：題卡上的筆跡＋計算區筆跡拼成一張（跟題本一樣整面都能寫）
   const calcB64 = inkCaptureFull(q.id);
-  qsess.calcImg = calcB64 ? 'data:image/png;base64,' + calcB64 : null; // 存起同一張圖：批改後可在你的筆跡上畫紅圈
+  qsess.calcImg = calcB64 ? 'data:image/png;base64,' + calcB64 : null; // 存起乾淨版：批改後在你的筆跡上畫紅圈
+  const _ord = inkOrderedShot(q.id); // 給 AI 的是「標了書寫順序＋答案框」版；顯示/紅圈仍用乾淨版（幾何一致，marks 對得準）
   const _st = sessionInk[q.id] || {};
   const _ns = (_st.s || []).filter((s) => !s.dead && !s.arch).length;
   qsess.diag = `診斷 v${APP_VER}：key=${aiKey() ? '有' : '無'}｜筆跡 ${_ns} 筆｜截圖=${calcB64 ? '成功' : '空'}`;
@@ -3305,7 +3369,7 @@ function qGrade(optIdx) {
     $('#qfb').innerHTML = '<p class="dim">🤖 AI 批改中…（認字、對答案、檢查過程哪裡開始錯）</p>';
     const sess = qsess; // 綁定本題：離開或換題後，遲到的回應直接丟棄
     sess.stuckShots = inkStuckShots(q.id, sess.t0); // 停頓證據圖一起送：同一次 API 順帶判讀「當時卡在哪」
-    aiGradeCall(q, q.ans.join(' 或 '), calcB64, sess.stuckShots)
+    aiGradeCall(q, q.ans.join(' 或 '), (_ord && _ord.b64) || calcB64, sess.stuckShots, _ord ? _ord.steps : 0)
       .then((v) => { if (qsess !== sess) return; qsess.ai = v; qsess.stuck = normStuck(v, sess.stuckShots); const ok = aiCorrect(v); inkMark(q.id, ok, String(q.ans[0])); qResolve(ok); }) // AI 判定直接生效→解答頁（不再多按一次「改對了」；改判連結留在解答頁）
       .catch((e) => { if (qsess !== sess) return; qsess.aiErr = (e && e.message) || String(e); qShowJudge(false); });
   } else {
@@ -3821,7 +3885,8 @@ async function mockAIJudge() {
       const visits = (m.qSeen && m.qSeen[q.id]) || [];
       // 只用「最後一輪進場」當窗：第一輪跳過→第二輪回頭之間去寫別題的幾分鐘不是卡點，秒數也才會相對本題
       const shots = inkStuckShots(q.id, visits.length ? visits[visits.length - 1] : m.sessT0);
-      const v = await aiGradeCall(q, q.ans.join(' 或 '), img, shots);
+      const ord = inkOrderedShot(q.id);
+      const v = await aiGradeCall(q, q.ans.join(' 或 '), (ord && ord.b64) || img, shots, ord ? ord.steps : 0);
       if (mock !== m || sessionMode !== 'judging') return;
       m.aiv[q.id] = v;
       const stuck = normStuck(v, shots); // 卡點跟著這題的 proc 走，mockFinal 記錄時自然入庫
