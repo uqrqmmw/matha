@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -4417,23 +4417,40 @@ function syncQueue() {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(syncPush, 4000);
 }
-/* 裝置配對連結（免打字登入）：網址帶 #pair=base64(email|密碼) 時自動登入一次，
-   成功後 session 永久存在該裝置（自動續期）——體感等同「認裝置」。
-   憑證只存在飼主自己書籤裡的連結；這裡先清掉網址再登入，不落地、不上雲。 */
+/* 裝置配對連結（免打字登入）：網址帶 #pair=… 時自動登入一次，成功後 session 存在該裝置並自動續期。
+   新版 payload＝session 權杖（access+refresh，可在任一裝置登出即撤銷、access 會過期），取代舊版的明文帳密——
+   避免書籤/截圖外洩＝永久帳密外洩。舊版 base64(email|密碼) 仍相容（過渡）。讀完先清網址，不落地、不上雲。 */
 async function autoLoginFromHash() {
   const m = location.hash.match(/#pair=([A-Za-z0-9+/=_-]+)/);
   if (!m) return;
   history.replaceState(null, '', location.pathname + location.search);
   try {
-    const raw = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
-    const i = raw.indexOf('|');
-    if (i < 1) return;
     const { data: s } = await supa.auth.getSession();
     if (s && s.session) { syncState.msg = '這台裝置已配對過'; syncPill(); return; }
-    const { error } = await supa.auth.signInWithPassword({ email: raw.slice(0, i), password: raw.slice(i + 1) });
+    const raw = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
+    let tok = null; try { tok = JSON.parse(raw); } catch (e) {}
+    let error;
+    if (tok && tok.r) { // 新版：session 權杖配對（可撤銷、會過期）
+      ({ error } = await supa.auth.setSession({ access_token: tok.a || '', refresh_token: tok.r }));
+    } else { // 舊版：base64(email|密碼)，過渡相容
+      const i = raw.indexOf('|');
+      if (i < 1) return;
+      ({ error } = await supa.auth.signInWithPassword({ email: raw.slice(0, i), password: raw.slice(i + 1) }));
+    }
     syncState.msg = error ? '配對連結登入失敗：' + error.message : '✅ 裝置配對完成，之後開頁自動同步';
     syncPill();
   } catch (e) {}
+}
+/* 產生本裝置的配對連結：帶 session 權杖（非密碼）。在另一台裝置貼進網址列即自動登入。 */
+async function makePairLink() {
+  if (!supa || !syncState.user) { alert('請先登入再產生配對連結'); return; }
+  const { data } = await supa.auth.getSession();
+  if (!data || !data.session) { alert('取不到目前的登入狀態，請重新登入後再試'); return; }
+  const payload = btoa(JSON.stringify({ a: data.session.access_token, r: data.session.refresh_token })).replace(/\+/g, '-').replace(/\//g, '_');
+  const url = location.origin + location.pathname + '#pair=' + payload;
+  const note = '在另一台裝置把它貼進網址列開啟即自動登入。\n\n⚠️ 這條連結等同一次登入權杖——別外流。要作廢：在任一裝置按「登出」即撤銷所有配對連結。';
+  try { await navigator.clipboard.writeText(url); alert('✅ 配對連結已複製。\n' + note); }
+  catch (e) { prompt('複製這條配對連結：\n' + note, url); }
 }
 /* 同步狀態燈（常駐右上角）＋開始做題前的登入攔檢 */
 function syncPill() {
@@ -4639,6 +4656,7 @@ function syncCard() {
   return `<div class="card"><h2>☁️ 雲端同步 <span class="okc">已登入</span></h2>
     <p class="dim">${syncState.user.email}｜${syncState.msg || '自動同步中：每次做完題幾秒內上傳'}</p>
     <div class="actr"><button class="btn" onclick="syncLogout()">登出</button>
+    <button class="btn" onclick="makePairLink()">📱 產生配對連結</button>
     <button class="btn" onclick="syncPushNow()">立即同步</button></div></div>`;
 }
 
