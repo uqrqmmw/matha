@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713i'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -1311,21 +1311,48 @@ function sanitizeContent(s) { const parts = String(s).split(/(\\\([\s\S]*?\\\))/
    （v→、AB→ 應是 \overrightarrow；x₁ 應是 x_1；10ⁿ 應是 10^n），字型沒該字就變方框/或顯示成字母後一個箭頭。
    這裡在 render 前一律轉成正規渲染，任何來源的內容都救得到（不用改內容檔）。 */
 const U_SUB = { '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4', '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9', '₊': '+', '₋': '-', '₌': '=', '₍': '(', '₎': ')' };
-const U_SUP = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁺': '+', '⁻': '-', '⁼': '=', '⁽': '(', '⁾': ')', 'ⁿ': 'n', 'ⁱ': 'i' };
+const U_SUP = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁺': '+', '⁻': '-', '⁼': '=', '⁽': '(', '⁾': ')', 'ⁿ': 'n', 'ⁱ': 'i', 'ˣ': 'x', 'ʸ': 'y', 'ᵏ': 'k', 'ᵐ': 'm', 'ᵃ': 'a', 'ᵇ': 'b', 'ᵗ': 't' };
 const U_SUB_RE = new RegExp('[' + Object.keys(U_SUB).join('') + ']+', 'g');
 const U_SUP_RE = new RegExp('[' + Object.keys(U_SUP).join('') + ']+', 'g');
 const U_VEC_RE = /([A-Za-z]{1,3})→(?![A-Za-z0-9])/g; // 字母緊貼 →、且 → 後面不是英數＝向量（排除 A→D 路徑、x→0 極限、有空白的 leads-to）
+// 島外散文裡「CJK 字型多半沒 glyph → 豆腐方框」的數學符號：整批包進 \(…\) 交給 KaTeX（實測 KaTeX 全渲得出）。
+// 刻意「不」收：→(另處理向量/方向)、√(另有裸根號邏輯)、×÷°−、①②③圈碼、✓✗勾叉、○●圈、…刪節號、·點、Ⅰ Ⅱ 羅馬數字、⚡、□△ 幾何/佔位——這些 CJK/emoji 字型幾乎必有，包島反而多餘且傷效能。
+const U_WRAP = 'αβγδεζηθικλμνξοπρςστυφχψωϑϕφϖϵ' + 'ΓΔΘΛΞΠΣΦΨΩ'
+  + '≤≥≠≈≅≡≦≧≲≳≪≫≺≻∼≒≐⩽⩾±∓'
+  + '∈∉∋∌⊂⊃⊆⊇⊄⊅⊊⊋∩∪∅∖∧∨¬∀∃∴∵'
+  + '⇒⇔⟹⟺⇐⇑⇓⇕↔↕↦⟶⟵←↑↓↗↘↙↖'
+  + '∠∡∟⊾⊿⊥∥∦∣▱⌒'
+  + '∑∏∫∬∭∮∂∇∆∞∝∘⊕⊗⊙⊘⊚⋅⋆⋯⋮⋰⋱'
+  + '′″‴‵⁗'
+  + '½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞⅐⅑⅒⅟↉'
+  + 'ℝℤℚℕℂℍℙℓℵ℘ℑℜℏⅆⅇⅈℋℒ'
+  + 'ΑΒΕΖΗΙΚΜΝΟΡΤΥΧϱϰϒµ'                 // 拉丁形大寫希臘＋變體＋micro（只吃真希臘/micro 碼點，不動拉丁 A）
+  + '∛∜‖∎∙∗⨯∤∕⁄⌊⌋⌈⌉⟨⟩‰‱≔∊∍⊈⊉⋃⋂∁⊻∄⟸⋀⋁⊤⊢⊨'
+  + '≃≑≓∶∷≼≽⋚⋛≮≯≰≱≨≩≢≁≇≉≜≝≟'
+  + '∐∯∰⨌⊖⊛⊞⊠⨁⨂⨀'
+  + '⇏⇎⇍↛↚↮⟷⟼↺↻↪↩⇄'
+  + '∢⦜⟂▭◊⌢⏜∽≌⌀⬠⬡';
+const U_WRAP_RE = new RegExp('[' + U_WRAP + ']+', 'g');
+// 組合附加符號（x̄ 平均、x⃗ 向量、x̂ 帽…）：CJK 字型多半不會把 mark 疊到 base 上 → 位移/豆腐；轉成 KaTeX \bar{x} 等。
+const U_COMB = { '̄': 'bar', '̅': 'bar', '̂': 'hat', '̃': 'tilde', '̇': 'dot', '̈': 'ddot', '̊': 'mathring', '̆': 'breve', '⃗': 'vec', '⃖': 'overleftarrow', '⃛': 'dddot', '́': 'acute', '̀': 'grave' };
+const U_COMB_RE = /([A-Za-z0-9Α-ωϑϕϖϵ])([̀-ͯ⃐-⃿])/g; // base 含拉丁/數字/希臘（σ̂ 這種 Greek+mark 也要成 \hat{σ}）
 function _mapU(m, tbl) { let o = ''; for (const c of m) o += (tbl[c] || c); return o; }
 function normUnicodeMath(s) {
   const parts = String(s).split(/(\\\([\s\S]*?\\\))/); // 奇數格＝島
   for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) { // 島內：literal 上下標 → KaTeX _{}/^{}
-      parts[i] = parts[i].replace(U_SUB_RE, (m) => '_{' + _mapU(m, U_SUB) + '}').replace(U_SUP_RE, (m) => '^{' + _mapU(m, U_SUP) + '}');
-    } else { // 島外散文：向量成島、上下標成 <sub>/<sup>
+    if (i % 2 === 1) { // 島內：HTML 實體還原給 KaTeX（<,>,& 是關係/對齊符號，被匯入流程 escape 成 &lt;/&gt;/&amp; 會讓 KaTeX 紅字報錯）＋ literal 上下標 → _{}/^{}
       parts[i] = parts[i]
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+        .replace(U_COMB_RE, (m, b, mk) => U_COMB[mk] ? '\\' + U_COMB[mk] + '{' + b + '}' : m)
+        .replace(U_SUB_RE, (m) => '_{' + _mapU(m, U_SUB) + '}').replace(U_SUP_RE, (m) => '^{' + _mapU(m, U_SUP) + '}');
+    } else { // 島外散文：組合符/向量成島、上下標成 <sub>/<sup>、其餘易豆腐數學符號整批包島交 KaTeX
+      const p = parts[i]
+        .replace(U_COMB_RE, (m, b, mk) => U_COMB[mk] ? '\\(\\' + U_COMB[mk] + '{' + b + '}\\)' : m)
         .replace(U_VEC_RE, (m, g) => '\\(\\overrightarrow{' + g + '}\\)')
         .replace(U_SUB_RE, (m) => '<sub>' + _mapU(m, U_SUB) + '</sub>')
         .replace(U_SUP_RE, (m) => '<sup>' + _mapU(m, U_SUP) + '</sup>');
+      // WRAP 只作用在「非島」段：避免把剛由組合符/向量產生的島內 WRAP 字元（如 \hat{σ} 的 σ）再包一次而套疊島
+      parts[i] = p.split(/(\\\([\s\S]*?\\\))/).map((seg, k) => k % 2 ? seg : seg.replace(U_WRAP_RE, (m) => '\\(' + m + '\\)')).join('');
     }
   }
   return parts.join('');
