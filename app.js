@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -702,6 +702,7 @@ function inkCaptureFull(qid, asDataURL) {
   ctx.setTransform(scale, 0, 0, scale, (pad - x0) * scale, (pad - y0) * scale);
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   for (const s of arr) inkDrawStroke(ctx, s, 2.2);
+  inkCaptureFull.lastW = Math.round(w); // 手寫實際 CSS 寬（給批改結果照原大小顯示，不要硬撐成一格放大）
   const url = cv.toDataURL('image/png');
   return asDataURL ? url : url.split(',')[1];
 }
@@ -3385,6 +3386,7 @@ function qGrade(optIdx) {
   // 整卷截圖：題卡上的筆跡＋計算區筆跡拼成一張（跟題本一樣整面都能寫）
   const calcB64 = inkCaptureFull(q.id);
   qsess.calcImg = calcB64 ? 'data:image/png;base64,' + calcB64 : null; // 存起乾淨版：批改後在你的筆跡上畫紅圈
+  qsess.calcImgW = inkCaptureFull.lastW || 480; // 手寫原始寬，批改結果照這寬顯示（不放大）
   const _ord = inkOrderedShot(q.id); // 給 AI 的是「標了書寫順序＋答案框」版；顯示/紅圈仍用乾淨版（幾何一致，marks 對得準）
   const _st = sessionInk[q.id] || {};
   const _ns = (_st.s || []).filter((s) => !s.dead && !s.arch).length;
@@ -3426,13 +3428,13 @@ function qShowJudge(hasAI) {
   }
 }
 // 像老師改考卷：把 AI 回傳的錯誤座標框（0~1）畫成紅圈＋短標，疊在你送去批改的那張手寫圖上
-function markedImgHTML(src, marks, caption) {
+function markedImgHTML(src, marks, caption, w) {
   const dots = (marks || []).slice(0, 3).map((mk) => {
     const raw = mk && mk.box;
     const b = Array.isArray(raw) ? raw.map(Number) : []; // 只接受陣列座標；字串/物件/數字等一律視為無效（不可直接 .map，否則會 throw）
     let [x0, y0, x1, y1] = b;
     if (b.length !== 4 || ![x0, y0, x1, y1].every((n) => n >= 0 && n <= 1) || !(x1 > x0) || !(y1 > y0)) return ''; // 座標非法就跳過這個框
-    const pad = 0.012; // 稍微放大，比較像老師隨手一圈
+    const pad = 0.028; // 框大一點、比較像老師隨手一圈（也符合「框可以大」）
     x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(1, x1 + pad); y1 = Math.min(1, y1 + pad);
     const L = (x0 * 100).toFixed(1), T = (y0 * 100).toFixed(1), W = ((x1 - x0) * 100).toFixed(1), H = ((y1 - y0) * 100).toFixed(1);
     let lab = '';
@@ -3444,7 +3446,7 @@ function markedImgHTML(src, marks, caption) {
     return `<span class="am-circle" style="left:${L}%;top:${T}%;width:${W}%;height:${H}%"></span>${lab}`;
   }).join('');
   if (!dots) return ''; // 沒有任何有效框：交給呼叫端退回純文字
-  return `<div class="ai-marked"><div class="am-wrap"><img src="${src}" alt="你的手寫（AI 已標記）">${dots}</div>${caption ? `<p class="am-cap">🖍 ${escH(caption)}</p>` : ''}</div>`;
+  return `<div class="ai-marked"><div class="am-wrap" style="width:${w || 480}px"><img src="${src}" alt="你的手寫（AI 已標記）">${dots}</div>${caption ? `<p class="am-cap">🖍 ${escH(caption)}</p>` : ''}</div>`;
 }
 function fbInView() { // 批改完把回饋區捲到頂：最上面就是判定＋「下一題」，不用往下拉
   const fb = $('#qfb');
@@ -3516,10 +3518,10 @@ function qResolve(ok) {
   // ③ 主要動作——緊接判定，一按就走，不用往下拉；類題支線用不同按鈕（不進主流程）
   const action = qsess.cfg.side
     ? (qsess.cfg.redo
-      ? `<div class="actr"><button class="btn" onclick="qRedoAgain()">📝 再算一次</button><button class="btn primary big" onclick="sideReturn()">↩ 回到原題</button></div>`
+      ? `<div class="actr"><button class="btn" onclick="qRedoAgain()">📝 再算一次</button><button class="btn" onclick="sideReturn()">↩ 回到原題</button><button class="btn primary big" onclick="qRedoDone()">下一題 →</button></div>`
       : `<div class="actr"><button class="btn primary big" onclick="sideNext()">🎯 再來一題類題</button><button class="btn" onclick="sideReturn()">↩ 回到原題</button></div>`)
     : (!ok
-      ? `<p class="dim" style="margin:8px 0 4px">先標錯因（不會跳題——詳解看完再走）：</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="chip${qsess.errPick === e ? ' sel' : ''}" onclick="qPickErr(this,'${e}')">${e}</button>`).join('')}</div><div class="actr" style="margin-top:8px"><button class="btn" onclick="qRedoStart()">📝 看解答重算一次</button><button class="btn" onclick="qSideStart()">🎯 先練一題類題</button><button class="btn primary big" id="errnext" ${qsess.errPick ? '' : 'disabled'} onclick="qFinish(false, ${ms}, qsess.errPick)">${qsess.errPick ? '下一題 →' : '↑ 先選錯因'}</button></div>`
+      ? `<p class="dim" style="margin:8px 0 4px">標個錯因幫錯題本分類（選填，不選也能直接下一題）：</p><div class="chips r">${ERR_TYPES.slice(0, 4).map((e) => `<button class="chip${qsess.errPick === e ? ' sel' : ''}" onclick="qPickErr(this,'${e}')">${e}</button>`).join('')}</div><div class="actr" style="margin-top:8px"><button class="btn" onclick="qRedoStart()">📝 看解答重算一次</button><button class="btn" onclick="qSideStart()">🎯 先練一題類題</button><button class="btn primary big" id="errnext" onclick="qFinish(false, ${ms}, qsess.errPick)">下一題 →</button></div>`
       : `<div class="actr"><button class="btn primary big" onclick="qFinish(true, ${ms}, ${overtime ? "'超時'" : 'null'})">下一題 →</button><button class="btn" onclick="qSideStart()">🎯 再練一題類題</button></div>`);
   // ④ 中段（批改的靈魂）：先肯定你做得好的 → 錯在哪（圈在你字上）→ 🧠 卡在哪 → 🎯 下次這樣做。詳解不塞這、收摺疊。
   const willProc = aiKey() && !v && qsess.proc && qsess.proc.n; // 選擇/打字題稍後由 AI 過程點評接手稱讚＋下次，這裡就不重複
@@ -3535,10 +3537,11 @@ function qResolve(ok) {
   const stuckBlock = willProc ? '' : stuckHTML(qsess.stuck);
   // 你的手算圖：批改後書寫層會收起（畫布藏起來），所以把手算放進批改結果裡讓你還看得到——答錯有紅圈、答對就純手算。
   // 填充題 qGrade 已存 qsess.calcImg；其他有手寫的補抓一次。選擇題（willProc）改由 #ai-proc 顯示手算，這裡不重複。
-  if (!qsess.calcImg && qsess.proc && qsess.proc.n) { const _b = inkCaptureFull(q.id); qsess.calcImg = _b ? 'data:image/png;base64,' + _b : null; }
+  if (!qsess.calcImg && qsess.proc && qsess.proc.n) { const _b = inkCaptureFull(q.id); qsess.calcImg = _b ? 'data:image/png;base64,' + _b : null; qsess.calcImgW = inkCaptureFull.lastW || 480; }
+  const imgW = qsess.calcImgW || 480; // 照手寫原始寬顯示（max-width:100% 兜住小螢幕），不再硬撐放大
   const hasMarks = v && Array.isArray(v.marks) && v.marks.length;
-  const marked = hasMarks ? markedImgHTML(qsess.calcImg, v.marks, v.firstError) : ''; // 座標全無效時 markedImgHTML 回 ''
-  const plainImg = qsess.calcImg ? `<div class="ai-marked"><div class="am-wrap"><img src="${qsess.calcImg}" alt="你的手算"></div></div>` : '';
+  const marked = hasMarks ? markedImgHTML(qsess.calcImg, v.marks, v.firstError, imgW) : ''; // 座標全無效時 markedImgHTML 回 ''
+  const plainImg = qsess.calcImg ? `<div class="ai-marked"><div class="am-wrap" style="width:${imgW}px"><img src="${qsess.calcImg}" alt="你的手算"></div></div>` : '';
   const handImg = (qsess.calcImg && !willProc) ? (marked || plainImg) : ''; // 圈畫不出來(座標壞)時退回純手算圖，不讓手算消失
   let mid = '';
   if (!ok) {
@@ -3658,6 +3661,13 @@ function sideReturn() {
   sideState = null;
   const el = document.getElementById('ai-proc'); // 支線期間原題的 AI 過程點評若才回來，重新貼上（否則會卡在「正在看…」）
   if (el && qsess.aiProcHTML) el.innerHTML = qsess.aiProcHTML;
+}
+/* 訂正重算中直接「下一題」：還原原題 session（原答案是錯的）→ 記原筆＋前進，不用先繞回原題再選錯因 */
+function qRedoDone() {
+  if (!sideState) return;
+  const s = sideState.sess;
+  sideReturn(); // qsess 回到原題
+  qFinish(false, (s && s.ms) || 0, s && s.errPick); // 原題答錯：記錄＋前進下一題
 }
 
 /* ═══════════ 模擬實戰 ═══════════ */
