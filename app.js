@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713x'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713y'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -1552,8 +1552,22 @@ function normUnicodeMath(s) {
   }
   return parts.join('');
 }
+/* 立體矩陣：把散文裡「[[a,b],[c,d],…]」這種壓扁成一行的矩陣/向量寫法，轉成真 2D 的 KaTeX bmatrix。
+   救匯入內容（如 114數B）不必改檔。島感知（不動既有 \(…\) 內），要求每列元素個數一致才轉（否則不是矩陣、放過）。 */
+const MAT_RE = /\[\s*(\[[^\[\]\n]+\](?:\s*,\s*\[[^\[\]\n]+\])+)\s*\]/g;
+function matTxt(s) {
+  return String(s).split(/(\\\([\s\S]*?\\\))/).map((seg, i) => i % 2 ? seg : seg.replace(MAT_RE, (whole, inner) => {
+    const rows = inner.match(/\[[^\[\]]*\]/g);
+    if (!rows || rows.length < 2) return whole; // 至少 2 列才當矩陣
+    const cells = rows.map((r) => r.slice(1, -1).split(',').map((x) => x.trim()));
+    const w = cells[0].length;
+    if (!w || !cells.every((row) => row.length === w)) return whole; // 各列元素數不一致＝不是矩陣，原樣放過
+    return '\\(\\begin{bmatrix}' + cells.map((row) => row.join(' & ')).join(' \\\\ ') + '\\end{bmatrix}\\)';
+  })).join('');
+}
 function rtTxt(s) {
-  s = normUnicodeMath(String(s)); // literal 向量箭頭/上下標 → 正規渲染（救匯入內容的方框/箭頭跑位）
+  s = matTxt(String(s)); // 壓扁的 [[…],[…]] 矩陣 → 立體 bmatrix 島（要在 normUnicodeMath/sanitize 前，之後照島處理）
+  s = normUnicodeMath(s); // literal 向量箭頭/上下標 → 正規渲染（救匯入內容的方框/箭頭跑位）
   s = sanitizeContent(s); // 島外散文白名單清洗（擋匯入他人題包的 <img onerror> 等儲存型 XSS）；\(…\) 島原封交給 KaTeX
   s = fracTxt(s); // 先把裸分數轉成 \frac 島（必須在下面 √ 逐字解析之前）
   let out = '';
@@ -2109,7 +2123,7 @@ function dailyChartSVG(days) {
 /* ═══════════ 📊 今日計數表（右上角常駐；速度特訓＋易/中/難，含類題） ═══════════
    標準：速訓 20、易/中/難各 15，不限章節。速訓＝今日各速訓輪題數加總；易中難＝今日
    主題刷/錯題複習(S.attempts)＋類題(S.sidePractice) 按題目難度分桶（速訓題非 BANK→天然不入難度桶）。 */
-const DAY_STD = { drill: 20, e: 20, m: 20, h: 20 };
+const DAY_STD = { drill: 20, e: 15, m: 15, h: 15 };
 function dayCounts() {
   const t = today();
   const c = { drill: 0, e: 0, m: 0, h: 0 };
@@ -3970,7 +3984,7 @@ let sideState = null; // { html, sess, origQ, doneIds, redo? }：支線期間暫
    跟類題共用支線機制：只記 S.sidePractice（帶 redo 旗標），不動 attempts/錯題本。 */
 function qRedoStart() {
   if (!qsess) return;
-  sideState = { html: app().innerHTML, sess: qsess, origQ: qsess.q, doneIds: [qsess.q.id], redo: true };
+  sideState = { html: app().innerHTML, sess: qsess, origQ: qsess.q, doneIds: [qsess.q.id], redo: true, origCut: Date.now() }; // origCut：原題手寫/標記全在此時間之前；訂正時寫的在之後——回原題時據此還原原筆、收起訂正筆
   qRedoAgain();
 }
 function qRedoAgain() {
@@ -3995,6 +4009,7 @@ function sideNext() {
 }
 function sideReturn() {
   if (!sideState) return;
+  const wasRedo = sideState.redo, origCut = sideState.origCut; // 先存起來，下面會把 sideState 清掉
   app().innerHTML = sideState.html; // 還原原題解答畫面（靜態，按鈕 onclick 用回全域 qsess）
   qsess = sideState.sess;
   sideState = null;
@@ -4002,8 +4017,16 @@ function sideReturn() {
   if (el && qsess.aiProcHTML) el.innerHTML = qsess.aiProcHTML;
   mountChat(qsess); // 還原「追問這題」對話（回原題後接著問）
   // innerHTML 還原的畫布是空白的(bitmap 不序列化)：重掛書寫層＋重畫手寫與 AI 紅圈、恢復可續寫，別讓原題的手算/批改標記消失
+  if (ink) { try { if (ink.ro) ink.ro.disconnect(); } catch (e) {} ink = null; } // 舊 #ink-cv 已被 innerHTML 換成新空白 canvas；清掉舊 ink 參照，強制 resumeWithMarks 重掛到「新」canvas 上重畫
   const q = qsess.q;
-  if (q && sessionInk[q.id]) { try { resumeWithMarks(q.id, (qsess.ai && qsess.ai.marks) || null, qsess.markBox); } catch (e) {} }
+  const st = q && sessionInk[q.id];
+  if (st) {
+    if (wasRedo && origCut) { // 訂正重算跟原題共用 qid：訂正的 inkStart 曾把原筆跡歸檔→這裡還原原筆(t0<origCut)、收起訂正筆(t0>=origCut)
+      for (const s of st.s) { if (s.t0 >= origCut) s.arch = 1; else if (s.arch) delete s.arch; }
+      if (st.m) for (const m of st.m) { if ((m.t || 0) >= origCut) m.arch = 1; else if (m.arch) delete m.arch; } // ✓✗/紅框標記一起還原
+    }
+    try { resumeWithMarks(q.id, (qsess.ai && qsess.ai.marks) || null, qsess.markBox); } catch (e) {}
+  }
 }
 /* 訂正重算中直接「下一題」：還原原題 session（原答案是錯的）→ 記原筆＋前進，不用先繞回原題再選錯因 */
 function qRedoDone() {
