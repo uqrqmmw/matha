@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713o'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713p'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -2265,6 +2265,7 @@ const VIEWS = {
   prac:  { label: '🎯 主題刷題', fn: renderPracConfig },
   mock:  { label: '⏱️ 模擬實戰', fn: renderMockIntro },
   wrong: { label: '📓 錯題本', fn: renderWrong },
+  tutor: { label: '🧑‍🏫 AI 老師', fn: renderTutor },
   stats: { label: '📊 數據', fn: renderStats },
   plan:  { label: '🗓️ 作戰計畫', fn: renderPlan },
 };
@@ -4678,6 +4679,100 @@ function errShotZoom(key) {
       ${fe ? `<p class="badc">✘ 你這裡跑掉了：${escH(fe)}</p>` : ''}
       <div class="errshot-full"><img src="${s.img}" alt="錯題手寫"></div>`, [['關閉', null, 'primary']]);
   });
+}
+/* ═══════════ 🧑‍🏫 AI 老師：撈你全部作答表現＋歷史手寫，像長期家教一樣討論學習 ═══════════
+   表現＝本機 S.attempts/wrong（也同步在雲端 app_state）；手寫＝Supabase ink_sessions 的筆跡重繪成圖＋配題幹。 */
+function buildTutorDigest() {
+  const A = (S.attempts || []).filter((a) => a.mode !== 'drill'); // 速訓＝反射練習，主分析看正式作答
+  if (!A.length) return '（這位學生還沒有正式作答紀錄。）';
+  const okN = A.filter((a) => a.ok).length, ds = A.map((a) => a.d).filter(Boolean).sort();
+  const byT = {};
+  for (const a of A) { const q = bankById(a.qid); if (!q) continue; const t = byT[q.topic] = byT[q.topic] || { n: 0, ok: 0, ms: 0, tgt: 0 }; t.n++; t.ok += a.ok ? 1 : 0; t.ms += a.ms || 0; t.tgt += qTarget(q); }
+  const topics = Object.entries(byT).map(([k, t]) => ({ name: TOPICS[k] || k, n: t.n, acc: t.ok / t.n, spd: t.tgt ? t.ms / t.tgt : 0 })).sort((a, b) => a.acc - b.acc);
+  const tag = {}, kind = {};
+  for (const a of A) { if (a.ok) continue; if (a.err) tag[a.err] = (tag[a.err] || 0) + 1; if (a.ai && a.ai.k) kind[a.ai.k] = (kind[a.ai.k] || 0) + 1; }
+  let fiS = 0, fiC = 0, hesS = 0, eraS = 0, pc = 0;
+  for (const a of A) { const p = a.p; if (!p) continue; pc++; if (p.fi != null) { fiS += p.fi; fiC++; } hesS += (p.hes || []).length; eraS += p.era || 0; }
+  const recent = A.filter((a) => !a.ok).sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 18).map((a) => { const q = bankById(a.qid); return `・${q ? TOPICS[q.topic] : '?'}(難${q ? q.diff : '?'})${a.d}：${(a.ai && a.ai.fe) || a.err || '—'}`; });
+  const cut = addDays(today(), -14);
+  const rec = A.filter((a) => (a.d || '') >= cut), old = A.filter((a) => (a.d || '') < cut);
+  const trend = (rec.length && old.length) ? `近14天答對率${(rec.filter((a) => a.ok).length / rec.length * 100).toFixed(0)}%(${rec.length}題) vs 更早${(old.filter((a) => a.ok).length / old.length * 100).toFixed(0)}%(${old.length}題)` : '資料還不夠比趨勢';
+  const pct = (x) => (x * 100).toFixed(0) + '%';
+  return [
+    `作答總覽：正式作答 ${A.length} 題、答對率 ${pct(okN / A.length)}（${ds[0]}～${ds[ds.length - 1]}）。${trend}。`,
+    `\n【各單元（弱→強）】\n` + topics.map((t) => `${t.name}：${t.n}題 答對${pct(t.acc)} 速度${t.spd ? t.spd.toFixed(2) + '×' : '—'}`).join('\n'),
+    `\n【自評錯因】` + (Object.entries(tag).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + v).join('、') || '（無）'),
+    `【AI 判的錯法機制】` + (Object.entries(kind).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + v).join('、') || '（近期才開始累積、暫少）'),
+    `\n【解題行為】平均 ${fiC ? (fiS / fiC).toFixed(1) : '?'} 秒才下第一筆、每題平均停頓 ${pc ? (hesS / pc).toFixed(1) : '?'} 次、擦除 ${pc ? (eraS / pc).toFixed(1) : '?'} 次（停頓多＝在想、擦除多＝算不穩）。`,
+    `\n【最近答錯的具體情形】\n` + recent.join('\n'),
+    `\n【錯題本】待複習 ${dueWrong().length} 題、已畢業 ${gradCount()} 題。`,
+  ].join('\n');
+}
+function inkStrokesToImg(arr) { // 把 ink_sessions 存的筆畫重繪成裁切白底 PNG（給 AI 看你實際怎麼寫）
+  arr = (arr || []).filter((s) => s && s.pts && s.pts.length && !s.dead);
+  if (!arr.length) return null;
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const s of arr) for (const p of s.pts) { if (p[0] < x0) x0 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[0] > x1) x1 = p[0]; if (p[1] > y1) y1 = p[1]; }
+  const pad = 14, w = x1 - x0 + pad * 2, h = y1 - y0 + pad * 2, scale = Math.min(2, Math.max(0.4, 1100 / w));
+  const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(w * scale)); cv.height = Math.max(1, Math.round(h * scale));
+  const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(scale, 0, 0, scale, (pad - x0) * scale, (pad - y0) * scale); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const s of arr) inkDrawStroke(ctx, s, 2.2);
+  return cv.toDataURL('image/png').split(',')[1];
+}
+async function tutorPullInk(limit) {
+  if (!supa || !syncState.user) return [];
+  try { const { data } = await supa.from('ink_sessions').select('qid,proc,strokes').eq('user_id', syncState.user.id).order('t0', { ascending: false }).limit(limit || 50); return data || []; }
+  catch (e) { return []; }
+}
+async function tutorHandwriting(n) { // 撈最近答錯的手寫、重繪、配題幹（手寫＋題幹一起才有意義）
+  const rows = await tutorPullInk(60);
+  const wrong = rows.filter((r) => r.proc && r.proc.ok === false && r.strokes && r.strokes.s && r.strokes.s.length).slice(0, n);
+  const out = [];
+  for (const r of wrong) { const img = inkStrokesToImg(r.strokes.s); if (!img) continue; const q = bankById(r.qid); out.push({ img, stem: q ? stripTags(q.q).slice(0, 140) : r.qid, ok: false }); }
+  return out;
+}
+let tutorChat = null;
+function renderTutor() {
+  if (!aiKey()) { app().innerHTML = `<h1>🧑‍🏫 AI 老師</h1><div class="card"><p>要先設定 AI key 才能跟老師對話。</p><div class="actr"><button class="btn primary" onclick="nav('stats')">去數據頁設定 AI</button></div></div>`; return; }
+  if (!S.attempts || !S.attempts.length) { app().innerHTML = `<h1>🧑‍🏫 AI 老師</h1><div class="card"><p>還沒有作答紀錄——先練幾題，老師才有東西跟你討論。</p></div>`; return; }
+  if (!tutorChat) tutorChat = { turns: [], hwReady: false };
+  app().innerHTML = `<h1>🧑‍🏫 AI 老師 <span class="dim" style="font-size:14px">你的長期家教</span></h1>
+    <div class="card"><p class="dim fs13">這位老師看得到你「全部的作答表現、單元強弱、速度、錯法，還會撈你最近幾題的手寫來看」。像跟長期家教聊天一樣問他：我最近怎麼樣？哪裡最該補？我為什麼老在某種地方錯？該怎麼調整？</p>
+      <div id="tutor-chat"></div></div>`;
+  mountTutorChat();
+}
+function mountTutorChat() {
+  const el = document.getElementById('tutor-chat'); if (!el) return;
+  const turns = tutorChat.turns;
+  const log = turns.map((t) => t.role === 'user' ? '<div class="cm cm-u">' + escH(t.text) + '</div>' : '<div class="cm cm-a">' + rtTxt(t.text) + '</div>').join('') + (tutorChat.busy ? '<div class="cm cm-a dim">🧑‍🏫 老師看你的紀錄＋手寫中…</div>' : '');
+  el.innerHTML = `<div class="ai-chat"><div class="chat-log">${log || '<p class="dim fs13">問老師任何關於你學習的事…</p>'}</div>
+    <div class="chat-in"><textarea id="tutorq" rows="2" placeholder="例：我最近進步了嗎？哪個單元最該補？我為什麼老在正負號出錯？接下來一週該怎麼練？" ${tutorChat.busy ? 'disabled' : ''}></textarea>
+    <button class="btn primary" onclick="tutorSend()" ${tutorChat.busy ? 'disabled' : ''}>問老師</button></div></div>`;
+  el.querySelectorAll('.cm-a').forEach((n) => { try { renderMathInElement(n, { delimiters: [{ left: '\\(', right: '\\)', display: false }, { left: '$', right: '$', display: true }], throwOnError: false }); } catch (e) {} });
+  const ta = el.querySelector('#tutorq');
+  if (ta) { ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); tutorSend(); } }); const lg = el.querySelector('.chat-log'); if (lg) lg.scrollTop = lg.scrollHeight; if (turns.length && !tutorChat.busy) ta.focus(); }
+}
+async function tutorSend() {
+  if (!tutorChat || tutorChat.busy || !aiKey()) return;
+  const ta = document.getElementById('tutorq'); const q = ta ? ta.value.trim() : ''; if (!q) return;
+  tutorChat.turns.push({ role: 'user', text: q });
+  tutorChat.busy = true; mountTutorChat();
+  try {
+    if (!tutorChat.hwReady) { try { tutorChat.hw = await tutorHandwriting(6); } catch (e) { tutorChat.hw = []; } tutorChat.hwReady = true; }
+    const system = '你是這位學測數學A考生的長期一對一家教，很了解他、講話直接但溫暖。根據下面「他的完整學習檔案」跟他討論學習狀況、指出你看到的模式與盲點、給「具體、可執行、這週就能做」的調整建議（別空泛、別只會叫他多練）。要寫算式一律用 \\(…\\) 包起來，不要用 markdown 粗體/標題。\n\n【他的學習檔案】\n' + buildTutorDigest() + (tutorChat.hw && tutorChat.hw.length ? '\n\n（第一則訊息另附他最近幾題答錯的手寫圖，每張前面都標了題目，供你看他實際怎麼寫、怎麼錯。）' : '');
+    const msgs = tutorChat.turns.map((t, i) => {
+      if (t.role === 'user' && i === 0 && tutorChat.hw && tutorChat.hw.length) {
+        const content = [{ type: 'text', text: t.text }];
+        for (const hw of tutorChat.hw) { content.push({ type: 'text', text: '〔題目〕' + hw.stem + '（他答錯）' }); content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: hw.img } }); }
+        return { role: 'user', content };
+      }
+      return { role: t.role, content: t.text };
+    });
+    const reply = await aiChatCall(system, msgs);
+    tutorChat.turns.push({ role: 'assistant', text: reply || '（沒有回應）' });
+  } catch (e) { tutorChat.turns.push({ role: 'assistant', text: '（老師暫時回不了：' + ((e && e.message) || e) + '）' }); }
+  finally { tutorChat.busy = false; mountTutorChat(); }
 }
 /* 計時器顯示開關（預設關：初期以寫完為主；時間照樣幕後記錄） */
 function setTimerVis(on) { S.hideTimer = on ? false : true; save(); renderStats(); }
