@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713t'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713u'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -3534,7 +3534,6 @@ function bkCard(q, head, submitFn, actions) {
     <div class="sheet-tools"><b>✍️ 整張都能寫${q.type === 'fill' ? '，答案寫在最後、圈起來' : ''}</b>${inkToolsHTML()}</div>
     <div class="bk-item"><span class="bk-num">${bkNum(head)}</span>
       <div class="bk-content">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${q.fig ? `<div class="qfig">${sanitizeSVG(q.fig)}</div>` : ''}${bkOpts(q, submitFn)}</div></div>
-    <div id="qhint"></div>
     <div class="write-pad"></div>
     <div class="ansarea">${actions}</div>
     <div id="qfb"></div>
@@ -3567,6 +3566,7 @@ function renderQuestion(q, cfg) {
     ${cfg.review && S.wrong[q.id] && !S.wrong[q.id].grad ? `<p class="dim fs13" style="margin:0 0 4px">📓 上次錯因：${S.wrong[q.id].err || '—'}${S.wrong[q.id].err === '超時' ? `｜⚡ 這次要在 ${fmtSec(target)} 內完成才過關` : ''}</p>` : ''}
     ${timerOn() ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
     <div id="q-flash" class="ink-flash" style="display:none"></div>
+    <div id="qhint"></div><!-- 提示放在書寫卡「外面、上方」：出現時把整張卡連同手寫往下推、不蓋到手寫（卡內任何面板都會蓋到滿版書寫層） -->
     ${cfg.redo ? `<div class="card redo-sol"><p><b>📖 解答攤開著——照它的路，自己再走一遍（寫完照樣批改）：</b></p>${rtTxt(q.sol)}${q.solFig ? `<div class="qfig">${sanitizeSVG(q.solFig)}</div>` : ''}${q.tip ? `<p class="tip">💡 ${rtTxt(q.tip)}</p>` : ''}${teachBlock(q.id)}</div>` : ''}
     ${bkCard(q, cfg.head, 'qSubmit', actions)}`;
   sessionChrome(true);
@@ -3606,7 +3606,9 @@ async function qHint() {
   const b64 = inkCaptureFull(q.id); // 目前手寫的即時快照（null＝還沒動筆）
   qsess.hints = qsess.hints || [];
   qsess.hintBusy = true;
+  if (qsess.hintCollapsed) qsess.hintCollapsed = false; // 按了卡關就展開讓他看得到
   renderHints();
+  const _he = document.getElementById('qhint'); if (_he && _he.scrollIntoView) try { _he.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {} // 提示在卡上方，捲進視野免得沒看到
   try {
     const correctTxt = q.type === 'fill' ? (q.ans && q.ans[0]) : (Array.isArray(q.ans) ? q.ans.map((a) => '(' + (a + 1) + ')').join('') : '');
     const prior = qsess.hints.length ? '\n（你之前已提示過，接著往下、換個角度、別重複）：\n' + qsess.hints.map((h, i) => (i + 1) + '. ' + h).join('\n') : '';

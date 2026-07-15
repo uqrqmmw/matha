@@ -1,7 +1,7 @@
 /* 數A特訓 PWA service worker
    策略：network-first（連得上就拿最新版，改版即時生效）、斷網退回快取（離線也能開）。
    只碰同源 GET；Supabase/Anthropic 等跨域請求一律直通不快取。 */
-const CACHE = 'matha13-v21';
+const CACHE = 'matha13-v22';
 // 全部同源（KaTeX/Supabase 皆已自架，無 CDN）→ 真離線可用。KaTeX 字型（vendor/katex/fonts/*.woff2）不列 SHELL，
 // 由 fetch handler 首次線上渲染時自動快取（避免某支字型 404 讓 addAll 整個 install 失敗）。
 const SHELL = ['./', 'index.html', 'style.css', 'bank.js', 'app.js', 'vendor/supabase.js', 'vendor/katex/katex.min.css', 'vendor/katex/katex.min.js', 'vendor/katex/auto-render.min.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
