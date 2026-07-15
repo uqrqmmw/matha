@@ -521,11 +521,11 @@ sup .vfrac { font-size: 1em; margin: 0 0.05em; }
 #qhint:empty { display: none; }
 /* 不透明實心面板：手寫在下層(z2)不會透上來糊成一團；有陰影＝清楚浮在計算紙上 */
 .hint-box { background: var(--panel); border: 1.5px solid var(--insight); border-radius: var(--r-m); padding: 9px 12px; margin: 8px 0; box-shadow: var(--sh-2); }
-.hint-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; color: var(--insight); font-size: 13px; margin: 0 0 5px; }
-.hint-toggle { flex: none; background: none; border: 1px solid var(--insight); color: var(--insight); border-radius: 7px; padding: 2px 9px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
-.hint-toggle:hover { background: var(--accent-soft); }
-.hint-box.collapsed { background: none; border: none; box-shadow: none; padding: 0; margin: 8px 0 4px; }
-.hint-box.collapsed .hint-toggle { background: var(--panel); box-shadow: var(--sh-1); padding: 6px 12px; font-weight: 700; border-radius: 999px; }
+.hint-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; color: var(--insight); font-size: 13px; margin: 0 0 5px; cursor: pointer; user-select: none; }
+.hint-head:hover { color: var(--accent-deep); }
+.hint-chevron { flex: none; font-size: 12px; opacity: 0.75; }
+.hint-box.collapsed { padding: 8px 12px; } /* 折疊：只剩可點的標題列，省空間、露出下面的手寫 */
+.hint-box.collapsed .hint-head { margin: 0; }
 .hint-item { margin: 4px 0; line-height: 1.5; }
 .hint-item b { color: var(--insight); margin-right: 3px; }
 /* 🔎 錯誤趨勢：錯題手寫縮圖庫 */

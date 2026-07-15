@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713u'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713v'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -3635,15 +3635,16 @@ function renderHints() {
   if (!el || !qsess) return;
   const hints = qsess.hints || [];
   if (!hints.length && !qsess.hintBusy) { el.innerHTML = ''; return; }
-  if (qsess.hintCollapsed) { // 收起成小藥丸：露出下面被蓋住的手寫，要看提示再展開
-    el.innerHTML = '<div class="hint-box collapsed"><button class="hint-toggle" onclick="qsess.hintCollapsed=false;renderHints()">💡 提示 ' + hints.length + ' 則 ▸ 展開</button></div>';
-    return;
-  }
-  el.innerHTML = '<div class="hint-box"><div class="hint-head"><span>💡 提示（一步一步來，不是完整答案）</span><button class="hint-toggle" onclick="qsess.hintCollapsed=true;renderHints()" title="收起，露出下面的手寫">收起 ▾</button></div>'
-    + hints.map((h, i) => '<div class="hint-item"><b>' + (i + 1) + '.</b> ' + rtTxt(h) + '</div>').join('')
-    + (qsess.hintBusy ? '<p class="dim">🤖 看你的手寫、想提示中…</p>' : '<div class="actr"><button class="btn sm" onclick="qHint()">再給一點提示</button></div>')
+  const collapsed = !!qsess.hintCollapsed;
+  // 手風琴折疊：點標題列本身就折疊／展開（整列可點、右邊箭頭 ▾/▸）
+  el.innerHTML = '<div class="hint-box' + (collapsed ? ' collapsed' : '') + '">'
+    + '<div class="hint-head" onclick="qsess.hintCollapsed=!qsess.hintCollapsed;renderHints()" title="點一下折疊／展開">'
+    + '<span>💡 提示' + (collapsed ? '（' + hints.length + ' 則，點開看）' : '（一步一步來，不是完整答案）') + '</span>'
+    + '<span class="hint-chevron">' + (collapsed ? '▸' : '▾') + '</span></div>'
+    + (collapsed ? '' : (hints.map((h, i) => '<div class="hint-item"><b>' + (i + 1) + '.</b> ' + rtTxt(h) + '</div>').join('')
+        + (qsess.hintBusy ? '<p class="dim">🤖 看你的手寫、想提示中…</p>' : '<div class="actr"><button class="btn sm" onclick="qHint()">再給一點提示</button></div>')))
     + '</div>';
-  el.querySelectorAll('.hint-item').forEach((n) => { try { renderMathInElement(n, { delimiters: [{ left: '\\(', right: '\\)', display: false }, { left: '$', right: '$', display: true }], throwOnError: false }); } catch (e) {} });
+  if (!collapsed) el.querySelectorAll('.hint-item').forEach((n) => { try { renderMathInElement(n, { delimiters: [{ left: '\\(', right: '\\)', display: false }, { left: '$', right: '$', display: true }], throwOnError: false }); } catch (e) {} });
 }
 function qSubmit(optIdx) {
   if (!qsess || qsess.locked) return;
