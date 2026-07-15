@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713k'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713l'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -25,6 +25,7 @@ function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); saveQuotaErr = false; }
   catch (e) { saveQuotaErr = true; ok = false; if (typeof syncPill === 'function') try { syncPill(); } catch (_) {} }
   syncQueue();
+  if (typeof renderDayCounter === 'function') try { renderDayCounter(); } catch (_) {} // 作答/速訓/類題記錄後，右上角今日計數即時更新
   return ok; // 匯入等大寫入要檢查回傳，別在存失敗時報「完成」
 }
 function exportData() {
@@ -2001,6 +2002,39 @@ function dailyChartSVG(days) {
   s += '</svg>';
   return s;
 }
+/* ═══════════ 📊 今日計數表（右上角常駐；速度特訓＋易/中/難，含類題） ═══════════
+   標準：速訓 20、易/中/難各 15，不限章節。速訓＝今日各速訓輪題數加總；易中難＝今日
+   主題刷/錯題複習(S.attempts)＋類題(S.sidePractice) 按題目難度分桶（速訓題非 BANK→天然不入難度桶）。 */
+const DAY_STD = { drill: 20, e: 15, m: 15, h: 15 };
+function dayCounts() {
+  const t = today();
+  const c = { drill: 0, e: 0, m: 0, h: 0 };
+  for (const k in S.drills) for (const r of (S.drills[k] || [])) if (r.d === t) c.drill += (r.n || 12); // 速訓：今日各輪題數（舊資料無 n 當 12）
+  const bump = (qid) => { const q = bankById(qid); if (!q) return; if (q.diff === 1) c.e++; else if (q.diff === 2) c.m++; else if (q.diff === 3) c.h++; };
+  for (const a of S.attempts) if (a.d === t) bump(a.qid);            // 主題刷／錯題複習（drill 不入 attempts，不重複計）
+  for (const s of (S.sidePractice || [])) if (s.d === t) bump(s.qid); // 做錯後練的類題也算進去
+  return c;
+}
+function renderDayCounter() {
+  const el = document.getElementById('day-counter');
+  if (!el) return;
+  const c = dayCounts();
+  const rows = [['速訓', c.drill, DAY_STD.drill], ['易', c.e, DAY_STD.e], ['中', c.m, DAY_STD.m], ['難', c.h, DAY_STD.h]];
+  if (localStorage.getItem('mathA13_dayctr_collapsed') === '1') {
+    const done = rows.filter((r) => r[1] >= r[2]).length;
+    el.className = 'dayctr collapsed';
+    el.innerHTML = '<button class="dc-toggle" onclick="dayCounterToggle()" title="展開今日計數表">📊 ' + done + '/4</button>';
+    return;
+  }
+  el.className = 'dayctr';
+  el.innerHTML = '<div class="dc-head"><span>📊 今日</span><button class="dc-toggle" onclick="dayCounterToggle()" title="收起">▸</button></div>'
+    + rows.map((r) => '<div class="dc-row' + (r[1] >= r[2] ? ' done' : '') + '"><span class="dc-lab">' + r[0] + '</span><span class="dc-num">' + r[1] + '<i>/' + r[2] + '</i></span></div>').join('');
+}
+function dayCounterToggle() {
+  const cur = localStorage.getItem('mathA13_dayctr_collapsed') === '1';
+  localStorage.setItem('mathA13_dayctr_collapsed', cur ? '0' : '1');
+  renderDayCounter();
+}
 const DAY_GOAL = 30; // 每日題數目標（速訓12＋錯題＋刷題8＋手機零碎 ≈ 30）
 /* 跨過每日目標線的那一刻要有事件（一天只觸發一次；goalHit 放 daily 內天然搭雲端合併與回滾） */
 function goalCrossBanner() {
@@ -3109,7 +3143,7 @@ function drillDone() {
   const times = drill.results.map((r) => r.ms);
   const med = median(times);
   const acc = Math.round(100 * drill.results.filter((r) => r.ok).length / drill.results.length);
-  (S.drills[drill.key] = S.drills[drill.key] || []).push({ d: today(), med, acc });
+  (S.drills[drill.key] = S.drills[drill.key] || []).push({ d: today(), med, acc, n: drill.results.length }); // n＝本輪題數，給右上角今日計數表加總（舊資料無 n 當 12）
   save();
   if (pomo) { // 番茄鐘裡的速訓：記一輪、標今日、直接接下一項（不看結算畫面）
     pomo.stats.drillRounds++;
@@ -3258,7 +3292,7 @@ function renderPracConfig() {
       </div>
       <h3>題數</h3>
       <div class="chips" id="cntChips">
-        ${[5, 8, 12].map((n) => `<label class="chip"><input type="radio" name="cnt" value="${n}"${n === (S.pracCnt || 8) ? ' checked' : ''}> ${n} 題</label>`).join('')}
+        ${[5, 15].map((n) => `<label class="chip"><input type="radio" name="cnt" value="${n}"${n === ([5, 15].includes(S.pracCnt) ? S.pracCnt : 15) ? ' checked' : ''}> ${n} 題</label>`).join('')}
       </div>
       ${extBankArr().some((q) => q.src && packIsOff(q.src)) ? `<p class="dim fs13">（外部題庫有 ${extBankArr().filter((q) => q.src && packIsOff(q.src)).length} 題被停用中——到 📊 數據頁可重新啟用）</p>` : ''}
       <div class="actr"><button class="btn primary" onclick="startPrac()">開始（未做過的題優先）</button></div>
@@ -3301,7 +3335,7 @@ function startPrac() {
   const topics = [...document.querySelectorAll('#topicChips input:checked')].map((i) => i.value);
   const diffs = [...document.querySelectorAll('#diffChips input:checked')].map((i) => +i.value);
   const cnt = +document.querySelector('#cntChips input:checked').value;
-  if (cnt !== (S.pracCnt || 8)) { S.pracCnt = cnt; save(); } // 記住上次選的題數
+  if (cnt !== S.pracCnt) { S.pracCnt = cnt; save(); } // 記住上次選的題數
   let pool = BANK.filter((q) => topics.includes(q.topic) && diffs.includes(q.diff));
   if (!pool.length) { alert('沒有符合條件的題目'); return; }
   // 未做過優先，其次做過次數少的
@@ -4932,6 +4966,8 @@ async function boot() {
   const navEl = $('nav');
   navEl.innerHTML = Object.keys(VIEWS).map((v) =>
     `<button data-view="${v}" onclick="nav('${v}')">${VIEWS[v].label}</button>`).join('');
+  if (!document.getElementById('day-counter')) { const dc = document.createElement('div'); dc.id = 'day-counter'; document.body.appendChild(dc); }
+  renderDayCounter(); // 右上角常駐今日計數表
   await contentInit(); // 分家啟用時從 IndexedDB 載內容（毫秒級；未啟用是 no-op）
   applyExtBank();
   aiKeyMigrate();
