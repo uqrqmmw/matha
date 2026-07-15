@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713w'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713x'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -1995,7 +1995,7 @@ function startDaily() {
   const due = dueWrong().length;
   const atk = attackList().slice(0, 3).map((a) => TOPICS[a.k]).join('、');
   modal(`<h2>▶ 今日菜單</h2><ol style="margin:8px 0 0 20px">
-      <li>⚡ 速訓：<b>${DRILLS[dp.key].name}</b> 12 題<span class="dim">（${dp.why}；幕後計時）</span></li>
+      <li>⚡ 速訓：<b>${DRILLS[dp.key].name}</b> 10 題<span class="dim">（${dp.why}；幕後計時）</span></li>
       <li>📓 到期錯題 <b>${due}</b> 題${due ? '' : '<span class="dim">（今天沒有，自動跳過）</span>'}</li>
       <li>🎯 弱項刷題 8 題<span class="dim">（${atk || '全範圍'}）</span></li>
     </ol><p class="dim">每段結束自動接下一段；中途 ✕ 可退出。</p>`, [
@@ -2389,7 +2389,7 @@ function exitFlow(view) {
   }
   // drill / 手機專區 / 衝刺複習：整輪結果尚未寫入，離開即不保留本輪
   const leaveMsg = sessionMode === 'drill'
-    ? '<h2>要中途離開嗎？</h2><p>離開＝本輪 12 題成績<b>全部作廢</b>（已答的也不算）。</p>'
+    ? '<h2>要中途離開嗎？</h2><p>離開＝本輪 10 題成績<b>全部作廢</b>（已答的也不算）。</p>'
     : sessionMode === 'wflash'
       ? '<h2>要中途離開嗎？</h2><p>衝刺複習不留紀錄，隨時可以再開。</p>'
       : '<h2>要中途離開嗎？</h2><p>這一輪還沒結束，離開不會保留本輪成績。</p>';
@@ -3082,12 +3082,12 @@ function renderDrillMenu() {
       <b>${d.name}</b><span class="dim"> 目標 ${d.target}s/題</span>
       <p class="dim">${d.desc}</p>
       <p class="dim">${stat}${dots ? ` <span class="mdots">${dots}</span>` : ''}</p>
-      <button class="btn primary" onclick="startDrill('${k}')">開始 12 題</button>
+      <button class="btn primary" onclick="startDrill('${k}')">開始 10 題</button>
     </div>`;
   }).join('');
   app().innerHTML = `
     <h1>⚡ 速度特訓 <span class="okc" style="font-size:14px">已自動化 ${autoN} / ${keys.length}</span></h1>
-    <p>目的：把基本運算練到<b>不經思考</b>。每輪 12 題。<b>達標＝中位數 ≤ 目標秒數，且 12 題全對</b>——兩個條件缺一不可，「快但會錯」在考場上比「慢」更貴。<br>
+    <p>目的：把基本運算練到<b>不經思考</b>。每輪 10 題。<b>達標＝中位數 ≤ 目標秒數，且 10 題全對</b>——兩個條件缺一不可，「快但會錯」在考場上比「慢」更貴。<br>
     <span class="dim">卡片頂色＝熟練度（越深越自動化）；最需要練的排最前。點點＝近 6 輪達標紀錄。</span></p>
     <div class="grid">${cards}</div>`;
 }
@@ -3144,7 +3144,7 @@ function genFresh(key, genFn, roundSeen) {
 function startDrill(key) {
   if (!syncGate()) return;
   drill = { key, items: [], i: 0, results: [], t0: 0, pend: null, rseen: new Set() };
-  for (let i = 0; i < 12; i++) drill.items.push(genFresh(key, () => DRILLS[key].gen(), drill.rseen));
+  for (let i = 0; i < 10; i++) drill.items.push(genFresh(key, () => DRILLS[key].gen(), drill.rseen));
   sessionActive = true;
   sessionMode = 'drill';
   drillNext();
@@ -3166,7 +3166,7 @@ function drillNext() {
     : `<div class="ansarea"><div class="ansrow">${it.opts.map((o, idx) => `<button class="btn opt" onclick="drillSubmit(${idx})">${mDispOpt(o)}</button>`).join('')}</div></div>`;
   app().innerHTML = `
     <div class="session-head">
-      <span>${d.name}｜第 ${drill.i + 1} / 12 題</span>
+      <span>${d.name}｜第 ${drill.i + 1} / 10 題</span>
       <span class="shr">${timerOn() ? '<span id="dtimer" class="timer">0.0s</span>' : ''}
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
@@ -3330,7 +3330,7 @@ function drillDone() {
       <p class="big">中位數 <b>${(med / 1000).toFixed(1)}s</b>／目標 ${d.target}s ｜ 答對 <b class="${accOK ? 'okc' : 'badc'}">${acc}%</b></p>
       <p>達標＝兩個條件同時成立：
         ① 中位數 ≤ ${d.target}s ${speedOK ? '<b class="okc">✓ 已達</b>' : `<b class="badc">✗ 未達（你 ${(med / 1000).toFixed(1)}s）</b>`}
-        ② 12 題全對 ${accOK ? '<b class="okc">✓ 已達</b>' : `<b class="badc">✗ 未達（你 ${acc}%，錯 ${wrongs.length} 題）</b>`}</p>
+        ② 10 題全對 ${accOK ? '<b class="okc">✓ 已達</b>' : `<b class="badc">✗ 未達（你 ${acc}%，錯 ${wrongs.length} 題）</b>`}</p>
       <p class="dim">全輪 ${(totalMs / 1000).toFixed(0)}s ｜ 最快 ${(fastest / 1000).toFixed(1)}s ｜ 最慢 ${(slowest / 1000).toFixed(1)}s</p>
       <p>${verdict}</p>
       ${prev ? `<p class="dim">上一輪 ${(prev.med / 1000).toFixed(1)}s／${prev.acc}% → 這一輪 ${(med / 1000).toFixed(1)}s／${acc}%
@@ -3370,17 +3370,20 @@ function topicPriority() {
   return { unseen, weak, by };
 }
 /* 一輪隊列裡同一題組的小題只取一題（共用題幹連著出會像「一直重複」）；不夠再補回 */
+// 「去數字後同骨架」＝只改數字的近重複題（如兩題排列組合只換了 8→7）：同一輪最多出一題，其餘留待補位。
+function qSkeleton(q) { return String(q.q).replace(/<[^>]+>/g, '').replace(/\d+/g, '#').replace(/\s+/g, '').toLowerCase(); }
 function dedupeStems(list, cnt) {
-  const seen = new Set(), out = [];
+  const seen = new Set(), skel = new Set(), out = [];
   for (const q of list) {
     const isGroup = String(q.q).includes('題為題組');
     const k = q.grp || (isGroup ? (q.src || '') + '|' + String(q.q).replace(/<[^>]+>/g, '').slice(0, 24) : q.id); // schema v2 的題組 id 優先，舊字串嗅探當 fallback
-    if (seen.has(k)) continue;
-    seen.add(k);
+    const sk = qSkeleton(q);
+    if (seen.has(k) || (sk.length >= 12 && skel.has(sk))) continue; // 題組/同 id 去重 ＋ 去數字後同骨架（近重複）去重
+    seen.add(k); skel.add(sk);
     out.push(q);
     if (out.length >= cnt) return out;
   }
-  for (const q of list) {
+  for (const q of list) { // 題庫變體太少、湊不滿一輪時才放寬近重複補位
     if (out.includes(q)) continue;
     out.push(q);
     if (out.length >= cnt) break;
