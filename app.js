@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0713v'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0713w'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -109,10 +109,18 @@ let _idb = null;
 function idbOpen() {
   if (_idb) return Promise.resolve(_idb);
   return new Promise((res, rej) => {
+    let done = false;
+    const to = setTimeout(() => { if (!done) { done = true; rej(new Error('IDB open 逾時')); } }, 4000); // 逾時保底：別讓 boot 因升級被舊分頁擋住而永久白畫面
     const rq = indexedDB.open('mathA13Content', 2);
     rq.onupgradeneeded = () => { const db = rq.result; if (!db.objectStoreNames.contains('packs')) db.createObjectStore('packs'); if (!db.objectStoreNames.contains('errshots')) db.createObjectStore('errshots'); };
-    rq.onsuccess = () => { _idb = rq.result; res(_idb); }; // 快取單一連線：反覆 open 不關會累積連線、可能互相 block
-    rq.onerror = () => rej(rq.error);
+    rq.onsuccess = () => {
+      if (done) { try { rq.result.close(); } catch (_) {} return; }
+      done = true; clearTimeout(to); _idb = rq.result;
+      _idb.onversionchange = () => { try { _idb.close(); } catch (_) {} _idb = null; }; // 別的分頁要升級時本頁自動關連線，不擋人（避免對方 onblocked 卡死）
+      res(_idb);
+    };
+    rq.onerror = () => { if (done) return; done = true; clearTimeout(to); rej(rq.error); };
+    rq.onblocked = () => {}; // 被舊分頁擋住：交給 timeout reject，呼叫端已容忍失敗（errShot*/contentInit 皆 try/catch）
   });
 }
 async function idbReadAll() {
@@ -1484,7 +1492,15 @@ function domSanitize(html, ok, unwrap) {
 }
 function sanitizeProse(s) { return domSanitize(s, SAN_PROSE_OK, true); }
 function sanitizeSVG(s) { return domSanitize(s, SAN_SVG_OK, false); }
-function sanitizeContent(s) { const parts = String(s).split(/(\\\([\s\S]*?\\\))/); for (let i = 0; i < parts.length; i += 2) parts[i] = sanitizeProse(parts[i]); return parts.join(''); }
+/* 島內容 HTML-escape（entity-aware：既有 &lt;/&gt;/&amp; 不重複逸出、裸 <>& 逸出）。
+   目的：島內容之後會塞進 innerHTML——裸 < 會被瀏覽器當標籤（\(<img onerror=…>\) 會執行＝XSS、\(0<x<1\) 的 <x 被吃掉）。
+   逸出後進 innerHTML 安全，瀏覽器把 &lt; 還原成「文字節點的 <」，KaTeX auto-render 讀文字節點照樣拿到 < > &、正常渲染。 */
+function escIsland(s) { return String(s).replace(/&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function sanitizeContent(s) {
+  const parts = String(s).split(/(\\\([\s\S]*?\\\))/);
+  for (let i = 0; i < parts.length; i++) parts[i] = i % 2 ? escIsland(parts[i]) : sanitizeProse(parts[i]);
+  return parts.join('');
+}
 /* literal Unicode 數學符號救援：匯入的官方試題常把「向量、上下標」寫成純字元
    （v→、AB→ 應是 \overrightarrow；x₁ 應是 x_1；10ⁿ 應是 10^n），字型沒該字就變方框/或顯示成字母後一個箭頭。
    這裡在 render 前一律轉成正規渲染，任何來源的內容都救得到（不用改內容檔）。 */
@@ -1519,9 +1535,9 @@ function _mapU(m, tbl) { let o = ''; for (const c of m) o += (tbl[c] || c); retu
 function normUnicodeMath(s) {
   const parts = String(s).split(/(\\\([\s\S]*?\\\))/); // 奇數格＝島
   for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) { // 島內：HTML 實體還原給 KaTeX（<,>,& 是關係/對齊符號，被匯入流程 escape 成 &lt;/&gt;/&amp; 會讓 KaTeX 紅字報錯）＋ literal 上下標 → _{}/^{}
+    if (i % 2 === 1) { // 島內：literal 上下標/組合符 → _{}/^{}。※不要在這裡把 &lt;→< 還原：島內容之後會進 innerHTML，
+      // 裸 < 會被瀏覽器當標籤(XSS/吃掉無空格不等式)。保持逸出，交給 sanitizeContent escIsland 統一逸出、瀏覽器再還原成文字給 KaTeX auto-render。
       parts[i] = parts[i]
-        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
         .replace(U_COMB_RE, (m, b, mk) => U_COMB[mk] ? '\\' + U_COMB[mk] + '{' + b + '}' : m)
         .replace(U_SUB_RE, (m) => '_{' + _mapU(m, U_SUB) + '}').replace(U_SUP_RE, (m) => '^{' + _mapU(m, U_SUP) + '}');
     } else { // 島外散文：組合符/向量成島、上下標成 <sub>/<sup>、其餘易豆腐數學符號整批包島交 KaTeX
@@ -1735,7 +1751,7 @@ function timerOn() { return S.hideTimer === false; }
 /* ═══════════ 紀錄 ═══════════ */
 /* AI 批改回傳 → 可持久化的建議物件（純文字截長，絕不存圖）。錯題本要能重看「人話建議」全靠這個。 */
 function advFrom(v) {
-  if (!v || (!v.firstError && !v.nextTime && !v.errKind)) return null;
+  if (!v || (!v.firstError && !v.nextTime)) return null; // 只有 errKind 不足以覆蓋錯題本既有的 fe/nt 建議（答對重測時 AI 若亂填 errKind 會把上次卡點洗掉）
   const a = {};
   if (v.firstError) a.fe = String(v.firstError).slice(0, 160);
   if (v.nextTime) a.nt = String(v.nextTime).slice(0, 160);
@@ -3217,8 +3233,30 @@ function drillFinish(ok, given, ms, proc) {
     drill.nextTimer = setTimeout(drillNext, 500); // endSession 會清掉，避免退出後殭屍題復活
   } else {
     fb.innerHTML = `<p class="bad">✘ 錯了，正確答案：<b>${mDispOpt(String(ansTxt))}</b></p>
-      <div class="actr"><button class="btn primary" onclick="drill.i++;drillNext()">下一題</button></div>`;
+      <div class="actr"><button class="btn primary" onclick="drill.i++;drillNext()">下一題</button></div>
+      <div id="drill-ai"></div>`;
+    drillAiReview(it, String(ansTxt)); // 速算也接 AI 批改＋教學：看手寫、指哪步錯、教快解（非同步、不擋下一題）
   }
+}
+/* 速算答錯時：AI 看你的手寫、指出哪步算錯＋教正確快解。非同步貼進 #drill-ai，不擋作答節奏；換題後(drill.qid 變)遲到回應自動丟棄。 */
+function drillAiReview(it, ansTxt) {
+  if (!aiKey() || !drill) return;
+  const b64 = inkCaptureFull(drill.qid);
+  if (!b64) return; // 沒手寫就不批（速算常直接心算選）
+  const dk = drill.qid;
+  const slot = document.getElementById('drill-ai');
+  if (slot) slot.innerHTML = '<p class="dim" style="margin-top:6px">🤖 AI 看你的手寫哪裡錯…（不用等，可先按下一題）</p>';
+  const system = '你是數學速算家教。這是一題速算選擇題，學生答錯了，傳來他的手寫過程。任務：以他自己寫的數字/算法判讀（別硬套別種算法），簡短（最多 3 句）指出他從哪一步開始算錯（引用他寫的式子），再教一個正確又快的算法。繁體中文、口語。數學式用 \\(…\\) 包起來。';
+  const content = [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } },
+    { type: 'text', text: '題目：' + stripTags(it.q) + '\n正確答案：' + ansTxt + '（他答錯了）。指出他哪裡錯＋教正確快解。' }];
+  aiChatCall(system, [{ role: 'user', content }])
+    .then((r) => {
+      if (!drill || drill.qid !== dk) return; // 已換題：丟棄
+      const s = document.getElementById('drill-ai'); if (!s) return;
+      s.innerHTML = '<div class="ai-fb" style="margin-top:6px"><p><b>🤖 AI 看你的手寫：</b></p><div class="dai-body">' + rtTxt(r || '（沒有回應）') + '</div></div>';
+      s.querySelectorAll('.dai-body').forEach((n) => { try { renderMathInElement(n, { delimiters: [{ left: '\\(', right: '\\)', display: false }, { left: '$', right: '$', display: true }], throwOnError: false }); } catch (e) {} });
+    })
+    .catch((e) => { if (drill && drill.qid === dk) { const s = document.getElementById('drill-ai'); if (s) s.innerHTML = '<p class="dim">（AI 批改失敗：' + escH((e && e.message) || e) + '）</p>'; } });
 }
 function drillDone() {
   sessionActive = false;
@@ -3601,17 +3639,17 @@ function qGiveUp() {
    可連按（每次看你最新進度、帶入先前提示避免重複）。不送出、不判分、不動計時。 */
 async function qHint() {
   if (!qsess || qsess.locked || qsess.hintBusy) return;
-  const q = qsess.q;
-  if (!aiKey()) { qsess.hints = ['（要先到 📊 數據頁設定 AI key 才能用提示）']; renderHints(); return; }
+  const sess = qsess, q = sess.q; // 綁定本題：await 期間換題/離開，遲到回應才不會污染別題或對 undefined qsess 丟錯
+  if (!aiKey()) { sess.hints = ['（要先到 📊 數據頁設定 AI key 才能用提示）']; if (qsess === sess) renderHints(); return; }
   const b64 = inkCaptureFull(q.id); // 目前手寫的即時快照（null＝還沒動筆）
-  qsess.hints = qsess.hints || [];
-  qsess.hintBusy = true;
-  if (qsess.hintCollapsed) qsess.hintCollapsed = false; // 按了卡關就展開讓他看得到
+  sess.hints = sess.hints || [];
+  sess.hintBusy = true;
+  if (sess.hintCollapsed) sess.hintCollapsed = false; // 按了卡關就展開讓他看得到
   renderHints();
   const _he = document.getElementById('qhint'); if (_he && _he.scrollIntoView) try { _he.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {} // 提示在卡上方，捲進視野免得沒看到
   try {
     const correctTxt = q.type === 'fill' ? (q.ans && q.ans[0]) : (Array.isArray(q.ans) ? q.ans.map((a) => '(' + (a + 1) + ')').join('') : '');
-    const prior = qsess.hints.length ? '\n（你之前已提示過，接著往下、換個角度、別重複）：\n' + qsess.hints.map((h, i) => (i + 1) + '. ' + h).join('\n') : '';
+    const prior = sess.hints.length ? '\n（你之前已提示過，接著往下、換個角度、別重複）：\n' + sess.hints.map((h, i) => (i + 1) + '. ' + h).join('\n') : '';
     const system = '你是陪考生即時解題的數學家教。學生正在算這一題、卡住了，傳來他目前的手寫過程。任務：\n'
       + '1) 先看懂他寫到哪、判斷他的方向可不可行。\n'
       + '2) 方向可行→順著他的寫法給「下一步」的關鍵提示；若看到他哪一步算錯，具體點出（引用他寫的式子）。\n'
@@ -3622,12 +3660,12 @@ async function qHint() {
     if (b64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } });
     content.push({ type: 'text', text: '題目：' + stripTags(q.q) + '\n正解（你心裡有數就好、絕不可透露）：' + (correctTxt || '（略）') + (q.sol ? '\n參考詳解（絕不可照抄或劇透，只供你判斷方向對不對）：' + stripTags(q.sol) : '') + '\n\n' + usr });
     const hint = await aiChatCall(system, [{ role: 'user', content }]);
-    qsess.hints.push(hint || '（沒有提示）');
+    sess.hints.push(hint || '（沒有提示）');
   } catch (e) {
-    qsess.hints.push('（提示失敗：' + ((e && e.message) || e) + '）');
+    sess.hints.push('（提示失敗：' + ((e && e.message) || e) + '）');
   } finally {
-    qsess.hintBusy = false;
-    renderHints();
+    sess.hintBusy = false;
+    if (qsess === sess) renderHints(); // 只在還停在本題時才更新畫面
   }
 }
 function renderHints() {
@@ -3960,6 +3998,9 @@ function sideReturn() {
   const el = document.getElementById('ai-proc'); // 支線期間原題的 AI 過程點評若才回來，重新貼上（否則會卡在「正在看…」）
   if (el && qsess.aiProcHTML) el.innerHTML = qsess.aiProcHTML;
   mountChat(qsess); // 還原「追問這題」對話（回原題後接著問）
+  // innerHTML 還原的畫布是空白的(bitmap 不序列化)：重掛書寫層＋重畫手寫與 AI 紅圈、恢復可續寫，別讓原題的手算/批改標記消失
+  const q = qsess.q;
+  if (q && sessionInk[q.id]) { try { resumeWithMarks(q.id, (qsess.ai && qsess.ai.marks) || null, qsess.markBox); } catch (e) {} }
 }
 /* 訂正重算中直接「下一題」：還原原題 session（原答案是錯的）→ 記原筆＋前進，不用先繞回原題再選錯因 */
 function qRedoDone() {
