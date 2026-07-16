@@ -267,6 +267,8 @@ button.bk-opt { appearance: none; border: 0; background: transparent; color: inh
 .qcard.booklet.sheet.replaying .write-pad, .qcard.booklet.sheet.replaying #ink-cv { display: block !important; }
 /* 書寫層畫布：絕對定位蓋滿整卡 */
 .qink { position: absolute; inset: 0; touch-action: none; cursor: crosshair; z-index: 2; }
+.qink[data-mode="erase"], #ink-cv[data-mode="erase"] { cursor: cell; }
+.ink-s-pen-status { color: var(--accent-deep); font-size: 12px; white-space: nowrap; }
 /* 工具列、選項、按鈕、輸入欄、回饋浮在畫布上層可直接點；題目/空白不抬高→畫布在其上→能寫 */
 .qcard .bk-opts, .qcard .ansarea, .qcard .ansrow, .qcard .sheet-tools, .qcard #qfb, .qcard #dfb, .qcard .typed-opt {
   position: relative; z-index: 3; touch-action: manipulation; }

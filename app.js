@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0717k'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0717l'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -711,6 +711,9 @@ function backupCard() {
 const HES_GAP = 15000;
 const INK_W = 1.35; // 筆跡粗細（原本 2 的 2/3）
 const INK_COLORS = { k: '#1f2937', r: '#dc2626', g: '#15803d' };
+// Pointer Events 標準側鍵是 buttons=2；三星 Chrome 也會把 S Pen 側鍵回報成
+// button=1 / buttons=4，因此筆尖接觸時常見的組合是 buttons=5（筆尖 1＋側鍵 4）。
+const SPEN_ERASE_BUTTONS = 2 | 4 | 32 | 64;
 let inkColor = 'k';
 let ink = null;
 let replaying = false;
@@ -727,6 +730,7 @@ function inkToolsHTML() {
       <button class="btn sm inkc" id="ink-c-g" onclick="inkColorSet('g')"><span class="dot" style="background:${INK_COLORS.g}"></span>綠</button>
       <button class="btn sm" onclick="inkUndo()">↩ 復原</button>
       <button class="btn sm" onclick="inkExtend(320)">⬇ 加長</button>
+      <span id="ink-s-pen-status" class="ink-s-pen-status" aria-live="polite" hidden></span>
     </span>`;
 }
 function inkHTML(opts) {
@@ -743,12 +747,12 @@ function inkHTML(opts) {
 }
 function inkSurface(key, cv, h) {
   // allowTouch＝手機筆記卡：手指就是筆（單指畫、第二指加入改捲動）；平板題卡維持只認筆、手掌免疫
-  const sur = { key, cv, ctx: cv.getContext('2d'), h, cur: null, touches: new Map(), allowTouch: cv.dataset.touch === '1' };
+  const sur = { key, cv, ctx: cv.getContext('2d'), h, cur: null, pointer: null, gestureMode: null, sPenButtonHeld: false, touches: new Map(), allowTouch: cv.dataset.touch === '1' };
   cv.style.pointerEvents = '';
   cv.onpointerdown = (e) => inkDown(e, sur);
   cv.onpointermove = (e) => inkMove(e, sur);
   cv.onpointerup = cv.onpointercancel = cv.onlostpointercapture = (e) => inkUp(e, sur); // lostpointercapture：系統邊緣手勢搶走已捕捉的指、不發 pointerup 時也清掉幽靈觸點，避免手機筆記卡卡在捲動模式（死指）。inkUp 冪等，正常收筆多跑一次無害
-  cv.oncontextmenu = (e) => e.preventDefault();
+  cv.oncontextmenu = (e) => inkContextMenu(e, sur);
   return sur;
 }
 function inkArr() { return inkStore(ink.qid).s; }
@@ -818,8 +822,82 @@ function inkPos(e, sur) {
   const r = sur.cv.getBoundingClientRect();
   return [Math.round(e.clientX - r.left), Math.round(e.clientY - r.top)];
 }
+function sPenErasePressed(e) {
+  if (!e || e.pointerType !== 'pen') return false;
+  const buttons = Number(e.buttons);
+  if (Number.isFinite(buttons) && (buttons & SPEN_ERASE_BUTTONS)) return true;
+  const button = Number(e.button);
+  return e.type === 'pointerdown' && (button === 1 || button === 2 || button === 5 || button === 6);
+}
+function sPenSamsungHoverButton(e) {
+  if (!e || e.pointerType !== 'pen' || Number(e.pressure) !== 0) return false;
+  return Number(e.button) === 1 || !!(Number(e.buttons) & 4);
+}
+function inkPenHasContact(e) {
+  if (!e || e.pointerType !== 'pen') return true;
+  const pressure = Number(e.pressure);
+  return Number.isFinite(pressure) ? pressure > 0 : !!(Number(e.buttons) & 1);
+}
+function inkModeRender(sur, temporaryErase) {
+  if (!sur) return;
+  sur.cv.dataset.mode = temporaryErase ? 'erase' : 'pen';
+  const status = $('#ink-s-pen-status');
+  if (status) {
+    status.hidden = !temporaryErase;
+    status.textContent = temporaryErase ? '側鍵按住：橡皮擦' : '';
+  }
+}
+function inkSamsungHoldSet(sur, held) {
+  if (!sur) return false;
+  sur.sPenButtonHeld = !!held;
+  if (sur.pointer == null) inkModeRender(sur, held);
+  return true;
+}
+function inkSamsungHover(e, sur) {
+  if (!sur || !e || e.pointerType !== 'pen') return false;
+  if (sPenSamsungHoverButton(e)) return inkSamsungHoldSet(sur, true);
+  if (Number(e.pressure) === 0) return inkSamsungHoldSet(sur, false);
+  return false;
+}
+function inkGestureMode(e, sur) {
+  return sPenErasePressed(e) || !!(sur && sur.sPenButtonHeld) ? 'erase' : 'pen';
+}
+function inkFinishCurrent(sur) {
+  if (!sur || !sur.cur) return false;
+  const cur = sur.cur; sur.cur = null;
+  if (cur.pts.length <= 1) return false;
+  cur.t1 = Date.now(); delete cur.tid; inkArr(sur).push(cur); inkCheckpoint(false); return true;
+}
+function inkPointSegmentDistance(px, py, a, b) {
+  const vx = b[0] - a[0], vy = b[1] - a[1], wx = px - a[0], wy = py - a[1];
+  const len2 = vx * vx + vy * vy;
+  const t = len2 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2)) : 0;
+  return Math.hypot(px - (a[0] + t * vx), py - (a[1] + t * vy));
+}
+function inkEraseAt(e, sur) {
+  if (!ink || !sur) return false;
+  const [x, y] = inkPos(e, sur), now = Date.now(), radius = 18;
+  const st = inkStore(ink.qid); let changed = false;
+  for (const stroke of st.s) {
+    if (!stroke || stroke.dead || stroke.arch || !Array.isArray(stroke.pts) || !stroke.pts.length) continue;
+    let hit = Math.hypot(x - stroke.pts[0][0], y - stroke.pts[0][1]) <= radius;
+    for (let i = 1; !hit && i < stroke.pts.length; i++) hit = inkPointSegmentDistance(x, y, stroke.pts[i - 1], stroke.pts[i]) <= radius;
+    if (hit) { stroke.dead = now; changed = true; }
+  }
+  if (!changed) return false;
+  st.e.push(now); inkCheckpoint(false); inkRedraw(sur); return true;
+}
+function inkContextMenu(e, sur) {
+  e.preventDefault();
+  if (!sur) return false;
+  inkFinishCurrent(sur);
+  sur.pointer = null; sur.gestureMode = null; sur.sPenButtonHeld = false;
+  inkModeRender(sur, false);
+  return false;
+}
 function inkDown(e, sur) {
   if (!ink || replaying) return;
+  if (e.pointerType === 'pen' && sPenSamsungHoverButton(e)) { e.preventDefault(); inkSamsungHover(e, sur); return; }
   e.preventDefault();
   try { sur.cv.setPointerCapture(e.pointerId); } catch (_) {}
   if (e.pointerType === 'touch') {
@@ -842,6 +920,13 @@ function inkDown(e, sur) {
   }
   ink.penAt = Date.now();
   sur.touches.clear(); // 筆落下即作廢該面已登記的手掌觸點
+  sur.pointer = e.pointerId;
+  sur.gestureMode = inkGestureMode(e, sur);
+  inkModeRender(sur, sur.gestureMode === 'erase');
+  if (sur.gestureMode === 'erase') {
+    if (inkPenHasContact(e)) inkEraseAt(e, sur);
+    return;
+  }
   const [x, y] = inkPos(e, sur);
   sur.cur = { t0: Date.now(), c: inkColor, pts: [[x, y]] };
 }
@@ -878,9 +963,25 @@ function inkMove(e, sur) {
     }
     return;
   }
-  if (!sur.cur) return;
+  if (e.pointerType === 'pen' && sur.pointer == null) { inkSamsungHover(e, sur); return; }
+  if (sur.pointer != null && sur.pointer !== e.pointerId) return;
   e.preventDefault();
   ink.penAt = Date.now();
+  const nextMode = inkGestureMode(e, sur);
+  if (nextMode !== sur.gestureMode) {
+    inkFinishCurrent(sur);
+    sur.gestureMode = nextMode;
+    inkModeRender(sur, nextMode === 'erase');
+    if (nextMode === 'pen' && inkPenHasContact(e)) {
+      const [x, y] = inkPos(e, sur);
+      sur.cur = { t0: Date.now(), c: inkColor, pts: [[x, y]] };
+    }
+  }
+  if (sur.gestureMode === 'erase') {
+    if (inkPenHasContact(e)) inkEraseAt(e, sur);
+    return;
+  }
+  if (!sur.cur) return;
   const [x, y] = inkPos(e, sur);
   const pts = sur.cur.pts; const p = pts[pts.length - 1];
   if (Math.abs(x - p[0]) + Math.abs(y - p[1]) < 2) return;
@@ -903,9 +1004,10 @@ function inkUp(e, sur) {
     if (sur.touches.size === 0) sur.scroll = false; // 所有指離開才結束捲動手勢
     return; // 按鈕/選項都以 z-index 浮在畫布上層，觸點會直接落在它們身上，不需要穿透
   }
-  if (!sur.cur) return;
-  const cur = sur.cur; sur.cur = null;
-  if (cur.pts.length > 1) { cur.t1 = Date.now(); inkArr(sur).push(cur); inkCheckpoint(false); } // 單點＝誤觸，不留筆畫
+  if (sur.pointer != null && sur.pointer !== e.pointerId) return;
+  inkFinishCurrent(sur); // 單點＝誤觸，不留筆畫
+  sur.pointer = null; sur.gestureMode = null;
+  inkModeRender(sur, !!sur.sPenButtonHeld);
 }
 function inkUndo() {
   if (!ink) return;
@@ -1059,7 +1161,7 @@ function inkStop() {
   if (ink.ro) ink.ro.disconnect();
   for (const k of Object.keys(ink.sur)) {
     const cv = ink.sur[k].cv;
-    cv.onpointerdown = cv.onpointermove = cv.onpointerup = cv.onpointercancel = cv.onlostpointercapture = null;
+    cv.onpointerdown = cv.onpointermove = cv.onpointerup = cv.onpointercancel = cv.onlostpointercapture = cv.oncontextmenu = null;
     cv.style.pointerEvents = 'none'; // 停止書寫後畫布不再攔截點擊（批改按鈕在畫布下層）
   }
   ink = null;
@@ -5358,7 +5460,6 @@ const PAPER_ZOOM_MIN = .75;
 const PAPER_ZOOM_MAX = 4;
 const PAPER_INK_WIDTH_MIN = .35;
 const PAPER_INK_WIDTH_MAX = 2;
-const PAPER_PEN_ERASE_BUTTONS = 2 | 32 | 64; // Web 標準 2/32；Android 原始 stylus primary/secondary 32/64
 function paperInkQid(run, page) { return `paper:${run.id}:v${PAPER_LAYOUT_VERSION}:${page}`; }
 async function paperInkLoadAll(run, source) {
   const pages = {};
@@ -5605,15 +5706,10 @@ function paperInkAttach() {
   cv.oncontextmenu = paperInkContextMenu; paperInkPaint(); paperInkModeSet(paperSourceSession.inkMode || 'pen');
 }
 function paperInkPenErasePressed(e) {
-  if (!e || e.pointerType !== 'pen') return false;
-  const buttons = Number(e.buttons);
-  if (Number.isFinite(buttons) && (buttons & PAPER_PEN_ERASE_BUTTONS)) return true;
-  const button = Number(e.button);
-  return e.type === 'pointerdown' && (button === 2 || button === 5 || button === 6);
+  return sPenErasePressed(e);
 }
 function paperInkSamsungHoverButton(e) {
-  if (!e || e.pointerType !== 'pen' || Number(e.pressure) !== 0) return false;
-  return Number(e.button) === 1 || !!(Number(e.buttons) & 4);
+  return sPenSamsungHoverButton(e);
 }
 function paperInkSamsungHoldSet(held) {
   if (!paperSourceSession) return false;
