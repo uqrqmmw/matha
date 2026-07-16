@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0717l'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0717m'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -5560,11 +5560,18 @@ function paperInkPoint(e, cv) {
 function paperInkEraseAt(e, cv) {
   const data = paperInkPage(); if (!data) return false;
   const p = paperInkPoint(e, cv), width = cv.clientWidth, height = cv.clientHeight;
-  let hit = null, best = 15;
+  const px = p[0] * width, py = p[1] * height;
+  let hit = null, best = 18;
   for (let i = data.s.length - 1; i >= 0; i--) {
     const stroke = data.s[i]; if (!stroke || stroke.dead) continue;
-    for (const q of stroke.pts || []) {
-      const d = Math.hypot((p[0] - q[0]) * width, (p[1] - q[1]) * height);
+    const pts = stroke.pts || [];
+    for (let j = 0; j < pts.length; j++) {
+      const q = pts[j];
+      const d = j === 0
+        ? Math.hypot(px - q[0] * width, py - q[1] * height)
+        : inkPointSegmentDistance(px, py,
+          [pts[j - 1][0] * width, pts[j - 1][1] * height],
+          [q[0] * width, q[1] * height]);
       if (d < best) { best = d; hit = stroke; }
     }
   }
