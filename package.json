@@ -4,7 +4,7 @@
   "private": true,
   "description": "數A 特訓 PWA — static checks and regression tests",
   "scripts": {
-    "test": "node --check app.js && node --check bank.js && node --check practice-bank.js && node --check sw.js && node --test"
+    "test": "node --check sw.js && node scripts/check-redirect.js"
   },
   "engines": {
     "node": ">=20"
