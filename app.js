@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0717g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0717h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -5336,7 +5336,7 @@ async function startPaperSource(sourceId) {
     if (run.status === 'active') run.resumeAt = Date.now();
     run.mt = Date.now(); save();
     const savedPage = Number(run.paperPage);
-    paperSourceSession = { source, run, urls, inkPages, page: Number.isFinite(savedPage) ? savedPage : 0, zoom: 1, inkMode: 'pen' };
+    paperSourceSession = { source, run, urls, inkPages, page: Number.isFinite(savedPage) ? savedPage : 0, zoom: 1, inkMode: 'pen', inkWidth: paperInkWidthValue(run.paperInkWidth) };
     paperSourceSession.page = Math.max(0, Math.min(source.scans.length - 1, paperSourceSession.page));
     sessionActive = true; sessionMode = run.status === 'grading' ? 'paper-grade' : 'paper-source';
     if (run.status === 'grading' || paperRunLeft(run) <= 0) paperSourceGrade(run.status === 'grading' ? '繼續今天的批分' : '時間到');
@@ -5356,6 +5356,8 @@ let paperStateSaveTimer = null;
 let paperZoomPaintTimer = null;
 const PAPER_ZOOM_MIN = .75;
 const PAPER_ZOOM_MAX = 4;
+const PAPER_INK_WIDTH_MIN = .35;
+const PAPER_INK_WIDTH_MAX = 2;
 function paperInkQid(run, page) { return `paper:${run.id}:v${PAPER_LAYOUT_VERSION}:${page}`; }
 async function paperInkLoadAll(run, source) {
   const pages = {};
@@ -5431,7 +5433,7 @@ function paperInkLine(ctx, stroke, width, height) {
   if (!stroke || stroke.dead || !Array.isArray(stroke.pts) || stroke.pts.length < 2) return;
   ctx.strokeStyle = '#343a36'; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   const pressure = Number(stroke.pts.reduce((sum, p) => sum + (Number(p[2]) || .5), 0) / stroke.pts.length);
-  ctx.lineWidth = 1.35 + Math.max(.15, pressure) * 1.5;
+  ctx.lineWidth = (1.35 + Math.max(.15, pressure) * 1.5) * paperInkWidthValue(stroke.w);
   ctx.beginPath(); ctx.moveTo(stroke.pts[0][0] * width, stroke.pts[0][1] * height);
   for (let i = 1; i < stroke.pts.length; i++) ctx.lineTo(stroke.pts[i][0] * width, stroke.pts[i][1] * height);
   ctx.stroke();
@@ -5509,7 +5511,7 @@ function paperInkDown(e) {
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
   paperSourceSession.inkPointer = e.pointerId;
   if (paperSourceSession.inkMode === 'erase') { paperInkEraseAt(e, cv); return; }
-  paperSourceSession.inkCurrent = { t0: Date.now(), pts: [paperInkPoint(e, cv)] };
+  paperSourceSession.inkCurrent = { t0: Date.now(), w: paperInkWidthValue(paperSourceSession.inkWidth), pts: [paperInkPoint(e, cv)] };
 }
 function paperInkMove(e) {
   if (!paperSourceSession) return;
@@ -5584,6 +5586,21 @@ function paperInkModeSet(mode) {
     const btn = $(`#paper-tool-${key}`); if (btn) btn.classList.toggle('active', key === paperSourceSession.inkMode);
   }
   const cv = $('#paper-ink-canvas'); if (cv) cv.dataset.mode = paperSourceSession.inkMode;
+}
+function paperInkWidthValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(PAPER_INK_WIDTH_MIN, Math.min(PAPER_INK_WIDTH_MAX, Math.round(n * 100) / 100)) : 1;
+}
+function paperInkWidthSet(percent) {
+  if (!paperSourceSession) return;
+  const width = paperInkWidthValue(Number(percent) / 100);
+  paperSourceSession.inkWidth = width;
+  if (paperSourceSession.run) {
+    paperSourceSession.run.paperInkWidth = width;
+    paperSourceSession.run.mt = Date.now();
+    clearTimeout(paperStateSaveTimer); paperStateSaveTimer = setTimeout(save, 300);
+  }
+  const label = $('#paper-pen-width-label'); if (label) label.textContent = `${Math.round(width * 100)}%`;
 }
 function paperInkUndo() {
   const data = paperInkPage(); if (!data) return;
@@ -5717,7 +5734,7 @@ function renderPaperSource() {
     <div class="paper-workbar"><div class="paper-workgroup"><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button></div>
       <span id="paper-clock" class="timer paper-timer">${fmtClock(left)}</span>
       <div class="paper-workgroup right"><button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><button class="paper-answer-button" onclick="paperAnswerOpen()">${uiIcon('numbers')}<span>答案卡</span><b id="paper-answer-badge">${answered}</b></button><button class="paper-icon-btn" onclick="exitFlow()" aria-label="離開">${uiIcon('x')}</button></div></div>
-    <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-pane-caption"><span>清晰單頁・可直接在題目上寫</span><small id="paper-ink-status">筆跡自動保存</small></div><div class="paper-ink-tools"><button id="paper-tool-pen" onclick="paperInkModeSet('pen')">${uiIcon('pencil')}筆</button><button id="paper-tool-erase" onclick="paperInkModeSet('erase')">${uiIcon('erase')}橡皮擦</button><button onclick="paperInkUndo()">${uiIcon('undo')}復原</button><button onclick="paperInkClear()">${uiIcon('x')}清空本頁筆跡</button></div><div class="paper-page-viewport"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}" style="width:${paperSourceSession.zoom * 100}%;max-width:${1180 * paperSourceSession.zoom}px"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可直接書寫的題本頁"></canvas></div><p class="paper-write-hint">觸控筆直接書寫；單指拖動畫面，雙指可縮放並移動，最高放大到 400%。</p></div></section></div>
+    <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-pane-caption"><span>清晰單頁・可直接在題目上寫</span><small id="paper-ink-status">筆跡自動保存</small></div><div class="paper-ink-tools"><button id="paper-tool-pen" onclick="paperInkModeSet('pen')">${uiIcon('pencil')}筆</button><button id="paper-tool-erase" onclick="paperInkModeSet('erase')">${uiIcon('erase')}橡皮擦</button><button onclick="paperInkUndo()">${uiIcon('undo')}復原</button><button onclick="paperInkClear()">${uiIcon('x')}清空本頁筆跡</button><label class="paper-pen-width" for="paper-pen-width"><span>筆粗 <b id="paper-pen-width-label">${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}%</b></span><input id="paper-pen-width" type="range" min="35" max="200" step="5" value="${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}" oninput="paperInkWidthSet(this.value)" aria-label="調整畫筆粗細"></label></div><div class="paper-page-viewport"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}" style="width:${paperSourceSession.zoom * 100}%;max-width:${1180 * paperSourceSession.zoom}px"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可直接書寫的題本頁"></canvas></div><p class="paper-write-hint">觸控筆直接書寫；單指拖動畫面，雙指可縮放並移動。放大後可用上方「筆粗」把線條調細。</p></div></section></div>
     <div class="paper-finish-bar"><span>${source.questions} 題・${source.minutes} 分鐘｜已填答案 ${answered} 題</span><button class="btn primary" onclick="paperSourceGrade('主動交卷')">交卷，今天只批分</button></div></div>`;
   sessionChrome(true);
   paperInkAttach();
