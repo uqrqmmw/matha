@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0717c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0717d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -4988,7 +4988,7 @@ function qRedoDone() {
 
 /* ═══════════ 模擬實戰 ═══════════ */
 function paperLatestRun(sourceId) {
-  return (S.paperRuns || []).filter((run) => run && run.sourceId === sourceId)
+  return (S.paperRuns || []).filter((run) => run && run.sourceId === sourceId && run.status !== 'discarded')
     .sort((a, b) => Number(b.createdAt || b.mt || 0) - Number(a.createdAt || a.mt || 0))[0] || null;
 }
 function paperSourceCardHTML(source) {
@@ -5305,7 +5305,15 @@ function paperSourceSaveDraft() {
   run.status = 'grading'; run.resumeAt = null; run.mt = Date.now(); save();
 }
 function paperSourceDiscard(runId) {
-  S.paperRuns = (S.paperRuns || []).filter((run) => run && run.id !== runId);
+  const run = (S.paperRuns || []).find((item) => item && item.id === runId);
+  if (run) {
+    const now = Date.now();
+    run.status = 'discarded';
+    run.resumeAt = null;
+    run.gradeDraft = null;
+    run.discardedAt = now;
+    run.mt = now;
+  }
   S.extMocks = (S.extMocks || []).filter((row) => row && row.paperRunId !== runId);
   save();
 }

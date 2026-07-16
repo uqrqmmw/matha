@@ -163,6 +163,25 @@ test('原版模考暫停會凍結剩餘時間並可跨頁面續寫', () => {
   assert.equal(Math.abs(result.frozen - result.remaining) < 20, true);
 });
 
+test('捨棄原版模考會留下同步墓碑並清掉關聯成績', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    save = () => {};
+    const row = { id:'discard-1', sourceId:'paper-mock-1', status:'paused', remainingMs:100000, resumeAt:null, mt:1, createdAt:1 };
+    S.paperRuns = [row];
+    S.extMocks = [{ id:'external-discard-1', paperRunId:'discard-1', score:0 }];
+    paperSourceDiscard('discard-1');
+    return { row, active:paperActiveRun('paper-mock-1'), latest:paperLatestRun('paper-mock-1'), ext:S.extMocks };
+  })()`));
+  assert.equal(result.row.status, 'discarded');
+  assert.equal(result.row.resumeAt, null);
+  assert.equal(result.row.discardedAt > 1, true);
+  assert.equal(result.row.mt, result.row.discardedAt);
+  assert.equal(result.active, null);
+  assert.equal(result.latest, null);
+  assert.deepEqual(result.ext, []);
+});
+
 test('眼睛刷題沒有方向時隔天才到期，基本定義卡依語意結果排程', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
