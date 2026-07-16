@@ -17,3 +17,8 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno fmt --check supabase/functions/openai-proxy/index.ts supabase/functions/device-pair/index.ts
+      - run: deno check --node-modules-dir=auto supabase/functions/openai-proxy/index.ts supabase/functions/device-pair/index.ts

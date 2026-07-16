@@ -2,7 +2,7 @@
 
 給學測數A考生使用的離線優先 PWA。它把十一單元空白默寫、全真模考、破題方向訓練、隔日三級訂正、重要定義理解、手寫 AI 比對與跨裝置同步放在同一個純前端 app 裡。
 
-目前版本為 `0716j`，正式站是 <https://uqrqmmw.github.io/matha/>。全站使用暖白、石墨字與低彩度灰褐／橄欖色；正式 UI 圖示由專案內建 SVG 提供，不使用 emoji。離線核心題庫有 363 題；登入後再載入 4092 題經清洗、雜湊驗證且不公開上 GitHub 的私有題庫，共 4455 題可用。
+目前版本為 `0717a`，正式站是 <https://uqrqmmw.github.io/matha/>。全站使用暖白、石墨字與低彩度灰褐／橄欖色；正式 UI 圖示由專案內建 SVG 提供，不使用 emoji。離線核心題庫有 363 題；登入後再載入 4092 題經清洗、雜湊驗證且不公開上 GitHub 的私有題庫，共 4455 題可用。
 
 主要流程只有五個入口：「今日、大綱默寫、模考與破題、隔日訂正、觀念理解」。完整模考固定 20 題、100 分鐘，當天只批分；隔天依「直接會寫／只看答案能算出／必須看詳解」分成三級。眼睛刷題只找一個切入點，完全沒方向的題鎖到隔天再想。舊速度工具、舊錯題庫與舊分析頁已從操作入口移除。完整設計與紙本整回匯入規格見 [`TEACHER_WORKFLOW_V2.md`](TEACHER_WORKFLOW_V2.md)。
 
@@ -29,13 +29,14 @@ npm test
 - `app.js`、`bank.js`、`practice-bank.js`、`sw.js` 語法
 - 內建題庫 schema 與 id 唯一性
 - 私有題庫清洗、缺圖／超範圍隔離、emoji 移除、模板分群與下載雜湊驗證
-- 280 題固定公式核心變式的數量、單元分布、模板欄位與跨單元答案抽查
+- 固定公式核心變式的數量、單元分布、模板欄位與跨單元答案抽查
 - 十一單元固定空白頁、兩日重測、破題方向兩日鎖定與定義卡排程
-- 20 題／100 分正式模考結構、多選部分給分、三級訂正與老師報告
+- 20 題／100 分正式模考結構、末三題共享題幹、多選部分給分、三級訂正與老師報告
 - 分數、多根與座標答案判定
 - 台灣日界與日期加減
-- IndexedDB / localStorage 內容包合併，避免後備切換時丟資料
-- 跨裝置狀態合併
+- IndexedDB / localStorage 內容包與狀態合併，避免後備切換時丟資料
+- 跨裝置 revision compare-and-swap 衝突重試
+- 手寫原始筆畫持久化、冪等補傳與一次性裝置配對安全規則
 - 批改後畫筆工具回復
 - 無手寫筆跡時的批改後畫筆回復、換題自動回到題目頂端
 - AI 回饋中的 LaTeX 界定符、落單貨幣符號與舊建議渲染
@@ -53,19 +54,20 @@ GitHub Actions 會在 push 與 pull request 自動執行同一套檢查。
 | `index.html` | 靜態外殼、同源 vendor 載入、Service Worker 註冊 |
 | `style.css` | 桌機／手機版面、考卷與整卡書寫層 |
 | `bank.js` | 14 單元內建題庫、難度目標與級分表 |
-| `practice-bank.js` | 280 題可重算的核心數字變式；14 單元各 20 題 |
+| `practice-bank.js` | 可重算的核心數字變式與基準題 |
 | `app.js` | 狀態、十一單元默寫、全真模考、破題方向、三級訂正、觀念理解、手寫 AI、同步與所有畫面 |
 | `scripts/build-private-bank.js` | 把本機原始題庫清洗、分包並產生 SHA-256 manifest；輸出目錄不得進 Git |
 | `sw.js` | network-first + 離線 shell 快取 |
 | `vendor/` | 自架 KaTeX 與 Supabase browser client，正式站不依賴 CDN |
-| `supabase/schema.sql` | `app_state`、`ink_sessions`、`teacher_methods`、`content_packs` 與 RLS |
+| `supabase/schema.sql` | 帶 revision 的 `app_state`、冪等 `ink_sessions`、`teacher_methods`、`content_packs` 與 RLS |
+| `supabase/functions/device-pair/` | 為已登入帳號簽發一次性短效 magic-link token，不傳遞帳密或 session 權杖 |
 | `tests/` | Node 內建 test runner 的回歸測試，沒有第三方依賴 |
 
 執行時資料分三層：
 
-1. `localStorage`：輕量作答狀態與離線鏡像。
-2. `IndexedDB`：大型內容包與錯題手寫縮圖。
-3. Supabase：登入後的跨裝置狀態、內容包、手寫歸檔與唯讀私有題庫；所有個人資料表與 Storage 都必須開 RLS。
+1. `localStorage`：只作為快速啟動的輕量鏡像；空間滿了不會成為單點故障。
+2. `IndexedDB`：本機權威狀態、大型內容包、錯題縮圖，以及尚未上傳的完整原始筆跡。
+3. Supabase：登入後以 revision compare-and-swap 合併跨裝置狀態；筆跡以 `client_id` 冪等補傳，另保存內容包與唯讀私有題庫。所有個人資料表與 Storage 都必須開 RLS。
 
 ## 安全與資料規則
 
@@ -73,7 +75,7 @@ GitHub Actions 會在 push 與 pull request 自動執行同一套檢查。
 - Supabase publishable key 可放前端；service-role key 絕對不可放前端。
 - OpenAI API key 只保存在 Supabase 專案 `rrihysbxhsbxjteqmtdu` 的 Edge Function Secret；瀏覽器、`app_state`、localStorage 與備份都不保存 Key。AI 代理會以同一專案的登入權杖驗證使用者，未登入請求回傳 401。
 - `matha-content` bucket 是私有且僅允許登入者讀取。4521 題原始來源中，4092 題通過清洗；300 題因缺圖、6 題超出數A範圍、123 題重複而隔離，不會默默混入練習。
-- 配對連結含 session 權杖，等同登入能力。一般「登出這台」只清本機；要讓舊配對連結失效，必須使用「撤銷所有登入／配對連結」。既有 access token 仍會到期才完全失效。
+- 配對連結只含一次性 magic-link token hash，有效一小時且使用後失效；不含密碼、access token 或 refresh token。舊版 base64 帳密與 session 配對格式不再接受。
 - 匯入題目文字一律走白名單清洗；SVG 走獨立 SVG 白名單。不要把外部字串直接塞進 `innerHTML`。
 
 ## 發版檢查

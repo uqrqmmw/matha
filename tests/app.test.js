@@ -28,6 +28,7 @@ test('台灣日期與跨年日期加減不偏一天', () => {
   run("Date.now = () => Date.parse('2026-07-15T16:01:00Z')");
   assert.equal(run('today()'), '2026-07-16');
   assert.equal(run("addDays('2026-12-31', 1)"), '2027-01-01');
+  assert.equal(run("daysUntil('2027-01-22', '2026-07-17')"), 189);
 });
 
 test('AI 數學界定符、Unicode 上標與數A範圍過濾維持 0714c 修復', () => {
@@ -238,7 +239,7 @@ test('公式卡 id 唯一，模擬卷符合 20 題、100 分與正式題型順�
   assert.equal(flashIds.length, 65);
   assert.equal(new Set(flashIds).size, flashIds.length);
   for (let i = 0; i < 20; i++) {
-    const paper = plain(run('buildPaper().map((q) => ({ id:q.id, no:q.examNo, section:q.examSection, points:q.points }))'));
+    const paper = plain(run('buildPaper().map((q) => ({ id:q.id, no:q.examNo, section:q.examSection, points:q.points, groupId:q.groupId, stem:q.stem, responseType:q.responseType }))'));
     assert.equal(paper.length, 20);
     assert.equal(new Set(paper.map((q) => q.id)).size, 20);
     assert.deepEqual(paper.map((q) => q.no), Array.from({ length: 20 }, (_, n) => n + 1));
@@ -246,5 +247,63 @@ test('公式卡 id 唯一，模擬卷符合 20 題、100 分與正式題型順�
       ...Array(6).fill('single'), ...Array(6).fill('multi'), ...Array(5).fill('fill'), ...Array(3).fill('mixed'),
     ]);
     assert.equal(paper.reduce((sum, q) => sum + q.points, 0), 100);
+    const mixed = paper.slice(17);
+    assert.equal(new Set(mixed.map((q) => q.groupId)).size, 1, '末三題必須共享同一題組');
+    assert.equal(mixed.every((q) => q.responseType === 'written' && /題幹/.test(q.stem)), true);
   }
+});
+
+test('裝置配對只接受一次性 magic-link token，不再解析帳密或 session 權杖', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { ROOT } = require('./helpers/load-app');
+  const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const start = source.indexOf('async function autoLoginFromHash');
+  const end = source.indexOf('async function makePairLink');
+  const pairing = source.slice(start, end);
+  assert.match(pairing, /verifyOtp\(\{ token_hash:/);
+  assert.doesNotMatch(pairing, /signInWithPassword|setSession|atob|refresh_token|access_token/);
+});
+
+test('revision compare-and-swap 遇到另一台搶先更新會重拉合併，不丟任一方紀錄', async () => {
+  const { context, run } = loadApp();
+  context.__remote = {
+    revision: 7,
+    data: { attempts: [{ qid:'remote-a', ts:1, d:'2026-07-17', ms:10, ok:true }], wrong:{}, drills:{}, mocks:[], corrections:[], daily:{} },
+  };
+  context.__updates = [];
+  context.__from = () => {
+    let mode = 'read', payload = null, filters = {};
+    const chain = {
+      select() { return chain; },
+      update(value) { mode = 'update'; payload = value; return chain; },
+      insert(value) { mode = 'insert'; payload = value; return chain; },
+      eq(key, value) { filters[key] = value; return chain; },
+      async maybeSingle() {
+        if (mode === 'read') return { data: JSON.parse(JSON.stringify(context.__remote)), error: null };
+        if (mode === 'update') {
+          context.__updates.push({ revision: payload.revision, expected: filters.revision });
+          if (filters.revision === 7) {
+            context.__remote = {
+              revision: 8,
+              data: { ...context.__remote.data, attempts: [...context.__remote.data.attempts, { qid:'remote-b', ts:2, d:'2026-07-17', ms:20, ok:false }] },
+            };
+            return { data: null, error: null };
+          }
+          context.__remote = { revision: payload.revision, data: JSON.parse(JSON.stringify(payload.data)) };
+          return { data: { revision: payload.revision }, error: null };
+        }
+        return { data: { revision: 1 }, error: null };
+      },
+    };
+    return chain;
+  };
+  run(`stateWrite = async () => {}; flushInkQueue = async () => {}; syncPill = () => {};
+    supa = { from: __from };
+    syncState = { user:{ id:'u1' }, msg:'', last:null };
+    S = load();
+    S.attempts = [{ qid:'local', ts:3, d:'2026-07-17', ms:30, ok:true }];`);
+  await run('syncPush()');
+  assert.deepEqual(context.__updates, [{ revision: 8, expected: 7 }, { revision: 9, expected: 8 }]);
+  assert.deepEqual(context.__remote.data.attempts.map((x) => x.qid), ['remote-a', 'remote-b', 'local']);
 });

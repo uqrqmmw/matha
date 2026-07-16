@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0716j'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0717a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -29,14 +29,31 @@ function load() {
   } catch (e) {}
   return { ...def };
 }
-let saveQuotaErr = false; // 本機 localStorage 滿了（QuotaExceeded）：不炸作答流程，雲端照常同步
+let saveQuotaErr = false; // localStorage 與 IndexedDB 都失敗時才亮紅燈；任一持久層成功都不算資料遺失
+let statePersistErr = false;
 function save() {
-  let ok = true;
-  try { localStorage.setItem(KEY, JSON.stringify(S)); saveQuotaErr = false; }
-  catch (e) { saveQuotaErr = true; ok = false; if (typeof syncPill === 'function') try { syncPill(); } catch (_) {} }
+  S._mt = Date.now();
+  let localOk = true;
+  try { localStorage.setItem(KEY, JSON.stringify(S)); }
+  catch (e) { localOk = false; }
+  const idbAvailable = typeof indexedDB !== 'undefined';
+  if (idbAvailable) {
+    stateWrite(S).then(() => {
+      statePersistErr = false;
+      saveQuotaErr = false;
+      if (typeof syncPill === 'function') try { syncPill(); } catch (_) {}
+    }).catch(() => {
+      statePersistErr = true;
+      saveQuotaErr = !localOk;
+      if (typeof syncPill === 'function') try { syncPill(); } catch (_) {}
+    });
+  } else {
+    statePersistErr = true;
+    saveQuotaErr = !localOk;
+  }
   syncQueue();
   if (typeof renderDayCounter === 'function') try { renderDayCounter(); } catch (_) {} // 作答/速訓/類題記錄後，右上角今日計數即時更新
-  return ok; // 匯入等大寫入要檢查回傳，別在存失敗時報「完成」
+  return localOk || idbAvailable; // IndexedDB 是主儲存；localStorage 滿了也不誤報「沒有存下來」
 }
 function exportData() {
   // 分家後備份也要帶內容層（__content 欄位；匯入時會還原並剔除，不會污染 S）
@@ -139,8 +156,15 @@ function idbOpen() {
   return new Promise((res, rej) => {
     let done = false;
     const to = setTimeout(() => { if (!done) { done = true; rej(new Error('IDB open 逾時')); } }, 4000); // 逾時保底：別讓 boot 因升級被舊分頁擋住而永久白畫面
-    const rq = indexedDB.open('mathA13Content', 2);
-    rq.onupgradeneeded = () => { const db = rq.result; if (!db.objectStoreNames.contains('packs')) db.createObjectStore('packs'); if (!db.objectStoreNames.contains('errshots')) db.createObjectStore('errshots'); };
+    if (typeof indexedDB === 'undefined') { clearTimeout(to); rej(new Error('IndexedDB 不可用')); return; }
+    const rq = indexedDB.open('mathA13Content', 4);
+    rq.onupgradeneeded = () => {
+      const db = rq.result;
+      if (!db.objectStoreNames.contains('packs')) db.createObjectStore('packs');
+      if (!db.objectStoreNames.contains('errshots')) db.createObjectStore('errshots');
+      if (!db.objectStoreNames.contains('state')) db.createObjectStore('state');
+      if (!db.objectStoreNames.contains('inkrecords')) db.createObjectStore('inkrecords', { keyPath: 'client_id' });
+    };
     rq.onsuccess = () => {
       if (done) { try { rq.result.close(); } catch (_) {} return; }
       done = true; clearTimeout(to); _idb = rq.result;
@@ -170,6 +194,111 @@ async function idbWriteAll(packs) {
     tx.oncomplete = () => res();
     tx.onerror = () => rej(tx.error);
   });
+}
+async function stateRead() {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const rq = db.transaction('state').objectStore('state').get('current');
+    rq.onsuccess = () => res(rq.result || null);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function stateWrite(state) {
+  const db = await idbOpen();
+  const snapshot = { updatedAt: Number(state && state._mt) || Date.now(), state: stripLegacyAiSecrets(state) };
+  return new Promise((res, rej) => {
+    const tx = db.transaction('state', 'readwrite');
+    tx.objectStore('state').put(snapshot, 'current');
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error || new Error('本機狀態寫入中止'));
+  });
+}
+/* localStorage 只保留同步啟動用的鏡像；真正的本機權威副本在 IndexedDB。
+   兩邊都存在時仍做聯集，並讓修改時間較新的副本決定非紀錄欄位。 */
+async function stateInit() {
+  try {
+    const row = await stateRead();
+    if (!row || !row.state || typeof row.state !== 'object') {
+      await stateWrite(S);
+      return;
+    }
+    const localMt = Number(S && S._mt) || 0;
+    const idbMt = Number(row.updatedAt || row.state._mt) || 0;
+    S = idbMt > localMt ? mergeState(row.state, S) : mergeState(S, row.state);
+    S._mt = Math.max(localMt, idbMt, Date.now());
+    try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {}
+    await stateWrite(S);
+  } catch (_) {
+    statePersistErr = true;
+  }
+}
+function inkClientId(qid, t0) {
+  const rnd = globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `ink-${String(qid || 'unknown').replace(/[^\w.-]/g, '_')}-${Number(t0) || Date.now()}-${rnd}`;
+}
+async function inkRecordPut(record) {
+  const db = await idbOpen();
+  const row = { ...record, updatedAt: Date.now() };
+  return new Promise((res, rej) => {
+    const tx = db.transaction('inkrecords', 'readwrite');
+    tx.objectStore('inkrecords').put(row);
+    tx.oncomplete = () => res(row);
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error || new Error('筆跡寫入中止'));
+  });
+}
+async function inkRecordAll() {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const rq = db.transaction('inkrecords').objectStore('inkrecords').getAll();
+    rq.onsuccess = () => res(Array.isArray(rq.result) ? rq.result : []);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function inkRecordPending() {
+  try { return (await inkRecordAll()).filter((row) => row && !row.uploaded && row.strokes); }
+  catch (_) { return []; }
+}
+async function inkRecordStats() {
+  try {
+    const all = await inkRecordAll();
+    return { total: all.length, pending: all.filter((x) => !x.uploaded).length };
+  } catch (_) { return { total: 0, pending: 0 }; }
+}
+let inkLocalStatus = { total: 0, pending: 0 };
+async function refreshInkLocalStatus() {
+  inkLocalStatus = await inkRecordStats();
+  return inkLocalStatus;
+}
+let inkCheckpointTimer = null;
+function inkCheckpoint(force) {
+  if (!ink || !sessionInk[ink.qid]) return Promise.resolve(false);
+  const current = ink;
+  const persist = async () => {
+    const st = sessionInk[current.qid];
+    if (!st) return false;
+    const strokes = st.s.filter((s) => s.t0 >= current.t0);
+    const eras = st.e.filter((t) => t >= current.t0);
+    if (!strokes.length && !eras.length) return false;
+    await inkRecordPut({
+      client_id: current.clientId,
+      user_id: syncState.user ? syncState.user.id : null,
+      qid: current.qid,
+      t0: current.t0,
+      proc: { draft: true },
+      strokes: { s: strokes, e: eras },
+      uploaded: false,
+    });
+    if (syncState.user) flushInkQueue();
+    return true;
+  };
+  clearTimeout(inkCheckpointTimer);
+  if (force) return persist().catch(() => { statePersistErr = true; return false; });
+  inkCheckpointTimer = setTimeout(() => persist().catch(() => { statePersistErr = true; }), 250);
+  return Promise.resolve(true);
 }
 /* ── 錯題手寫存檔（IndexedDB errshots）：這是最高優先資料之一，「不設 400 張硬上限」──
    平時一張都不刪、盡量全留；只有本機儲存配額真的吃緊(>90%)才刪最舊的挪空間，並標記 errShotWarn 提醒升級。
@@ -333,11 +462,22 @@ async function pullContent() {
 
 const CURATED_BUCKET = 'matha-content';
 const CURATED_MANIFEST = 'manifest.json';
-let curatedState = { status: 'idle', count: 0, error: '' };
+const CURATED_HEALTH_LS = 'mathA13_curated_health_v1';
+function loadCuratedHealth() {
+  try {
+    const value = JSON.parse(localStorage.getItem(CURATED_HEALTH_LS) || 'null');
+    return value && typeof value === 'object' ? value : null;
+  } catch (_) { return null; }
+}
+function persistCuratedHealth() {
+  try { localStorage.setItem(CURATED_HEALTH_LS, JSON.stringify(curatedState)); } catch (_) {}
+}
+let curatedState = { status: 'idle', count: 0, error: '', ...(loadCuratedHealth() || {}) };
 function curatedManifestValid(m) {
   return !!(m && m.schema === 1 && m.visibility === 'authenticated' && Array.isArray(m.packs)
     && m.packs.every((p) => p && typeof p.id === 'string' && /^curated-[\w-]+$/.test(p.id)
       && typeof p.file === 'string' && !p.file.includes('..') && !p.file.startsWith('/')
+      && Number.isInteger(Number(p.count)) && Number(p.count) >= 0
       && typeof p.sha256 === 'string' && /^[a-f0-9]{64}$/.test(p.sha256)));
 }
 async function sha256Bytes(bytes) {
@@ -354,13 +494,14 @@ function rerenderActiveView() {
    GitHub Pages 只含載入器，不公開講義抽取內容；manifest 移除的舊包也會從本機快取撤回。 */
 async function pullCuratedContent() {
   if (!supa || !syncState.user || !supa.storage) return false;
-  curatedState = { status: 'loading', count: curatedState.count || 0, error: '' };
+  curatedState = { ...curatedState, status: 'loading', count: curatedState.count || 0, error: '' };
   syncState.msg = '正在核對私有題庫'; syncPill();
   try {
     const bucket = supa.storage.from(CURATED_BUCKET);
     const manifestRes = await bucket.download(CURATED_MANIFEST);
     if (manifestRes.error || !manifestRes.data) throw new Error((manifestRes.error && manifestRes.error.message) || 'manifest 下載失敗');
     const manifestBytes = await manifestRes.data.arrayBuffer();
+    const manifestSha = await sha256Bytes(manifestBytes);
     const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
     if (!curatedManifestValid(manifest)) throw new Error('manifest 格式或存取層級不正確');
     const keep = new Set(manifest.packs.map((p) => p.id));
@@ -386,12 +527,23 @@ async function pullCuratedContent() {
     if (!splitOn()) localStorage.setItem(SPLIT_LS, '1');
     if (changed && !(await persistContent())) throw new Error('本機空間不足，私有題庫無法快取');
     applyExtBank(); updateBadge();
-    curatedState = { status: 'ready', count, error: '' };
+    curatedState = {
+      status: 'ready',
+      count,
+      total: BUILTIN_N + count,
+      packCount: manifest.packs.length,
+      generatedAt: manifest.generatedAt || null,
+      manifestSha,
+      lastChecked: new Date().toISOString(),
+      error: '',
+    };
+    persistCuratedHealth();
     syncState.msg = `私有題庫已載入 ${count} 題`; syncPill();
     rerenderActiveView();
     return true;
   } catch (e) {
-    curatedState = { status: 'error', count: 0, error: (e && e.message) || String(e) };
+    curatedState = { ...curatedState, status: 'error', error: (e && e.message) || String(e), lastFailure: new Date().toISOString() };
+    persistCuratedHealth();
     syncState.msg = '私有題庫暫時無法載入；內建題庫仍可使用'; syncPill();
     rerenderActiveView();
     return false;
@@ -563,6 +715,7 @@ let inkColor = 'k';
 let ink = null;
 let replaying = false;
 const sessionInk = {}; // qid → { s:筆畫, e:塗改時間, m:批改標記 }
+const inkSessionIds = new Map(); // qid|t0 → 本次作答固定 client_id，草稿與完稿用同一列冪等更新
 
 function inkStore(qid) {
   return (sessionInk[qid] = sessionInk[qid] || { s: [], e: [] });
@@ -613,7 +766,10 @@ function inkStart(qid, t0, since) {
   const h = base
     ? Math.max(base, Math.ceil(maxY + 80))
     : Math.max(340, Math.round(window.innerHeight * 0.45), Math.ceil(maxY + 80));
-  ink = { qid, t0, penAt: 0, sur: {} };
+  const sessionKey = `${qid}|${t0}`;
+  const clientId = inkSessionIds.get(sessionKey) || inkClientId(qid, t0);
+  inkSessionIds.set(sessionKey, clientId);
+  ink = { qid, t0, clientId, penAt: 0, sur: {} };
   ink.sur.calc = inkSurface('calc', cv, h);
   if (cv.classList.contains('qink') && window.ResizeObserver) { // 整卡書寫層：卡片高度隨 KaTeX/加長/展開打字欄變動，畫布跟著重算
     ink.ro = new ResizeObserver(() => { if (ink && ink.sur.calc) inkSizeSur(ink.sur.calc); });
@@ -740,7 +896,7 @@ function inkUp(e, sur) {
     if (sur.allowTouch && sur.cur && sur.cur.tid === e.pointerId) { // 指畫收筆
       const cur = sur.cur; sur.cur = null;
       sur.touches.delete(e.pointerId);
-      if (cur.pts.length > 1) { cur.t1 = Date.now(); delete cur.tid; inkArr(sur).push(cur); }
+      if (cur.pts.length > 1) { cur.t1 = Date.now(); delete cur.tid; inkArr(sur).push(cur); inkCheckpoint(false); }
       return;
     }
     sur.touches.delete(e.pointerId);
@@ -749,7 +905,7 @@ function inkUp(e, sur) {
   }
   if (!sur.cur) return;
   const cur = sur.cur; sur.cur = null;
-  if (cur.pts.length > 1) { cur.t1 = Date.now(); inkArr(sur).push(cur); } // 單點＝誤觸，不留筆畫
+  if (cur.pts.length > 1) { cur.t1 = Date.now(); inkArr(sur).push(cur); inkCheckpoint(false); } // 單點＝誤觸，不留筆畫
 }
 function inkUndo() {
   if (!ink) return;
@@ -759,6 +915,7 @@ function inkUndo() {
   if (!best) return;
   best.dead = Date.now();
   st.e.push(Date.now());
+  inkCheckpoint(false);
   inkRedrawAll();
 }
 function inkDrawStroke(ctx, s, w, col) {
@@ -897,6 +1054,7 @@ window.addEventListener('resize', () => {
 });
 function inkStop() {
   if (!ink) return null;
+  clearTimeout(inkCheckpointTimer); // 完稿會由 syncInk 寫同一 client_id；取消尚未執行的草稿，避免晚到草稿蓋回完稿
   const { qid, t0 } = ink;
   if (ink.ro) ink.ro.disconnect();
   for (const k of Object.keys(ink.sur)) {
@@ -1764,6 +1922,14 @@ function addDays(dateStr, n) {
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
+function daysUntil(dateStr, fromDate) {
+  const parse = (value) => {
+    const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : NaN;
+  };
+  const end = parse(dateStr), start = parse(fromDate || today());
+  return Number.isFinite(end) && Number.isFinite(start) ? Math.max(0, Math.round((end - start) / 86400000)) : 0;
+}
 
 const ERR_TYPES = ['概念不熟', '計算失誤', '看錯題意', '用猜的', '超時'];
 const EXAM_DATE = '2027-01-22'; // 116 學年度學測（暫定）
@@ -1778,6 +1944,48 @@ const MOCK_SPEC = {
     { key: 'mixed', label: '混合題／非選擇題', count: 3, points: [3, 4, 8] },
   ],
 };
+/* 正式卷末段不是三道互不相干的填充題，而是共享情境、逐步深入的混合／非選擇題組。
+   每回抽一整組，三小題固定 3／4／8 分；解答保留完整推導，隔日訂正才解鎖。 */
+const MOCK_MIXED_GROUPS = [
+  {
+    id: 'mixed-coordinate-park',
+    title: '座標與向量題組',
+    stem: '在坐標平面上，三角形 \(ABC\) 的三個頂點為 \(A(0,0)\)、\(B(6,0)\)、\(C(2,4)\)。點 \(P\) 在線段 \(AB\) 上，且 \(AP:PB=1:2\)。回答下列三小題，並在計算區留下推導。',
+    items: [
+      { id: 'mixed-coordinate-park-1', topic: 'vec', type: 'fill', diff: 2, q: '求點 \(P\) 的 \(x\) 坐標。', ans: ['2'], sol: '內分點把 \(AB\) 分成 \(1:2\)，所以 \(P=A+\frac13(B-A)=(2,0)\)，答案為 \(2\)。' },
+      { id: 'mixed-coordinate-park-2', topic: 'vec', type: 'fill', diff: 2, q: '求三角形 \(PBC\) 的面積。', ans: ['8'], sol: '\(PB=4\)，而 \(C\) 到 \(AB\) 的高為 \(4\)，所以面積為 \(\frac12\times4\times4=8\)。' },
+      { id: 'mixed-coordinate-park-3', topic: 'vec', type: 'fill', diff: 3, q: '點 \(D\) 在射線 \(PC\) 上且位於 \(C\) 的外側。若三角形 \(BCD\) 的面積是三角形 \(BCP\) 的兩倍，求 \(PD\)。', ans: ['12'], sol: '令 \(D=(2,d)\)，其中 \(d>4\)。直線 \(PC\) 到 \(B\) 的水平距離為 \(4\)，故 \([BCD]=\frac12(d-4)\times4=2(d-4)\)。又 \([BCP]=8\)，所以 \(2(d-4)=16\)，得 \(d=12\)。因 \(P=(2,0)\)，故 \(PD=12\)。' },
+    ],
+  },
+  {
+    id: 'mixed-probability-box',
+    title: '條件機率題組',
+    stem: '袋中有 3 顆紅球與 2 顆藍球，球除顏色外無差別。從袋中不放回地依序抽出 2 顆球。回答下列三小題，機率請化成最簡分數。',
+    items: [
+      { id: 'mixed-probability-box-1', topic: 'prob', type: 'fill', diff: 2, q: '兩顆都是紅球的機率為何？', ans: ['3/10'], sol: '\(\frac35\times\frac24=\frac3{10}\)。' },
+      { id: 'mixed-probability-box-2', topic: 'prob', type: 'fill', diff: 2, q: '兩顆顏色不同的機率為何？', ans: ['3/5'], sol: '紅藍或藍紅，機率為 \(\frac35\frac24+\frac25\frac34=\frac35\)。' },
+      { id: 'mixed-probability-box-3', topic: 'prob', type: 'fill', diff: 3, q: '已知抽出的兩顆球中至少有一顆紅球，求兩顆都是紅球的條件機率。', ans: ['1/3'], sol: '至少一紅的機率為 \(1-P(\text{兩藍})=1-\frac25\frac14=\frac9{10}\)。所以條件機率為 \(\frac{3/10}{9/10}=\frac13\)。' },
+    ],
+  },
+  {
+    id: 'mixed-sequence-growth',
+    title: '數列遞迴題組',
+    stem: '數列 \(\{a_n\}\) 滿足 \(a_1=2\)，且對所有正整數 \(n\)，\(a_{n+1}=a_n+2n\)。回答下列三小題。',
+    items: [
+      { id: 'mixed-sequence-growth-1', topic: 'seq', type: 'fill', diff: 2, q: '求 \(a_2\)。', ans: ['4'], sol: '\(a_2=a_1+2=4\)。' },
+      { id: 'mixed-sequence-growth-2', topic: 'seq', type: 'fill', diff: 2, q: '求 \(a_4\)。', ans: ['14'], sol: '\(a_2=4\)、\(a_3=8\)、\(a_4=14\)。' },
+      { id: 'mixed-sequence-growth-3', topic: 'seq', type: 'fill', diff: 3, q: '求使 \(a_n>100\) 的最小正整數 \(n\)。', ans: ['11'], sol: '\(a_n=2+2(1+2+\cdots+n-1)=n^2-n+2\)。\(a_{10}=92\le100\)，\(a_{11}=112>100\)，所以最小的 \(n\) 為 \(11\)。' },
+    ],
+  },
+];
+const MOCK_MIXED_MAP = new Map(MOCK_MIXED_GROUPS.flatMap((group) => group.items.map((q, index) => [q.id, {
+  ...q,
+  grp: group.id,
+  groupId: group.id,
+  groupTitle: group.title,
+  stem: `${index === 0 ? '【共享題幹】' : '【同一題組，題幹重列】'}${group.stem}`,
+  responseType: 'written',
+}])));
 
 /* 老師指定的 11 單元名稱會由使用者稍後提供的十一份大綱建立私人內容包。
    在內容包進來前先保留固定的十一張空白頁，避免我們擅自猜書本合併方式。 */
@@ -2146,8 +2354,8 @@ function recoveryPlanCard() {
   </div></div>`;
 }
 function bankById(id) {
-  if (BANK_MAP) return BANK_MAP.get(id);
-  return BANK.find((q) => q.id === id);
+  if (BANK_MAP && BANK_MAP.has(id)) return BANK_MAP.get(id);
+  return MOCK_MIXED_MAP.get(id) || BANK.find((q) => q.id === id);
 }
 /* 每題作答次數表：一次掃 attempts 建表，取代排序比較子裡的 attemptsOf 全表掃描（O(題×紀錄)→O(紀錄)） */
 function attCountMap() {
@@ -2899,7 +3107,7 @@ function updateBadge() {
 
 /* ═══════════ 首頁：老師新版流程 ═══════════ */
 function renderHome() {
-  const days = Math.ceil((new Date(EXAM_DATE) - new Date()) / 86400000);
+  const days = daysUntil(EXAM_DATE);
   const outlineReady = outlineUnits().filter((x) => x.reference).length;
   const outlineDue = outlineDueUnits().length;
   const visionDue = visionDueEntries().length;
@@ -2937,7 +3145,7 @@ function renderOutlineRecall() {
     const last = outlineLast(unit.id);
     const due = unit.reference && (!last || String(last.due || '') <= today());
     const state = !unit.reference ? '等待大綱' : !last ? '尚未測' : due ? '今天重測' : `下次 ${last.due}`;
-    const score = last && Number.isFinite(Number(last.coverage)) ? `${last.coverage}%` : '空白頁';
+    const score = last && last.coverage != null && Number.isFinite(Number(last.coverage)) ? `${Number(last.coverage)}%` : (last ? '尚未批改' : '空白頁');
     return `<button class="recall-tile${due ? ' due' : ''}" onclick="startOutlineRecall('${unit.id}')">
       <span class="recall-no">${String(i + 1).padStart(2, '0')}</span><strong>${escH(unit.title)}</strong>
       <span>${escH(state)}</span><b>${score}</b></button>`;
@@ -4662,7 +4870,7 @@ function renderMockIntro() {
     <section class="card choice-card"><span class="eyebrow">完整一回</span><h2>全真模考</h2>
       <p><b>20 題、100 分鐘、滿分 100 分</b>｜6 單選、6 多選、5 選填、3 題混合／非選擇。</p>
       <p>作答中不顯示對錯或單題速度。交卷當天只批分與列錯題號，隔天才看最終答案訂正。</p>
-      <p class="dim">目前題庫最後 3 題先以三題非選擇題近似正式結構。你拍完整紙本模考後，會再保留原頁面、題幹與真正題組關係匯入。已完成 ${n} 次模考。</p>
+      <p class="dim">最後 3 題固定抽取同一組共享情境的混合題組，保留 3、4、8 分的連動小題結構。你拍完整紙本模考後，也能依原頁面、題幹與題組關係匯入。已完成 ${n} 次模考。</p>
       <div class="actr"><button class="btn primary big" onclick="startMock()">開始一整回（100:00）</button></div>
     </section>
     <section class="card choice-card"><span class="eyebrow">不計算</span><h2>用眼睛刷題</h2>
@@ -4801,16 +5009,28 @@ function buildPaper() {
     }
     return out;
   };
+  const previousGroup = (S.mocks && S.mocks.length) ? S.mocks[S.mocks.length - 1].mixedGroupId : null;
+  const candidates = MOCK_MIXED_GROUPS.filter((g) => g.id !== previousGroup);
+  const mixedGroup = (candidates.length ? candidates : MOCK_MIXED_GROUPS)[Math.floor(Math.random() * (candidates.length || MOCK_MIXED_GROUPS.length))];
+  const mixedQuestions = mixedGroup.items.map((q, index) => ({
+    ...q,
+    grp: mixedGroup.id,
+    groupId: mixedGroup.id,
+    groupTitle: mixedGroup.title,
+    stem: `${index === 0 ? '【共享題幹】' : '【同一題組，題幹重列】'}${mixedGroup.stem}`,
+    responseType: 'written',
+  }));
   const sections = [
     { spec: MOCK_SPEC.sections[0], qs: choose('single', 6, [1, 2, 2, 3, 2, 1]) },
     { spec: MOCK_SPEC.sections[1], qs: choose('multi', 6, [1, 2, 2, 3, 2, 1]) },
     { spec: MOCK_SPEC.sections[2], qs: choose('fill', 5, [1, 2, 2, 3, 2]) },
-    { spec: MOCK_SPEC.sections[3], qs: choose('fill', 3, [2, 2, 3]) },
+    { spec: MOCK_SPEC.sections[3], qs: mixedQuestions },
   ];
   const paper = [];
   for (const section of sections) for (let i = 0; i < section.qs.length; i++) {
     paper.push({ ...section.qs[i], examNo: paper.length + 1, examSection: section.spec.key, points: section.spec.points[i] });
   }
+  buildPaper.lastMixedGroupId = mixedGroup.id;
   return paper;
 }
 function startMock() {
@@ -4819,6 +5039,7 @@ function startMock() {
   if (paper.length !== MOCK_SPEC.total) { alert(`題庫目前只能組出 ${paper.length} 題，尚不足正式 20 題結構。`); return; }
   mock = {
     paper, orig: paper.slice(), i: 0, round: 1, skipped: [],
+    mixedGroupId: buildPaper.lastMixedGroupId,
     answers: {}, times: {}, proc: {}, exclude: {}, judge: {},
     tEnd: Date.now() + MOCK_SPEC.minutes * 60 * 1000, t0: 0, sessT0: Date.now(),
   };
@@ -4855,7 +5076,9 @@ function mockQ() {
   } else if (q.type === 'multi') {
     actions = `<div class="actr"><button class="btn primary" onclick="mockAns()">送出此題</button></div>${mockRow}`;
   } else {
-    actions = `<div class="actr"><button class="btn primary big" onclick="mockAns()">✅ 算完了，送出此題</button></div>
+    const writtenHint = q.examSection === 'mixed' ? `<p class="dim fs13">這是共享題幹的非選擇小題。請在計算區留下破題方向、關鍵推導與最後答案；即使算不完也要保留方向。</p>
+      <label class="field-label" for="mock-direction">若沒有在手寫區寫方向，請在這裡補一句</label><textarea id="mock-direction" rows="2" placeholder="先做什麼，以及為什麼／想得到什麼"></textarea>` : '';
+    actions = `${writtenHint}<div class="actr"><button class="btn primary big" onclick="mockAns()">完成作答，送出此題</button></div>
       <details class="typed-opt"${typedOpen ? ' open' : ''} ontoggle="typedOpen=this.open"><summary class="dim">改用打字（選用）</summary>
       <input id="qin" class="ans-input" autocomplete="off" placeholder="答案（分數用 a/b）" onkeydown="if(event.key==='Enter')mockAns()"></details>${mockRow}`;
   }
@@ -4895,6 +5118,13 @@ function mockAns(optIdx) {
   mock.qlock = true;
   const q = mock.paper[mock.i];
   const elapsed = Date.now() - mock.t0;
+  const direction = q.examSection === 'mixed' && $('#mock-direction') ? $('#mock-direction').value.trim() : '';
+  const activeInk = sessionInk[q.id] ? sessionInk[q.id].s.filter((s) => !s.dead && s.t0 >= mock.t0).length : 0;
+  if (q.examSection === 'mixed' && !activeInk && direction.length < 8) {
+    mock.qlock = false;
+    alert('混合／非選擇題要留下可給老師看的破題方向：請在計算區寫出推導，或在文字欄寫出「先做什麼」與「為什麼」。');
+    return;
+  }
   let ans;
   if (q.type === 'single') ans = { type: 'single', v: optIdx };
   else if (q.type === 'multi') ans = { type: 'multi', v: [...document.querySelectorAll('.bk-opts input:checked')].map((i) => +i.value) };
@@ -4902,6 +5132,7 @@ function mockAns(optIdx) {
     const typed = $('#qin') ? $('#qin').value.trim() : '';
     ans = typed ? { type: 'fill', v: typed } : { type: 'inkfill' };
   }
+  if (q.examSection === 'mixed') ans.direction = direction.slice(0, 500);
   const commit = (excluded) => {
     if (excluded) mock.exclude[q.id] = 1;
     mock.answers[q.id] = ans;
@@ -5053,6 +5284,7 @@ function queueMockCorrection(detail, mockTs) {
   const entries = detail.map((x) => ({
     qid: x.q.id, examNo: x.q.examNo, examSection: x.q.examSection, points: x.q.points,
     yourAns: x.yourAns, answered: x.answered, correctOnExam: !!x.ok,
+    examDirection: x.examDirection || '', examStrokes: Number(x.examStrokes) || 0,
     done: !!x.ok, level: x.ok ? 1 : null, outcome: x.ok ? 'direct' : null,
     attempts: 0, logs: [], solutionUnlockedAt: null,
     completedAt: x.ok ? mockTs : null,
@@ -5073,7 +5305,7 @@ function mockFinal() {
     const result = mockAnswerResult(q, a);
     // 模考錯題由隔日訂正佇列接管，不進立即可看的舊錯題庫。
     if (a) recordAttempt(q, result.ok, ms, result.ok ? null : '概念不熟', 'mock', mock.proc[q.id] || null, mock.aiv && mock.aiv[q.id], { skipWrong: true });
-    return { q, ms, answered: !!a, ...result };
+    return { q, ms, answered: !!a, examDirection: (a && a.direction) || '', examStrokes: Number(mock.proc[q.id] && mock.proc[q.id].n) || 0, ...result };
   });
   const okN = detail.filter((x) => x.ok).length;
   const score = Math.round(detail.reduce((sum, x) => sum + x.points, 0) * 100) / 100;
@@ -5089,7 +5321,7 @@ function mockFinal() {
   const mockTs = Date.now();
   let batch = null;
   if (!mock.partial) {
-    S.mocks.push({ d: today(), score, total: 100, ok: score, n: 100, questionOk: okN, questionN: paper.length, acc, ts: mockTs });
+    S.mocks.push({ d: today(), score, total: 100, ok: score, n: 100, questionOk: okN, questionN: paper.length, acc, mixedGroupId: mock.mixedGroupId || null, ts: mockTs });
     batch = queueMockCorrection(detail, mockTs);
   }
   save();
@@ -5264,6 +5496,7 @@ function renderTeacherReport(batchId) {
     return `<article class="teacher-q level-${level || 0}"><header><span>第 ${entry.examNo || '—'} 題</span><b>${levelName(level)}</b></header>
       ${q ? `<div class="teacher-stem">${q.stem ? rtTxt(q.stem) : ''}${rtTxt(q.q)}</div>` : '<p class="dim">題目已不在目前題庫</p>'}
       <p class="teacher-answer">模考作答：${escH(entry.yourAns || '（未作答）')}${entry.done && level > 1 && q ? `｜最終答案：${finalAnswerHTML(q)}` : ''}</p>
+      ${entry.examDirection ? `<p class="teacher-answer">考場當下方向：${escH(entry.examDirection)}</p>` : entry.examStrokes ? `<p class="teacher-answer">考場當下已在手寫區留下 ${entry.examStrokes} 筆推導。</p>` : ''}
       ${logs || (level === 1 ? '<p class="dim">考場當下直接答對，不需隔日重想。</p>' : '<p class="dim">尚未留下重想紀錄。</p>')}</article>`;
   }).join('');
   app().innerHTML = `<div class="report-head"><div><span class="eyebrow">老師檢視版</span><h1>${escH(batch.name || '全真模考')}｜${batch.d}</h1><p>第一級 ${c.l1}｜第二級 ${c.l2}｜第三級 ${c.l3}｜尚未完成 ${c.open}</p></div>
@@ -5515,6 +5748,7 @@ function renderStats() {
     </div>
     ${syncCard()}
     ${aiCard()}
+    ${packCard()}
     ${backupCard()}`;
 }
 function renderLegacyStats() {
@@ -5811,12 +6045,19 @@ function packCard() {
     p.n++; p.units.add(q.topic); p.d[q.diff] = (p.d[q.diff] || 0) + 1;
   }
   const keys = Object.keys(packs);
+  const checkedAt = curatedState.lastChecked
+    ? new Date(curatedState.lastChecked).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false })
+    : '尚未完成';
+  const healthMeta = curatedState.count ? `<div class="bank-health" role="status">
+      <div><b>內建</b><span>${BUILTIN_N} 題</span></div><div><b>私有</b><span>${curatedState.count} 題</span></div><div><b>目前可用</b><span>${BUILTIN_N + curatedState.count} 題</span></div>
+      <div><b>資料包</b><span>${curatedState.packCount || '—'} 包</span></div><div><b>最近驗證</b><span>${escH(checkedAt)}</span></div><div><b>Manifest</b><span class="mono">${escH((curatedState.manifestSha || '').slice(0, 12) || '—')}</span></div>
+    </div>` : '';
   const curatedLine = curatedState.status === 'ready'
-    ? `<p class="okc fs13">私有題庫已通過完整性驗證並快取：${curatedState.count} 題。</p>`
+    ? `<p class="okc fs13">私有題庫已通過完整性驗證並快取。</p>${healthMeta}`
     : curatedState.status === 'loading'
-      ? '<p class="dim fs13">正在核對私有題庫與本機快取…</p>'
+      ? `<p class="dim fs13">正在核對私有題庫與本機快取…</p>${healthMeta}`
       : curatedState.status === 'error'
-        ? `<p class="warnc fs13">私有題庫未載入：${escH(curatedState.error)}。內建 363 題仍可正常練習。</p>`
+        ? `<p class="warnc fs13">這次私有題庫核對失敗：${escH(curatedState.error)}。${curatedState.count ? '下方仍顯示上次成功驗證的快取資訊。' : `內建 ${BUILTIN_N} 題仍可正常練習。`}</p>${healthMeta}`
         : (supa && !syncState.user ? '<p class="dim fs13">登入後會載入受保護的完整題庫；未登入可先使用內建 363 題。</p>' : '');
   if (!keys.length) return curatedLine ? `<div class="card"><h2>私有題庫</h2>${curatedLine}</div>` : '';
   const rows = keys.map((src) => {
@@ -5893,7 +6134,7 @@ function delExtMock(i) {
 
 /* ═══════════ 作戰計畫 ═══════════ */
 function renderPlan() {
-  const days = Math.ceil((new Date(EXAM_DATE) - new Date()) / 86400000);
+  const days = daysUntil(EXAM_DATE);
   const weeks = Math.floor(days / 7);
   const t = today();
   const done = S.daily[t] || {};
@@ -5938,8 +6179,8 @@ function renderPlan() {
 }
 
 /* ═══════════ ☁️ 雲端同步（Supabase） ═══════════
-   離線優先：一切照常存 localStorage；登入後每次 save() 幾秒內自動上傳整包狀態，
-   手寫筆跡逐題永久歸檔到 ink_sessions。只用 publishable key，資料由 RLS 保護。
+   離線優先：狀態以 IndexedDB 為權威本機副本、localStorage 為相容後備；登入後以 revision CAS 合併同步，
+   手寫筆跡先逐題耐久寫入 IndexedDB，再冪等補傳 ink_sessions。只用 publishable key，資料由 RLS 保護。
    在封鎖外部連線的環境（claude.ai artifact）自動降級為純本機模式。 */
 const SUPA_URL = 'https://rrihysbxhsbxjteqmtdu.supabase.co';
 const SUPA_KEY = 'sb_publishable_p6ThWGf5DLp6XRCovZMVDQ_9vJG_Y41';
@@ -5947,6 +6188,8 @@ const AUTH_REDIRECT_URL = 'https://uqrqmmw.github.io/matha/';
 let supa = null;
 let syncState = { user: null, msg: '', last: null };
 let syncTimer = null;
+let syncPushPromise = null;
+let syncPushAgain = false;
 function supaInit() {
   if (!window.supabase) { syncPill(); return; } // CDN 被擋（artifact 環境）→ 純本機模式
   supa = window.supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -5970,40 +6213,43 @@ function syncQueue() {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(syncPush, 4000);
 }
-/* 裝置配對連結（免打字登入）：網址帶 #pair=… 時自動登入一次，成功後 session 存在該裝置並自動續期。
-   新版 payload＝session 權杖（access+refresh；要用「撤銷所有登入／配對連結」才會全域撤銷，access 仍到期才失效），取代舊版的明文帳密——
-   避免書籤/截圖外洩＝永久帳密外洩。舊版 base64(email|密碼) 仍相容（過渡）。讀完先清網址，不落地、不上雲。 */
+/* 裝置配對連結只帶 Supabase 一次性 magic-link token hash：不含帳密、access token 或 refresh token。
+   讀到後先清網址，再以 verifyOtp 換取這台自己的 session；舊版 base64 帳密／session 連結一律不再接受。 */
 async function autoLoginFromHash() {
-  const m = location.hash.match(/#pair=([A-Za-z0-9+/=_-]+)/);
+  const m = location.hash.match(/^#pair=([A-Za-z0-9_-]{20,})$/);
   if (!m) return;
   history.replaceState(null, '', location.pathname + location.search);
   try {
     const { data: s } = await supa.auth.getSession();
     if (s && s.session) { syncState.msg = '這台裝置已配對過'; syncPill(); return; }
-    const raw = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
-    let tok = null; try { tok = JSON.parse(raw); } catch (e) {}
-    let error;
-    if (tok && tok.r) { // 新版：session 權杖配對（可撤銷、會過期）
-      ({ error } = await supa.auth.setSession({ access_token: tok.a || '', refresh_token: tok.r }));
-    } else { // 舊版：base64(email|密碼)，過渡相容
-      const i = raw.indexOf('|');
-      if (i < 1) return;
-      ({ error } = await supa.auth.signInWithPassword({ email: raw.slice(0, i), password: raw.slice(i + 1) }));
-    }
-    syncState.msg = error ? '配對連結登入失敗：' + error.message : '✅ 裝置配對完成，之後開頁自動同步';
+    const { error } = await supa.auth.verifyOtp({ token_hash: m[1], type: 'magiclink' });
+    syncState.msg = error ? '配對連結已失效或使用過：' + error.message : '裝置配對完成，之後開頁自動同步';
     syncPill();
-  } catch (e) {}
+  } catch (e) { syncState.msg = '配對失敗，請從已登入裝置重新產生一次性連結'; syncPill(); }
 }
-/* 產生本裝置的配對連結：帶 session 權杖（非密碼）。在另一台裝置貼進網址列即自動登入。 */
+/* Edge Function 只替目前已登入的帳號簽發一次性 magic-link token；有效一小時、使用後失效。 */
 async function makePairLink() {
   if (!supa || !syncState.user) { alert('請先登入再產生配對連結'); return; }
   const { data } = await supa.auth.getSession();
   if (!data || !data.session) { alert('取不到目前的登入狀態，請重新登入後再試'); return; }
-  const payload = btoa(JSON.stringify({ a: data.session.access_token, r: data.session.refresh_token })).replace(/\+/g, '-').replace(/\//g, '_');
-  const url = location.origin + location.pathname + '#pair=' + payload;
-  const note = '在另一台裝置把它貼進網址列開啟即自動登入。\n\n⚠️ 這條連結等同一次登入權杖——別外流。要作廢：到「📊 數據」按「撤銷所有登入／配對連結」（一般的「登出這台」不會撤銷別台或舊連結）。';
-  try { await navigator.clipboard.writeText(url); alert('✅ 配對連結已複製。\n' + note); }
-  catch (e) { prompt('複製這條配對連結：\n' + note, url); }
+  syncState.msg = '正在建立一次性配對連結'; syncPill();
+  try {
+    const response = await fetch(`${SUPA_URL}/functions/v1/device-pair`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${data.session.access_token}`, apikey: SUPA_KEY, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.token_hash) throw new Error(body.message || `HTTP ${response.status}`);
+    const url = location.origin + location.pathname + '#pair=' + body.token_hash;
+    const note = '在另一台裝置貼到網址列開啟即可。這條連結一小時內有效，而且只能使用一次；不含你的密碼或長期登入權杖。';
+    try { await navigator.clipboard.writeText(url); alert('配對連結已複製。\n' + note); }
+    catch (_) { prompt('複製這條一次性配對連結：\n' + note, url); }
+    syncState.msg = '一次性配對連結已建立'; syncPill();
+  } catch (e) {
+    syncState.msg = '建立配對連結失敗：' + ((e && e.message) || e);
+    syncPill();
+  }
 }
 /* 同步狀態燈（常駐右上角）＋開始做題前的登入攔檢 */
 function syncPill() {
@@ -6041,24 +6287,68 @@ function syncGate() {
 }
 async function syncPush() {
   if (!supa || !syncState.user) return;
-  try {
-    const { error } = await supa.from('app_state')
-      .upsert({ user_id: syncState.user.id, data: S, updated_at: new Date().toISOString() });
-    syncState.pushErr = !!error;
-    syncState.msg = error ? '上傳失敗：' + error.message : '已同步 ' + new Date().toTimeString().slice(0, 5);
-    if (!error) flushInkQueue();
-  } catch (e) { syncState.pushErr = true; syncState.msg = '離線（資料在本機，連上後自動補傳）'; }
-  syncPill();
+  if (syncPushPromise) { syncPushAgain = true; return syncPushPromise; }
+  syncPushPromise = (async () => {
+    do {
+      syncPushAgain = false;
+      let committed = false;
+      for (let attempt = 0; attempt < 5 && !committed; attempt++) {
+        const uid = syncState.user && syncState.user.id;
+        if (!uid) return;
+        const remoteRes = await supa.from('app_state').select('data,revision').eq('user_id', uid).maybeSingle();
+        if (remoteRes.error) throw remoteRes.error;
+        const remote = remoteRes.data;
+        const remoteRev = Number(remote && remote.revision) || 0;
+        const merged = remote && remote.data ? mergeState(S, remote.data) : S;
+        const nextRev = remoteRev + 1;
+        let writeRes;
+        if (remote) {
+          writeRes = await supa.from('app_state')
+            .update({ data: merged, revision: nextRev, updated_at: new Date().toISOString() })
+            .eq('user_id', uid).eq('revision', remoteRev).select('revision').maybeSingle();
+          if (!writeRes.error && !writeRes.data) continue; // 另一台搶先更新：重拉、合併、再試
+        } else {
+          writeRes = await supa.from('app_state')
+            .insert({ user_id: uid, data: merged, revision: nextRev, updated_at: new Date().toISOString() })
+            .select('revision').maybeSingle();
+          if (writeRes.error && (writeRes.error.code === '23505' || /duplicate|unique/i.test(writeRes.error.message || ''))) continue;
+        }
+        if (writeRes.error) throw writeRes.error;
+        S = mergeState(S, merged); // 網路等待期間本頁若又有新紀錄，也不能被剛提交的快照蓋掉
+        S._mt = Date.now();
+        try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {}
+        await stateWrite(S).catch(() => { statePersistErr = true; });
+        syncState.revision = nextRev;
+        committed = true;
+      }
+      if (!committed) throw new Error('多裝置同時更新過於頻繁，已保留本機資料並等待下次重試');
+    } while (syncPushAgain);
+    syncState.pushErr = false;
+    syncState.msg = '已同步 ' + new Date().toTimeString().slice(0, 5);
+    flushInkQueue();
+  })().catch((e) => {
+    syncState.pushErr = true;
+    syncState.msg = navigator.onLine === false
+      ? '離線（資料已保存在本機，連上後自動補傳）'
+      : '同步暫停：' + ((e && e.message) || '稍後自動重試');
+  }).finally(() => {
+    syncPushPromise = null;
+    syncPill();
+  });
+  return syncPushPromise;
 }
 async function syncPull() {
   if (!supa || !syncState.user) return;
   try {
-    const { data, error } = await supa.from('app_state').select('data').maybeSingle();
+    const { data, error } = await supa.from('app_state').select('data,revision').eq('user_id', syncState.user.id).maybeSingle();
     if (error) { syncState.msg = '下載失敗：' + error.message; return; }
     if (data && data.data) {
       S = mergeState(S, data.data);
+      S._mt = Date.now();
+      syncState.revision = Number(data.revision) || 0;
       if (splitOn()) await migrateContentFromS(); // 另一台舊裝置 merge 進來的內容 → 搬進內容層、S 保持輕
       try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { saveQuotaErr = true; }
+      await stateWrite(S).catch(() => { statePersistErr = true; });
       applyExtBank();
       syncState.msg = '已從雲端合併';
       updateBadge();
@@ -6208,29 +6498,65 @@ function mergeState(a, b) {
   }
   return merged;
 }
-let inkQueue = []; // 上傳失敗的筆跡列，連上網或下次同步時補傳（上限 200 筆防爆記憶體）
-function supaInkInsert(row) {
-  supa.from('ink_sessions').insert(row).then(({ error }) => {
-    if (error) {
-      if (inkQueue.length < 200) inkQueue.push(row);
-      syncState.msg = '筆跡上傳失敗（已排隊，連線後補傳）';
-      syncPill();
+let inkFlushBusy = false;
+async function flushInkQueue() {
+  if (!supa || !syncState.user || inkFlushBusy) return;
+  inkFlushBusy = true;
+  try {
+    const pending = await inkRecordPending();
+    for (const local of pending) {
+      const row = {
+        client_id: local.client_id,
+        user_id: syncState.user.id,
+        qid: local.qid,
+        t0: local.t0,
+        proc: local.proc || null,
+        strokes: local.strokes,
+      };
+      const { error } = await supa.from('ink_sessions').upsert(row, { onConflict: 'user_id,client_id' });
+      if (error) {
+        syncState.msg = '筆跡已保存在本機，雲端補傳尚未成功';
+        syncState.pushErr = true;
+        break;
+      }
+      await inkRecordPut({ ...local, user_id: syncState.user.id, uploaded: true, uploadedAt: Date.now() });
     }
-  });
-}
-function flushInkQueue() {
-  if (!supa || !syncState.user || !inkQueue.length) return;
-  const q = inkQueue; inkQueue = [];
-  for (const row of q) supaInkInsert(row);
+  } catch (_) {
+    syncState.msg = '筆跡已保存在本機，連線後會自動補傳';
+    syncState.pushErr = true;
+  } finally {
+    inkFlushBusy = false;
+    await refreshInkLocalStatus();
+    syncPill();
+  }
 }
 function syncInk(qid, t0, proc) {
-  if (!supa || !syncState.user) return;
   const st = sessionInk[qid]; if (!st) return;
-  // 完整書寫錄影進雲端：筆畫(s)＋塗改事件(e)，供後續 AI 統整分析（舊列的 q/a 欄位僅歷史資料殘留）
+  // 先永久寫入 IndexedDB，再嘗試雲端；重新整理、離線或上傳失敗都不會讓原始筆畫消失。
   const strokes = st.s.filter((s) => s.t0 >= t0);
   const eras = st.e.filter((t) => t >= t0);
   if (!strokes.length && !eras.length) return;
-  supaInkInsert({ user_id: syncState.user.id, qid, t0, proc: proc || null, strokes: { s: strokes, e: eras } });
+  const sessionKey = `${qid}|${t0}`;
+  const clientId = inkSessionIds.get(sessionKey) || inkClientId(qid, t0);
+  inkSessionIds.set(sessionKey, clientId);
+  inkRecordPut({
+    client_id: clientId,
+    user_id: syncState.user ? syncState.user.id : null,
+    qid,
+    t0,
+    proc: { ...(proc || {}), draft: false },
+    strokes: { s: strokes, e: eras },
+    uploaded: false,
+  }).then(() => {
+    refreshInkLocalStatus();
+    if (syncState.user) flushInkQueue();
+    else { syncState.msg = '筆跡已永久保存在這台；登入後自動同步'; syncPill(); }
+  }).catch(() => {
+    statePersistErr = true;
+    saveQuotaErr = true;
+    syncState.msg = '筆跡無法寫入本機，請立刻匯出備份';
+    syncPill();
+  });
 }
 async function syncLogin(isSignup) {
   let email = $('#sy-email').value.trim();
@@ -6263,9 +6589,12 @@ function syncCard() {
     <p class="dim">這個網頁環境封鎖外部連線（claude.ai artifact），雲端同步自動停用——資料照常存本機，可用下方備份匯出。
     要用同步版請開本機版 index.html 或自架網址。</p></div>`;
   if (!syncState.user) return `<div class="card"><h2>☁️ 雲端同步</h2>
-    <p class="dim">帳號打使用者名稱就好。</p>
-    <input id="sy-email" class="ans-input" autocomplete="username" placeholder="帳號（不用打 @gmail.com）" value="${escH((() => { try { return (localStorage.getItem('mathA13_email') || '').replace(/@gmail\.com$/, ''); } catch (e) { return ''; } })())}">
-    <input id="sy-pass" class="ans-input" type="password" autocomplete="current-password" placeholder="密碼（至少 6 碼）" onkeydown="if(event.key==='Enter')syncLogin(false)">
+    <p class="dim">帳號打使用者名稱就好。這台已保存 ${inkLocalStatus.total} 份筆跡${inkLocalStatus.pending ? `，其中 ${inkLocalStatus.pending} 份會在登入後補傳` : ''}。</p>
+    <label for="sy-email" class="field-label">帳號</label>
+    <input id="sy-email" class="ans-input" autocomplete="username" aria-describedby="sy-email-hint" placeholder="不用打 @gmail.com" value="${escH((() => { try { return (localStorage.getItem('mathA13_email') || '').replace(/@gmail\.com$/, ''); } catch (e) { return ''; } })())}">
+    <small id="sy-email-hint" class="dim">輸入 Gmail 使用者名稱即可。</small>
+    <label for="sy-pass" class="field-label">密碼</label>
+    <input id="sy-pass" class="ans-input" type="password" autocomplete="current-password" placeholder="至少 6 碼" onkeydown="if(event.key==='Enter')syncLogin(false)">
     <div class="actr">
       <button class="btn" onclick="syncLogin(true)">註冊</button>
       <button class="btn primary" onclick="syncLogin(false)">登入</button>
@@ -6273,9 +6602,10 @@ function syncCard() {
     ${syncState.msg ? `<p class="dim">${escH(syncState.msg)}</p>` : ''}</div>`;
   return `<div class="card"><h2>☁️ 雲端同步 <span class="okc">已登入</span></h2>
     <p class="dim">${escH(syncState.user.email || '')}｜${escH(syncState.msg || '自動同步中：每次做完題幾秒內上傳')}</p>
+    <p class="dim fs13">本機筆跡 ${inkLocalStatus.total} 份｜待同步 ${inkLocalStatus.pending} 份｜雲端狀態 revision ${syncState.revision == null ? '—' : syncState.revision}</p>
     <div class="actr"><button class="btn" onclick="syncLogout(false)">登出這台</button>
     <button class="btn err" onclick="syncLogout(true)">撤銷所有登入／配對連結</button>
-    <button class="btn" onclick="makePairLink()">📱 產生配對連結</button>
+    <button class="btn" onclick="makePairLink()">產生一次性配對連結</button>
     <button class="btn" onclick="syncPushNow()">立即同步</button></div></div>`;
 }
 
@@ -6336,6 +6666,8 @@ async function boot() {
   if (!document.getElementById('day-counter')) { const dc = document.createElement('div'); dc.id = 'day-counter'; document.body.appendChild(dc); }
   renderDayCounter(); // 右上角常駐今日計數表
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); // 爭取持久儲存：手寫是高優先資料，別讓瀏覽器在空間壓力下清掉
+  await stateInit(); // IndexedDB 是本機權威副本；先救回 localStorage 配額滿或上次崩潰前已提交的狀態
+  await refreshInkLocalStatus();
   await contentInit(); // 分家啟用時從 IndexedDB 載內容（毫秒級；未啟用是 no-op）
   applyExtBank();
   aiCredentialCleanup();

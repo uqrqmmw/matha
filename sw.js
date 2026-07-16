@@ -4,13 +4,27 @@
 // CacheStorage 以「origin」共用，不以 service-worker scope 隔離。
 // 只清本 app 自己的 prefix，避免部署在同一 GitHub Pages origin 的其他 PWA 快取被誤刪。
 const CACHE_PREFIX = 'matha-v';
-const CACHE = CACHE_PREFIX + '35';
-// 全部同源（KaTeX/Supabase 皆已自架，無 CDN）→ 真離線可用。KaTeX 字型（vendor/katex/fonts/*.woff2）不列 SHELL，
-// 由 fetch handler 首次線上渲染時自動快取（避免某支字型 404 讓 addAll 整個 install 失敗）。
-const SHELL = ['./', 'index.html', 'style.css', 'bank.js', 'practice-bank.js?v=0716j', 'app.js?v=0716j', 'vendor/supabase.js', 'vendor/katex/katex.min.css', 'vendor/katex/katex.min.js', 'vendor/katex/auto-render.min.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const CACHE = CACHE_PREFIX + '36';
+// 全部同源（KaTeX/Supabase 皆已自架，無 CDN）→ 真離線可用。
+const SHELL = ['./', 'index.html', 'style.css', 'bank.js', 'practice-bank.js?v=0717a', 'app.js?v=0717a', 'vendor/supabase.js', 'vendor/katex/katex.min.css', 'vendor/katex/katex.min.js', 'vendor/katex/auto-render.min.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const KATEX_FONTS = [
+  'KaTeX_AMS-Regular', 'KaTeX_Caligraphic-Bold', 'KaTeX_Caligraphic-Regular',
+  'KaTeX_Fraktur-Bold', 'KaTeX_Fraktur-Regular', 'KaTeX_Main-Bold',
+  'KaTeX_Main-BoldItalic', 'KaTeX_Main-Italic', 'KaTeX_Main-Regular',
+  'KaTeX_Math-BoldItalic', 'KaTeX_Math-Italic', 'KaTeX_SansSerif-Bold',
+  'KaTeX_SansSerif-Italic', 'KaTeX_SansSerif-Regular', 'KaTeX_Script-Regular',
+  'KaTeX_Size1-Regular', 'KaTeX_Size2-Regular', 'KaTeX_Size3-Regular',
+  'KaTeX_Size4-Regular', 'KaTeX_Typewriter-Regular',
+].map((name) => `vendor/katex/fonts/${name}.woff2`);
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(async (cache) => {
+    await cache.addAll(SHELL);
+    // 字型採逐檔容錯，既不讓單檔問題破壞安裝，也確保第一次開公式前就能完整離線。
+    await Promise.all(KATEX_FONTS.map(async (url) => {
+      try { const response = await fetch(url, { cache: 'no-cache' }); if (response.ok) await cache.put(url, response); } catch (_) {}
+    }));
+  }).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

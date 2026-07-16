@@ -12,8 +12,13 @@
 create table if not exists public.app_state (
   user_id    uuid primary key references auth.users (id) on delete cascade,
   data       jsonb not null,
+  revision   bigint not null default 0,
   updated_at timestamptz not null default now()
 );
+
+-- 舊專案已存在 app_state 時補欄位；前端以 revision 做 compare-and-swap，
+-- 兩台裝置同時上傳時落後者會重新拉取、合併、重試，不再整包互蓋。
+alter table public.app_state add column if not exists revision bigint not null default 0;
 
 alter table public.app_state enable row level security;
 
@@ -27,12 +32,21 @@ create policy "own state" on public.app_state
 create table if not exists public.ink_sessions (
   id         uuid primary key default gen_random_uuid(),
   user_id    uuid not null references auth.users (id) on delete cascade,
+  client_id  text,
   qid        text not null,
   t0         bigint not null,          -- 該次作答起始（epoch ms）
   proc       jsonb,                    -- 過程指標摘要 {fi, hes, era, tail, n}
   strokes    jsonb not null,           -- {s:[筆畫…], e:[塗改時間…]} 完整原始資料
   created_at timestamptz not null default now()
 );
+
+-- client_id 由瀏覽器在落筆時建立，同一份草稿／完稿以 upsert 冪等更新。
+-- 既有列先補 legacy id，再收緊 NOT NULL，遷移可安全重跑。
+alter table public.ink_sessions add column if not exists client_id text;
+update public.ink_sessions set client_id = 'legacy-' || id::text where client_id is null;
+alter table public.ink_sessions alter column client_id set not null;
+create unique index if not exists ink_sessions_user_client
+  on public.ink_sessions (user_id, client_id);
 
 alter table public.ink_sessions enable row level security;
 
