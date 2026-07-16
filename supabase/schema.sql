@@ -91,3 +91,24 @@ create policy "own packs" on public.content_packs
   for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- Private, read-only curated question bank. Files are uploaded by the project
+-- owner; signed-in learners can download them, but cannot alter the bank.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'matha-content',
+  'matha-content',
+  false,
+  1048576,
+  array['application/json']
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "authenticated read matha content" on storage.objects;
+create policy "authenticated read matha content" on storage.objects
+  for select
+  to authenticated
+  using (bucket_id = 'matha-content');

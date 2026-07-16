@@ -1,0 +1,13 @@
+{
+  "name": "matha",
+  "version": "0.0.0",
+  "private": true,
+  "description": "數A 特訓 PWA — static checks and regression tests",
+  "scripts": {
+    "test": "node --check app.js && node --check bank.js && node --check practice-bank.js && node --check sw.js && node --check scripts/build-private-bank.js && node --test",
+    "build:private-bank": "node scripts/build-private-bank.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

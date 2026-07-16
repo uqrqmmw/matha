@@ -6,8 +6,8 @@
   <!-- 移除 maximum-scale/user-scalable：讓 Android 能雙指放大密集數學/小灰字；畫線區各自 touch-action:none 防寫字時縮放衝突 -->
 
   <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#0f766e">
-  <title>數A特訓</title>
+  <meta name="theme-color" content="#75675c">
+  <title>數A 特訓</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png?v=4">
   <link rel="apple-touch-icon" href="icon-192.png?v=4">
@@ -15,13 +15,67 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header><nav></nav></header>
+  <!-- 自製單色 SVG 圖示系統：全站只使用這組線性圖示，不載圖庫、不顯示 emoji。 -->
+  <svg class="ui-sprite" aria-hidden="true">
+    <symbol id="ui-brand" viewBox="0 0 24 24"><path d="M5 4.5h14v15H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+    <symbol id="ui-clipboard" viewBox="0 0 24 24"><path d="M8 5H6.5A1.5 1.5 0 0 0 5 6.5v13h14v-13A1.5 1.5 0 0 0 17.5 5H16"/><path d="M9 3.5h6v3H9zM8.5 11h7M8.5 15h5"/></symbol>
+    <symbol id="ui-phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M10 5h4M11 18.5h2"/></symbol>
+    <symbol id="ui-bolt" viewBox="0 0 24 24"><path d="M13.5 2.5 5.5 13H11l-.5 8.5L18.5 11H13z"/></symbol>
+    <symbol id="ui-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="m12 12 7-7M16 5h3v3"/></symbol>
+    <symbol id="ui-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+    <symbol id="ui-book" viewBox="0 0 24 24"><path d="M4 4.5h6.5A2.5 2.5 0 0 1 13 7v13a3 3 0 0 0-3-3H4z"/><path d="M20 4.5h-4.5A2.5 2.5 0 0 0 13 7v13a3 3 0 0 1 3-3h4z"/></symbol>
+    <symbol id="ui-tutor" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19v-2.5A4.5 4.5 0 0 1 8 12h2a4.5 4.5 0 0 1 4.5 4.5V19M15 6h5v8h-3M17.5 9h-2"/></symbol>
+    <symbol id="ui-chart" viewBox="0 0 24 24"><path d="M4 20V4M4 20h16M8 16v-5M12 16V7M16 16v-8"/></symbol>
+    <symbol id="ui-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M7.5 3v4M16.5 3v4M3.5 9h17M8 13h2M14 13h2M8 17h2"/></symbol>
+    <symbol id="ui-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16.5 8.5"/></symbol>
+    <symbol id="ui-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></symbol>
+    <symbol id="ui-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v5M12 17.3v.2"/></symbol>
+    <symbol id="ui-spark" viewBox="0 0 24 24"><path d="m12 3 1.4 5.6L19 10l-5.6 1.4L12 17l-1.4-5.6L5 10l5.6-1.4zM18.5 16l.6 2.4 2.4.6-2.4.6-.6 2.4-.6-2.4-2.4-.6 2.4-.6z"/></symbol>
+    <symbol id="ui-bulb" viewBox="0 0 24 24"><path d="M8.5 15.5A7 7 0 1 1 15.5 15.5c-.8.7-1 1.3-1 2.5h-5c0-1.2-.2-1.8-1-2.5Z"/><path d="M9.5 21h5M9 11h6"/></symbol>
+    <symbol id="ui-brain" viewBox="0 0 24 24"><path d="M9.5 5.2A3 3 0 0 0 4.8 8a3.3 3.3 0 0 0 .4 6.2 3.2 3.2 0 0 0 4.3 4.6V5.2ZM14.5 5.2A3 3 0 0 1 19.2 8a3.3 3.3 0 0 1-.4 6.2 3.2 3.2 0 0 1-4.3 4.6V5.2Z"/><path d="M7 10h2.5M14.5 10H17M7 15h2.5M14.5 15H17"/></symbol>
+    <symbol id="ui-pencil" viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10-3.5-3.5-10 10zM13.5 7 17 10.5M15 5.5l1.5-1.5a1.4 1.4 0 0 1 2 0l1.5 1.5a1.4 1.4 0 0 1 0 2L18.5 9"/></symbol>
+    <symbol id="ui-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/></symbol>
+    <symbol id="ui-pause" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 8.5v7M14.5 8.5v7"/></symbol>
+    <symbol id="ui-cloud" viewBox="0 0 24 24"><path d="M7 18h10.5a4 4 0 0 0 .5-8 6.2 6.2 0 0 0-11.8-1.4A4.8 4.8 0 0 0 7 18Z"/></symbol>
+    <symbol id="ui-package" viewBox="0 0 24 24"><path d="m4 7 8-4 8 4-8 4zM4 7v10l8 4 8-4V7M12 11v10"/></symbol>
+    <symbol id="ui-key" viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M17 12v3M20 12v2"/></symbol>
+    <symbol id="ui-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></symbol>
+    <symbol id="ui-map" viewBox="0 0 24 24"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/></symbol>
+    <symbol id="ui-award" viewBox="0 0 24 24"><circle cx="12" cy="9" r="5.5"/><path d="m8.5 13.5-2 7 5.5-3 5.5 3-2-7M9.5 9l1.5 1.5L14.5 7"/></symbol>
+    <symbol id="ui-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
+    <symbol id="ui-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 5h11l-2 4 2 4H5"/></symbol>
+    <symbol id="ui-ruler" viewBox="0 0 24 24"><path d="m4 17 13-13 3 3-13 13zM13 8l3 3M10 11l2 2M7 14l3 3"/></symbol>
+    <symbol id="ui-square" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1"/></symbol>
+    <symbol id="ui-arrow-up" viewBox="0 0 24 24"><path d="M12 20V5M6.5 10.5 12 5l5.5 5.5"/></symbol>
+    <symbol id="ui-arrow-down" viewBox="0 0 24 24"><path d="M12 4v15M6.5 13.5 12 19l5.5-5.5"/></symbol>
+    <symbol id="ui-undo" viewBox="0 0 24 24"><path d="M9 8H4V3M4.5 7.5A8.5 8.5 0 1 1 5 17"/></symbol>
+    <symbol id="ui-sync" viewBox="0 0 24 24"><path d="M20 7h-5V2M4 17h5v5M19.2 11A7.5 7.5 0 0 0 6 6M4.8 13A7.5 7.5 0 0 0 18 18"/></symbol>
+    <symbol id="ui-numbers" viewBox="0 0 24 24"><path d="M6 5v14M3.5 8 6 5l2.5 3M13 7.5A2.5 2.5 0 1 1 17.5 9L13 18h6M3 13h6"/></symbol>
+    <symbol id="ui-save" viewBox="0 0 24 24"><path d="M4 4h13l3 3v13H4zM8 4v6h8V4M8 20v-6h8v6"/></symbol>
+    <symbol id="ui-expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></symbol>
+    <symbol id="ui-erase" viewBox="0 0 24 24"><path d="m4 15 8-10 8 7-7 8H8zM10 20h11M8 11l7 6"/></symbol>
+    <symbol id="ui-message" viewBox="0 0 24 24"><path d="M4 4.5h16v12H9l-5 4z"/><path d="M8 9h8M8 12.5h5"/></symbol>
+    <symbol id="ui-flame" viewBox="0 0 24 24"><path d="M13 3c1 4-2 5-2 8 0 1.6 1 2.5 2.2 2.5 2 0 3-2.2 2.4-4.5 2.4 2 4.4 4.3 4.4 7a8 8 0 0 1-16 0c0-4 2.3-7.2 5.7-9.5-.3 3.2 1.1 4.7 2.3 4.7 1.8 0 2.5-2.7 1-8.2Z"/></symbol>
+    <symbol id="ui-trend" viewBox="0 0 24 24"><path d="M4 18 10 12l4 3 6-8M15 7h5v5"/></symbol>
+    <symbol id="ui-cards" viewBox="0 0 24 24"><rect x="6" y="4" width="13" height="16" rx="2"/><path d="M6 7 3.5 8.5A2 2 0 0 0 3 11l5 9M10 9h5M10 13h5"/></symbol>
+    <symbol id="ui-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" class="solid"/></symbol>
+  </svg>
+  <header class="site-header">
+    <div class="nav-shell">
+      <button class="brand" type="button" onclick="nav('home')" aria-label="回到首頁">
+        <svg class="brand-mark" aria-hidden="true"><use href="#ui-brand"></use></svg>
+        <span class="brand-copy"><b>數A</b><small>特訓</small></span>
+      </button>
+      <nav aria-label="主要功能"></nav>
+    </div>
+  </header>
   <main id="app"></main>
   <script src="vendor/supabase.js"></script><!-- 自架同源（原 CDN @2）：認證庫不再依賴 CDN，杜絕供應鏈竄改讀走密碼，且離線可用。版本 2.110.2 UMD，更新時重新下載 dist/umd/supabase.js -->
   <script defer src="vendor/katex/katex.min.js"></script>
   <script defer src="vendor/katex/auto-render.min.js"></script>
   <script src="bank.js"></script>
-  <script src="app.js"></script>
+  <script src="practice-bank.js?v=0716f"></script>
+  <script src="app.js?v=0716f"></script>
   <script>
     // PWA：正式站註冊 service worker（artifact/file 環境會靜默跳過）
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
@@ -35,11 +89,11 @@
         if (!hadController || document.getElementById('sw-update')) return;
         var bar = document.createElement('div');
         bar.id = 'sw-update';
-        bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#0f766e;color:#fff;padding:10px 16px;display:flex;gap:14px;align-items:center;justify-content:center;font:14px/1.4 system-ui,sans-serif;box-shadow:0 -2px 14px rgba(0,0,0,.22)';
+        bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#51483f;color:#fff;padding:11px 18px;display:flex;gap:14px;align-items:center;justify-content:center;font:14px/1.4 system-ui,sans-serif;box-shadow:0 -2px 18px rgba(50,45,40,.16)';
         bar.appendChild(document.createTextNode('有新版本可用'));
         var btn = document.createElement('button');
         btn.textContent = '立即更新';
-        btn.style.cssText = 'background:#fff;color:#0f766e;border:0;border-radius:7px;padding:6px 16px;font-weight:700;cursor:pointer;font-size:14px';
+        btn.style.cssText = 'background:#f7f5f0;color:#51483f;border:0;border-radius:5px;padding:7px 16px;font-weight:700;cursor:pointer;font-size:14px';
         btn.onclick = function () { btn.textContent = '更新中…'; location.reload(); };
         bar.appendChild(btn);
         document.body.appendChild(bar);

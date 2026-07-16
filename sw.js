@@ -1,10 +1,13 @@
 /* 數A特訓 PWA service worker
    策略：network-first（連得上就拿最新版，改版即時生效）、斷網退回快取（離線也能開）。
-   只碰同源 GET；Supabase/Anthropic 等跨域請求一律直通不快取。 */
-const CACHE = 'matha13-v25';
+   只碰同源 GET；Supabase/OpenAI 代理等跨域請求一律直通不快取。 */
+// CacheStorage 以「origin」共用，不以 service-worker scope 隔離。
+// 只清本 app 自己的 prefix，避免部署在同一 GitHub Pages origin 的其他 PWA 快取被誤刪。
+const CACHE_PREFIX = 'matha-v';
+const CACHE = CACHE_PREFIX + '31';
 // 全部同源（KaTeX/Supabase 皆已自架，無 CDN）→ 真離線可用。KaTeX 字型（vendor/katex/fonts/*.woff2）不列 SHELL，
 // 由 fetch handler 首次線上渲染時自動快取（避免某支字型 404 讓 addAll 整個 install 失敗）。
-const SHELL = ['./', 'index.html', 'style.css', 'bank.js', 'app.js', 'vendor/supabase.js', 'vendor/katex/katex.min.css', 'vendor/katex/katex.min.js', 'vendor/katex/auto-render.min.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const SHELL = ['./', 'index.html', 'style.css', 'bank.js', 'practice-bank.js?v=0716f', 'app.js?v=0716f', 'vendor/supabase.js', 'vendor/katex/katex.min.css', 'vendor/katex/katex.min.js', 'vendor/katex/auto-render.min.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -13,7 +16,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith(CACHE_PREFIX) && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
