@@ -4,9 +4,9 @@
 // CacheStorage 以「origin」共用，不以 service-worker scope 隔離。
 // 只清本 app 自己的 prefix，避免部署在同一 GitHub Pages origin 的其他 PWA 快取被誤刪。
 const CACHE_PREFIX = 'matha-v';
-const CACHE = CACHE_PREFIX + '52';
+const CACHE = CACHE_PREFIX + '53';
 // 全部同源（KaTeX/Supabase 皆已自架，無 CDN）→ 真離線可用。
-const SHELL = ['./', 'index.html', 'style.css?v=0717q', 'bank.js', 'practice-bank.js?v=0717m', 'app.js?v=0717q', 'vendor/supabase.js', 'vendor/katex/katex.min.css', 'vendor/katex/katex.min.js', 'vendor/katex/auto-render.min.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const SHELL = ['./', 'index.html', 'style.css?v=0717r', 'bank.js', 'practice-bank.js?v=0717m', 'app.js?v=0717r', 'vendor/supabase.js', 'vendor/katex/katex.min.css', 'vendor/katex/katex.min.js', 'vendor/katex/auto-render.min.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 const KATEX_FONTS = [
   'KaTeX_AMS-Regular', 'KaTeX_Caligraphic-Bold', 'KaTeX_Caligraphic-Regular',
   'KaTeX_Fraktur-Bold', 'KaTeX_Fraktur-Regular', 'KaTeX_Main-Bold',
