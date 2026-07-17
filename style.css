@@ -1008,15 +1008,15 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 /* ── Galaxy Tab S10 Ultra（14.6"／16:10）──
    Android 會依顯示縮放把 2960×1848 映成不同 CSS 像素，因此用大平板的可用畫布，
    而不是綁死單一解析度。橫向充分利用寬度，直向仍保有適合 S Pen 的閱讀與觸控密度。 */
-@media (min-width: 800px) and (max-width: 1600px) and (min-height: 700px) {
+@media (min-width: 800px) and (min-height: 700px) {
   :root {
-    --tablet-page-max: 1380px;
-    --tablet-gutter: clamp(28px, 3.4vw, 52px);
+    --tablet-page-max: 1560px;
+    --tablet-gutter: clamp(32px, 3.4vw, 64px);
   }
   body {
     min-height: 100dvh;
-    font-size: 16px;
-    line-height: 1.75;
+    font-size: 18px;
+    line-height: 1.7;
     padding-bottom: max(40px, env(safe-area-inset-bottom));
   }
   .nav-shell {
@@ -1034,7 +1034,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
     min-width: 0;
     min-height: 48px;
     padding: 10px clamp(10px, 1.1vw, 16px);
-    font-size: 13.5px;
+    font-size: 14.5px;
   }
   nav button .ui-icon { width: 18px; height: 18px; }
   #app {
@@ -1042,20 +1042,20 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
     max-width: var(--tablet-page-max);
     padding: 32px var(--tablet-gutter) 82px;
   }
-  h1 { font-size: clamp(30px, 3vw, 38px); margin-bottom: 20px; }
-  h2 { font-size: 20px; }
-  h3 { font-size: 13px; }
+  h1 { font-size: clamp(34px, 3vw, 42px); margin-bottom: 20px; }
+  h2 { font-size: 22px; }
+  h3 { font-size: 14px; }
   .hero { padding: 12px 3px 22px; margin-bottom: 22px; }
-  .hero h1 { font-size: clamp(38px, 4vw, 48px); }
-  .hero p { font-size: 16px; }
+  .hero h1 { font-size: clamp(44px, 4vw, 56px); }
+  .hero p { font-size: 18px; }
   .card { padding: 24px 26px; margin-block: 16px; }
   .btn {
     min-height: 48px;
     padding: 10px 17px;
-    font-size: 15px;
+    font-size: 16px;
   }
-  .btn.big { min-height: 54px; padding: 13px 23px; font-size: 17px; }
-  .btn.sm { min-height: 44px; padding: 8px 13px; font-size: 13.5px; }
+  .btn.big { min-height: 56px; padding: 13px 23px; font-size: 18px; }
+  .btn.sm { min-height: 44px; padding: 8px 13px; font-size: 14.5px; }
   select, textarea, input[type="text"], input[type="email"], input[type="password"], input[type="number"] {
     min-height: 48px;
     padding: 11px 13px;
@@ -1072,15 +1072,15 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
     font-size: 16px;
     touch-action: manipulation;
   }
-  .task-strip span { font-size: 13px; }
+  .task-strip span { font-size: 14px; }
   .training-rules { padding-block: 26px; }
   .training-rules ol { margin-top: 10px; }
   .training-rules li { padding-left: 3px; margin-block: 7px; break-inside: avoid; }
   .recall-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
   .recall-tile { min-height: 164px; padding: 19px; }
-  .recall-tile strong { font-size: 18px; }
+  .recall-tile strong { font-size: 19px; }
   .concept-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
-  .concept-tile { min-height: 148px; padding: 18px; }
+  .concept-tile { min-height: 156px; padding: 19px; }
   .training-choice { gap: 18px; }
   .choice-card { min-height: 365px; padding: 28px; }
   .choice-card h2, .paper-library-head h2 { font-size: 27px; }
@@ -1137,7 +1137,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
   .paper-review-layout { grid-template-columns: minmax(0, 1.35fr) minmax(420px, .65fr); gap: 18px; }
 }
 
-@media (min-width: 1100px) and (max-width: 1600px) and (min-height: 700px) and (orientation: landscape) {
+@media (min-width: 1100px) and (min-height: 650px) and (orientation: landscape) {
   .training-rules ol { columns: 2; column-gap: 52px; }
   .paper-scan-stack { max-width: 1280px; }
   .concept-prompt { max-width: 980px; }
@@ -1151,6 +1151,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
   nav button { padding-inline: 9px; }
   .next-action { grid-template-columns: 1fr; gap: 18px; }
   .next-action .btn { width: 100%; }
+  .task-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recall-grid, .concept-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .paper-source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .paper-source-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
@@ -1171,6 +1172,224 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
   .paper-review-layout { grid-template-columns: 1fr; }
   .paper-review-source { max-height: 56dvh; }
   .paper-review-work { position: static; }
+}
+
+/* Ultra 橫向不是「拉寬的手機頁」：首頁首屏重新分區，單題改成題目＋計算區工作台。 */
+@media (min-width: 1100px) and (min-height: 650px) and (orientation: landscape) {
+  body[data-view="home"] #app {
+    min-height: calc(100dvh - 72px);
+    display: grid;
+    grid-template-columns: minmax(0, 1.12fr) minmax(440px, .88fr);
+    grid-template-rows: auto minmax(220px, 1fr) minmax(205px, .92fr);
+    gap: 18px;
+    align-content: stretch;
+  }
+  body[data-view="home"] .hero {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding-top: 2px;
+  }
+  body[data-view="home"] .next-action {
+    grid-column: 1;
+    grid-row: 2;
+    height: 100%;
+    margin: 0;
+    align-content: center;
+  }
+  body[data-view="home"] .task-strip {
+    grid-column: 2;
+    grid-row: 2;
+    height: 100%;
+    margin: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+  body[data-view="home"] .task-strip button {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  body[data-view="home"] .task-strip b { font-size: 18px; line-height: 1.45; }
+  body[data-view="home"] .training-rules {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+  body[data-view="home"] .training-rules ol {
+    columns: 3;
+    column-gap: 46px;
+    font-size: 16.5px;
+    line-height: 1.65;
+  }
+
+  body.session-on #app {
+    width: 100%;
+    max-width: none;
+    min-height: 100dvh;
+    padding: 10px 18px 18px;
+  }
+  body.session-on .session-head {
+    min-height: 48px;
+    margin: 0;
+    padding: 2px 4px;
+    font-size: 15px;
+  }
+  .mock-paper-nav {
+    min-height: 52px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 18px;
+    margin: 0 0 10px;
+    padding: 7px 10px;
+    background: #ebe7df;
+    border: 1px solid var(--border);
+  }
+  .mock-paper-nav > span { min-width: 104px; display: grid; line-height: 1.25; }
+  .mock-paper-nav small { color: var(--dim); font-size: 11px; }
+  .mock-paper-nav > div { display: grid; grid-template-columns: repeat(20, minmax(30px, 1fr)); gap: 4px; }
+  .mock-paper-nav i, .vision-paper-map span {
+    min-width: 30px;
+    min-height: 32px;
+    display: grid;
+    place-items: center;
+    border: 1px solid #cbc4b9;
+    background: #f9f7f2;
+    color: var(--dim);
+    font-size: 13px;
+    font-style: normal;
+    font-variant-numeric: tabular-nums;
+  }
+  .mock-paper-nav i.current, .vision-paper-map span.current { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; font-weight: 700; }
+  .mock-paper-nav i.done, .vision-paper-map span.done { background: #dfe4da; border-color: #aeb8a7; color: #485345; }
+  .mock-paper-nav i.skipped { border-style: dashed; color: var(--accent2); }
+
+  .qcard.booklet.sheet {
+    min-height: calc(100dvh - 138px);
+    margin: 0;
+    display: grid;
+    grid-template-columns: minmax(520px, .92fr) minmax(520px, 1.08fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    overflow: hidden;
+  }
+  .qcard.booklet.sheet .bk-head {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 52px;
+    padding-inline: 22px;
+  }
+  .qcard.booklet.sheet .sheet-tools {
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 52px;
+    padding: 5px 14px;
+    border-left: 1px solid var(--paper-border);
+    border-bottom: 1px solid var(--paper-border);
+  }
+  .qcard.booklet.sheet .bk-item {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 0;
+    padding: 28px 30px;
+    overflow-y: auto;
+    align-self: stretch;
+  }
+  .qcard.booklet.sheet .bk-content { font-size: 22px; line-height: 1.8; }
+  .qcard.booklet.sheet .bk-num { font-size: 22px; }
+  .qcard.booklet.sheet .bk-opt { min-height: 52px; padding: 8px 15px 8px 8px; }
+  .qcard.booklet.sheet .write-pad {
+    grid-column: 2;
+    grid-row: 2 / 4;
+    min-height: 0;
+    border-left: 1px solid var(--paper-border);
+    background-color: #fffefa;
+    background-image: linear-gradient(to bottom, transparent 39px, rgba(112,101,91,.11) 40px);
+    background-size: 100% 40px;
+  }
+  .qcard.booklet.sheet .ansarea {
+    grid-column: 1;
+    grid-row: 3;
+    position: relative;
+    bottom: auto;
+    padding: 14px 22px 16px;
+    border-top: 1px solid var(--paper-border);
+    background: var(--paper);
+  }
+  .qcard.booklet.sheet #qfb, .qcard.booklet.sheet #dfb {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    max-height: 42dvh;
+    overflow-y: auto;
+  }
+
+  .vision-paper-map {
+    display: grid;
+    grid-template-columns: repeat(20, minmax(30px, 1fr));
+    gap: 4px;
+    margin: 8px 0 12px;
+  }
+  .vision-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1.12fr) minmax(500px, .88fr);
+    gap: 18px;
+    min-height: calc(100dvh - 145px);
+    align-items: stretch;
+  }
+  .vision-question-pane { min-width: 0; }
+  .vision-question-pane .eye-question { min-height: calc(100% - 74px); margin: 0; }
+  .eye-question .bk-content { font-size: 21px; }
+  .vision-workspace .direction-form {
+    height: 100%;
+    margin: 0;
+    padding: 26px 28px;
+    display: flex;
+    flex-direction: column;
+  }
+  .vision-workspace .direction-form .actr { margin-top: auto; }
+
+  .paper-spread {
+    width: min(100%, 1540px);
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    align-items: start;
+  }
+  .paper-spread.is-zoomed { grid-template-columns: minmax(0, 1fr); }
+  .paper-spread.is-zoomed .paper-spread-preview { display: none; }
+  .paper-spread-preview {
+    position: relative;
+    min-width: 0;
+    appearance: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .paper-spread-preview > span {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 3;
+    padding: 6px 10px;
+    background: rgba(251,250,247,.94);
+    border: 1px solid var(--border);
+    box-shadow: var(--sh-1);
+    font-size: 12px;
+  }
+  .paper-preview-sheet { width: 100%; max-width: none; pointer-events: none; }
+  .paper-spread-preview:hover .paper-preview-sheet { outline: 2px solid var(--accent); outline-offset: -2px; }
+}
+
+@media (min-width: 800px) and (max-width: 1100px) and (orientation: portrait) {
+  .paper-spread { display: block; }
+  .paper-spread-preview { display: none; }
 }
 
 @media print {

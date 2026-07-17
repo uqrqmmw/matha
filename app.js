@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0717p'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
+const APP_VER = '0717q'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版
 
 /* ═══════════ 狀態 ═══════════ */
 const KEY = 'mathA13';
@@ -3411,6 +3411,7 @@ function renderHome() {
     <button onclick="nav('outline')"><span>大綱默寫</span><b>${outlineReady ? `${outlineDue} 份到期` : '等待 11 份大綱'}</b></button>
     <button onclick="nav('mock')"><span>模考與破題</span><b>${visionDue ? `${visionDue} 題第二天` : visionPaper ? `眼睛刷題 ${visionPaperDone}/20` : '眼睛刷題 20 題'}</b></button>
     <button onclick="nav('concept')"><span>觀念理解</span><b>${conceptDue} 張待說明</b></button>
+    <button onclick="nav('stats')"><span>進度與設定</span><b>同步、AI 與備份</b></button>
   </div>
   <div class="card training-rules"><h2>現在的訓練規則</h2>
     <ol>
@@ -3421,8 +3422,7 @@ function renderHome() {
       <li>眼睛刷題只找破題方向、不計算；沒方向的題隔天再想一次，仍沒有才看詳解。</li>
       <li>基本定義用自己的話說清楚意思、限制與例子，不背逐字句子。</li>
     </ol>
-  </div>
-  <div class="quiet-link"><button class="btn sm" onclick="nav('stats')">進度、同步與設定</button></div>`;
+  </div>`;
 }
 
 /* ═══════════ 任務一：十一單元空白默寫 ═══════════ */
@@ -5280,8 +5280,9 @@ function renderVisionWork() {
   const doneN = vision.paperRun ? vision.paperEntries.filter((x) => x.paperSeen).length : 0;
   app().innerHTML = `<div class="session-head"><span>${vision.paperRun ? `眼睛刷題整回｜第 ${q.examNo}/20 題｜${escH(sectionLabel(q))}` : `眼睛刷題｜${second ? '第二天再想' : '第一眼找方向'}`}</span><button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></div>
     ${vision.paperRun ? `<div class="vision-paper-progress" aria-label="本回進度 ${doneN} / 20"><span style="width:${doneN / 20 * 100}%"></span></div>` : ''}
-    <div class="vision-rule"><b>今天不計算。</b>${vision.paperRun ? `本回維持學測 20 題結構，目前第 ${q.examNo} 題。` : ''}目標只有一個：說出第一步為什麼值得做，以及下一步想得到什麼。</div>
-    ${visionQuestionHTML(q)}
+    ${vision.paperRun ? `<div class="vision-paper-map" aria-label="整回 20 題導覽">${vision.paperEntries.map((item) => `<span class="${item.id === entry.id ? 'current' : item.paperSeen ? 'done' : ''}">${item.examNo}</span>`).join('')}</div>` : ''}
+    <div class="vision-workspace"><section class="vision-question-pane"><div class="vision-rule"><b>今天不計算。</b>${vision.paperRun ? `本回維持學測 20 題結構，目前第 ${q.examNo} 題。` : ''}目標只有一個：說出第一步為什麼值得做，以及下一步想得到什麼。</div>
+    ${visionQuestionHTML(q)}</section>
     <div class="card direction-form">
       ${prior ? `<details open><summary>上次留下的紀錄</summary><ol>${prior}</ol></details>` : ''}
       <label><b>我想到的破題方向</b><textarea id="vision-direction" rows="4" placeholder="例如：先把條件改寫成向量內積，因為題目在問垂直；接著用內積為 0 建式。"></textarea></label>
@@ -5292,7 +5293,7 @@ function renderVisionWork() {
       <div class="actr"><button class="btn primary big" onclick="visionSubmit(true)">我有一個方向，對照詳解</button>
       <button class="btn" onclick="visionSubmit(false)">${second ? '第二天仍沒有方向，開詳解' : '完全沒方向，圈到明天'}</button>
       ${second ? '' : '<button class="btn subtle" onclick="visionKnown()">一眼就會且很可能作對，略過</button>'}</div>
-    </div>`;
+    </div></div>`;
   sessionChrome(true); scrollQuestionTop();
 }
 function visionReadForm() {
@@ -5953,12 +5954,22 @@ function paperWorkspaceSetZoom(value, focus) {
   const sheet = $('#paper-write-sheet'), label = $('#paper-zoom-label');
   if (sheet) { sheet.style.width = `${paperSourceSession.zoom * 100}%`; sheet.style.maxWidth = `${1180 * paperSourceSession.zoom}px`; }
   if (label) label.textContent = `${Math.round(paperSourceSession.zoom * 100)}%`;
+  const spread = document.querySelector('.paper-spread');
+  if (spread) spread.classList.toggle('is-zoomed', paperSourceSession.zoom > 1.05);
   if (sheet && focus && focus.pane) {
     const rect = sheet.getBoundingClientRect();
     focus.pane.scrollLeft += rect.left + focus.sheetX * rect.width - focus.clientX;
     focus.pane.scrollTop += rect.top + focus.sheetY * rect.height - focus.clientY;
   }
   clearTimeout(paperZoomPaintTimer); paperZoomPaintTimer = setTimeout(paperInkPaint, 35);
+}
+function paperNextPreviewHTML(source, urls, page) {
+  if (!paperSourceSession || page >= source.scans.length - 1) return '';
+  const next = page + 1, scan = source.scans[next];
+  return `<button class="paper-spread-preview" onclick="paperWorkspacePage(1)" aria-label="開啟下一頁：${escH(scan.label)}">
+    <span>下一頁｜${next + 1} / ${source.scans.length}</span>
+    <div class="paper-write-sheet paper-preview-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img src="${urls[next]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div></div>
+  </button>`;
 }
 function paperImageLoad(url) {
   return new Promise((resolve, reject) => {
@@ -6099,7 +6110,7 @@ function renderPaperSource() {
     <div class="paper-workbar"><div class="paper-work-title"><b>${escH(source.title)}</b><small>單指左右滑動翻頁</small></div>
       <span id="paper-clock" class="timer paper-timer">${fmtClock(left)}</span>
       <div class="paper-workgroup right"><button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="exitFlow()" aria-label="離開">${uiIcon('x')}</button></div></div>
-    <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-pane-caption"><span>清晰單頁・直接在原卷作答</span><small id="paper-ink-status">筆跡自動保存</small></div><div class="paper-ink-tools"><button id="paper-tool-pen" onclick="paperInkModeSet('pen')">${uiIcon('pencil')}筆</button><button id="paper-tool-erase" onclick="paperInkModeSet('erase')">${uiIcon('erase')}橡皮擦</button><button onclick="paperInkUndo()">${uiIcon('undo')}復原</button><button onclick="paperInkClear()">${uiIcon('x')}清空本頁</button><div class="paper-color-group" role="group" aria-label="畫筆顏色"><button id="paper-color-black" class="paper-color-button" onclick="paperInkColorSet('black')" aria-label="黑色筆" aria-pressed="${paperSourceSession.inkColor === 'black'}"><i style="--ink:${PAPER_INK_COLORS.black}"></i><span>黑</span></button><button id="paper-color-blue" class="paper-color-button" onclick="paperInkColorSet('blue')" aria-label="藍色筆" aria-pressed="${paperSourceSession.inkColor === 'blue'}"><i style="--ink:${PAPER_INK_COLORS.blue}"></i><span>藍</span></button><button id="paper-color-green" class="paper-color-button" onclick="paperInkColorSet('green')" aria-label="綠色筆" aria-pressed="${paperSourceSession.inkColor === 'green'}"><i style="--ink:${PAPER_INK_COLORS.green}"></i><span>綠</span></button></div><label class="paper-pen-width" for="paper-pen-width"><span>筆粗 <b id="paper-pen-width-label">${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}%</b></span><input id="paper-pen-width" type="range" min="35" max="200" step="5" value="${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}" oninput="paperInkWidthSet(this.value)" aria-label="調整畫筆粗細"></label></div><div class="paper-page-viewport"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}" style="width:${paperSourceSession.zoom * 100}%;max-width:${1180 * paperSourceSession.zoom}px"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可直接書寫並左右滑動翻頁的題本頁"></canvas><canvas id="paper-ai-canvas" aria-hidden="true"></canvas></div><p class="paper-write-hint">S Pen 直接書寫；側鍵按住時暫時變橡皮擦，放開立即恢復。手指左右滑動翻頁；放大後單指移動頁面，雙指縮放。AI 交卷後才會用獨立紅筆層批改。</p></div></section></div>
+    <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-pane-caption"><span>清晰單頁・直接在原卷作答</span><small id="paper-ink-status">筆跡自動保存</small></div><div class="paper-ink-tools"><button id="paper-tool-pen" onclick="paperInkModeSet('pen')">${uiIcon('pencil')}筆</button><button id="paper-tool-erase" onclick="paperInkModeSet('erase')">${uiIcon('erase')}橡皮擦</button><button onclick="paperInkUndo()">${uiIcon('undo')}復原</button><button onclick="paperInkClear()">${uiIcon('x')}清空本頁</button><div class="paper-color-group" role="group" aria-label="畫筆顏色"><button id="paper-color-black" class="paper-color-button" onclick="paperInkColorSet('black')" aria-label="黑色筆" aria-pressed="${paperSourceSession.inkColor === 'black'}"><i style="--ink:${PAPER_INK_COLORS.black}"></i><span>黑</span></button><button id="paper-color-blue" class="paper-color-button" onclick="paperInkColorSet('blue')" aria-label="藍色筆" aria-pressed="${paperSourceSession.inkColor === 'blue'}"><i style="--ink:${PAPER_INK_COLORS.blue}"></i><span>藍</span></button><button id="paper-color-green" class="paper-color-button" onclick="paperInkColorSet('green')" aria-label="綠色筆" aria-pressed="${paperSourceSession.inkColor === 'green'}"><i style="--ink:${PAPER_INK_COLORS.green}"></i><span>綠</span></button></div><label class="paper-pen-width" for="paper-pen-width"><span>筆粗 <b id="paper-pen-width-label">${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}%</b></span><input id="paper-pen-width" type="range" min="35" max="200" step="5" value="${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}" oninput="paperInkWidthSet(this.value)" aria-label="調整畫筆粗細"></label></div><div class="paper-page-viewport"><div class="paper-spread${paperSourceSession.zoom > 1.05 ? ' is-zoomed' : ''}"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}" style="width:${paperSourceSession.zoom * 100}%;max-width:${1180 * paperSourceSession.zoom}px"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可直接書寫並左右滑動翻頁的題本頁"></canvas><canvas id="paper-ai-canvas" aria-hidden="true"></canvas></div>${paperNextPreviewHTML(source, urls, page)}</div><p class="paper-write-hint">S Pen 直接書寫；側鍵按住時暫時變橡皮擦，放開立即恢復。手指左右滑動翻頁；橫向也會同時預覽下一頁，點預覽即可前進。放大後單指移動頁面，雙指縮放。</p></div></section></div>
     <div class="paper-finish-bar"><span>${source.questions} 題・${source.minutes} 分鐘｜答案直接寫在卷面，不另填答案卡</span><button class="btn primary" onclick="paperSourceGrade('主動交卷')">第一次批改｜對錯、分數、正確答案</button></div></div>`;
   sessionChrome(true);
   paperInkAttach();
@@ -6205,7 +6216,7 @@ function renderPaperGradeResult() {
   app().innerHTML = `<div class="paper-session-shell is-graded">
     <div class="paper-workbar"><div class="paper-work-title"><b>第一次批改｜對錯、分數、正確答案</b><small>${escH(source.title)}</small></div><strong class="paper-result-score">${grade.score} / 100</strong>
       <div class="paper-workgroup right"><button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
-    <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-pane-caption"><span>你的原筆跡＋AI 紅筆標記</span><small>單指左右滑動翻頁・雙指縮放</small></div><div class="paper-page-viewport"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}" style="width:${paperSourceSession.zoom * 100}%;max-width:${1180 * paperSourceSession.zoom}px"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div><p class="paper-write-hint">紅筆只標對錯、得分與正式答案；不告訴你怎麼算，也不分析從哪一步開始錯。隔天重新努力仍卡住，才可按第二次 AI 詳批。</p></div></section></div>
+    <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-pane-caption"><span>你的原筆跡＋AI 紅筆標記</span><small>單指左右滑動翻頁・雙指縮放</small></div><div class="paper-page-viewport"><div class="paper-spread${paperSourceSession.zoom > 1.05 ? ' is-zoomed' : ''}"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}" style="width:${paperSourceSession.zoom * 100}%;max-width:${1180 * paperSourceSession.zoom}px"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div>${paperNextPreviewHTML(source, urls, page)}</div><p class="paper-write-hint">紅筆只標對錯、得分與正式答案；不告訴你怎麼算，也不分析從哪一步開始錯。隔天重新努力仍卡住，才可按第二次 AI 詳批。</p></div></section></div>
     <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜第二次詳批最早 ${run.due}</span><button class="btn primary" onclick="paperSourceCloseResult()">完成，回模考入口</button></div></div>`;
   sessionChrome(true);
   paperInkAttach();
@@ -6320,6 +6331,7 @@ function mockQ() {
       <span class="shr"><span id="mclock" class="timer">${fmtClock(mock.tEnd - Date.now())}</span>
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
+    <div class="mock-paper-nav" aria-label="整回 20 題導覽"><span><b>整回題號</b><small>已答 ${Object.keys(mock.answers).length} / ${mock.orig.length}</small></span><div>${mock.orig.map((item) => `<i class="${item.id === q.id ? 'current' : mock.answers[item.id] ? 'done' : mock.skipped.some((skip) => skip.id === item.id) ? 'skipped' : ''}">${item.examNo}</i>`).join('')}</div></div>
     <div id="q-flash" class="ink-flash" style="display:none"></div>
     ${bkCard(q, '第 ' + (mock.i + 1) + ' 題', 'mockAns', actions)}`;
   sessionChrome(true);
