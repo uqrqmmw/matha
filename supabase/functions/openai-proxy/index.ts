@@ -61,6 +61,33 @@ const markSchema = {
   },
   required: ["box", "label"],
 };
+const paperGradeMarkSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    kind: {
+      type: "string",
+      enum: [
+        "check",
+        "cross",
+        "partial",
+        "strike",
+        "add",
+        "unanswered",
+        "uncertain",
+      ],
+    },
+    box: {
+      type: "array",
+      minItems: 4,
+      maxItems: 4,
+      items: { type: "number", minimum: 0, maximum: 1 },
+    },
+    label: { type: "string", maxLength: 16 },
+    option: { type: "integer", minimum: 0, maximum: 5 },
+  },
+  required: ["kind", "box", "label", "option"],
+};
 const stuckSchema = {
   type: "object",
   additionalProperties: false,
@@ -187,10 +214,29 @@ const responseSchemas = {
               type: "string",
               enum: ["correct", "incorrect", "unanswered", "uncertain"],
             },
+            hasFinalAnswer: { type: "boolean" },
+            selectedOptions: {
+              type: "array",
+              maxItems: 5,
+              items: { type: "integer", minimum: 1, maximum: 5 },
+            },
             points: { type: "number", minimum: 0, maximum: 10 },
-            marks: { type: "array", maxItems: 3, items: markSchema },
+            marks: {
+              type: "array",
+              maxItems: 7,
+              items: paperGradeMarkSchema,
+            },
           },
-          required: ["no", "page", "read", "status", "points", "marks"],
+          required: [
+            "no",
+            "page",
+            "read",
+            "status",
+            "hasFinalAnswer",
+            "selectedOptions",
+            "points",
+            "marks",
+          ],
         },
       },
       note: { type: "string", maxLength: 160 },

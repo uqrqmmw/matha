@@ -5597,8 +5597,43 @@ function paperAiPaintCanvas(cv, questions, includeAnswer) {
   ctx.lineWidth = Math.max(2, width / 520);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.font = `700 ${Math.max(14, Math.min(25, width / 46))}px system-ui, sans-serif`;
+  const baseSize = Math.max(14, Math.min(25, width / 46));
+  const teacherText = (text, x, y, size) => {
+    const label = String(text || '').slice(0, 46);
+    if (!label) return;
+    const fontSize = size || baseSize;
+    ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+    const metrics = ctx.measureText(label);
+    const tx = Math.max(4, Math.min(width - metrics.width - 4, x));
+    const ty = Math.max(fontSize + 3, Math.min(height - 4, y));
+    if (typeof ctx.save === 'function') ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(3, fontSize * .24);
+    ctx.strokeStyle = 'rgba(255,253,248,.94)';
+    if (typeof ctx.strokeText === 'function') ctx.strokeText(label, tx, ty);
+    ctx.fillStyle = PAPER_AI_RED;
+    ctx.fillText(label, tx, ty);
+    if (typeof ctx.restore === 'function') ctx.restore();
+    ctx.strokeStyle = PAPER_AI_RED;
+    ctx.fillStyle = PAPER_AI_RED;
+  };
+  const teacherCheck = (x, y, size) => {
+    ctx.beginPath();
+    ctx.moveTo(x - size * .46, y);
+    ctx.lineTo(x - size * .12, y + size * .34);
+    ctx.lineTo(x + size * .52, y - size * .42);
+    ctx.stroke();
+  };
+  const teacherCross = (x, y, size) => {
+    ctx.beginPath();
+    ctx.moveTo(x - size * .42, y - size * .42);
+    ctx.lineTo(x + size * .42, y + size * .42);
+    ctx.moveTo(x + size * .42, y - size * .42);
+    ctx.lineTo(x - size * .42, y + size * .42);
+    ctx.stroke();
+  };
   for (const item of questions || []) {
+    let summaryAnchor = null;
     for (const mark of Array.isArray(item.marks) ? item.marks : []) {
       const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
       if (box.length !== 4 || box.some((n) => !Number.isFinite(n))) continue;
@@ -5606,21 +5641,60 @@ function paperAiPaintCanvas(cv, questions, includeAnswer) {
       const top = Math.max(0, Math.min(1, Math.min(box[1], box[3]))) * height;
       const right = Math.max(0, Math.min(1, Math.max(box[0], box[2]))) * width;
       const bottom = Math.max(0, Math.min(1, Math.max(box[1], box[3]))) * height;
-      ctx.strokeRect(left, top, Math.max(8, right - left), Math.max(8, bottom - top));
-      const statusLabel = String(mark.label || '').slice(0, 16);
+      const kind = String(mark.kind || (item.status === 'correct' ? 'check'
+        : item.status === 'incorrect' && Number(item.points) > 0 ? 'partial'
+        : item.status === 'incorrect' ? 'cross'
+        : item.status === 'unanswered' ? 'unanswered'
+        : item.status === 'uncertain' ? 'uncertain' : ''));
+      if (!kind) {
+        ctx.strokeRect(left, top, Math.max(8, right - left), Math.max(8, bottom - top));
+        const legacyLabel = String(mark.label || '').slice(0, 16);
+        if (legacyLabel) teacherText(legacyLabel, left, top >= baseSize + 8 ? top - 5 : bottom + baseSize + 4);
+        continue;
+      }
+      const symbolSize = Math.max(15, Math.min(34, width / 34));
+      const symbolX = Math.max(symbolSize * .6, Math.min(width - symbolSize * .6, right + symbolSize * .55));
+      const symbolY = Math.max(symbolSize * .6, Math.min(height - symbolSize * .6, (top + bottom) / 2));
+      if (kind === 'check') {
+        teacherCheck(symbolX, symbolY, symbolSize);
+      } else if (kind === 'cross') {
+        teacherCross(symbolX, symbolY, symbolSize);
+      } else if (kind === 'strike') {
+        ctx.beginPath();
+        ctx.moveTo(Math.max(2, left - 3), (top + bottom) / 2);
+        ctx.lineTo(Math.min(width - 2, right + 3), (top + bottom) / 2);
+        ctx.stroke();
+      } else if (kind === 'add') {
+        const option = Number(mark.option);
+        teacherText(option >= 1 && option <= 5 ? `(${option})` : String(mark.label || ''), left, Math.max(top + baseSize, (top + bottom) / 2 + baseSize * .42));
+      } else if (kind === 'partial') {
+        ctx.beginPath();
+        ctx.moveTo(symbolX, symbolY - symbolSize * .48);
+        ctx.lineTo(symbolX - symbolSize * .48, symbolY + symbolSize * .38);
+        ctx.lineTo(symbolX + symbolSize * .48, symbolY + symbolSize * .38);
+        ctx.closePath();
+        ctx.stroke();
+      } else if (kind === 'unanswered') {
+        teacherText('未答', left, Math.max(top + baseSize, (top + bottom) / 2 + baseSize * .42));
+      } else if (kind === 'uncertain') {
+        teacherText('看不清楚', left, Math.max(top + baseSize, (top + bottom) / 2 + baseSize * .42));
+      }
+      if (!summaryAnchor || kind === 'cross' || kind === 'strike' || kind === 'add') {
+        summaryAnchor = { x: symbolX + symbolSize * .65, y: Math.max(baseSize + 3, symbolY + baseSize * .35) };
+      }
+    }
+    if (summaryAnchor && item.status) {
+      const points = Number(item.points) || 0;
       const storedAnswer = item.answer || (includeAnswer && paperSourceSession && paperSourceSession.source
         ? paperFinalAnswerText(paperSourceSession.source.key[Number(item.no) - 1]) : '');
-      const answerLabel = includeAnswer && storedAnswer ? `｜正答 ${String(storedAnswer).slice(0, 26)}` : '';
-      const label = `${statusLabel}${answerLabel}`.slice(0, 42);
-      if (!label) continue;
-      const metrics = ctx.measureText(label), pad = 5;
-      const labelWidth = Math.min(width - 4, metrics.width + pad * 2), labelHeight = Math.max(22, width / 35);
-      const labelX = Math.min(Math.max(0, left), Math.max(0, width - labelWidth));
-      const labelY = top >= labelHeight + 3 ? top - labelHeight - 3 : Math.min(height - labelHeight, bottom + 3);
-      ctx.fillRect(labelX, labelY, labelWidth, labelHeight);
-      ctx.fillStyle = '#fffdf8';
-      ctx.fillText(label, labelX + pad, labelY + labelHeight * .72, Math.max(1, labelWidth - pad * 2));
-      ctx.fillStyle = PAPER_AI_RED;
+      let summary = item.status === 'correct' ? `+${points}`
+        : item.status === 'incorrect' && points > 0 ? `△ +${points}`
+        : item.status === 'incorrect' ? '✕ 0'
+        : item.status === 'unanswered' ? '未答 0' : '看不清楚 0';
+      if (includeAnswer && item.status !== 'correct' && storedAnswer) {
+        summary += `　正解 ${String(storedAnswer).slice(0, 26)}`;
+      }
+      teacherText(summary, summaryAnchor.x, summaryAnchor.y);
     }
   }
 }
@@ -6063,6 +6137,7 @@ function paperGradePromptKey(source) {
     page: paperQuestionScanIndex(source, index + 1) + 1,
     type: q.type,
     answer: paperFinalAnswerText(q),
+    correctOptions: q.type === 'single' || q.type === 'multi' ? q.ans.map((option) => option + 1) : [],
     points: q.points,
   }));
 }
@@ -6077,13 +6152,15 @@ async function paperAiGradeCall(source, pages) {
 批改規則：
 1. questions 必須恰好回傳第 1 到 ${source.questions} 題，每題一次；page 必須依上面對照。
 2. 只把考生自己寫的黑／藍／綠筆跡視為作答。印刷題目不是作答，右側留白也可能有最後答案。
-3. 單選與填答答對得該題滿分，答錯或未答 0 分；等價分數、根式、小數形式可算對。
-4. 多選依五個選項逐一判定：全對 5 分、錯 1 個選項 3 分、錯 2 個選項 1 分、錯 3 個以上 0 分。
-5. status：正確 correct、錯誤 incorrect、沒有作答 unanswered、筆跡真的無法辨識 uncertain。不要為了湊答案而猜。
-6. 每題用 marks 框住考生的最終答案或作答區，座標是該張完整單頁的 [左,上,右,下] 0–1 比例。你只負責判定對錯、核分與定位；系統會自行從正式答案鍵標出正確答案。
-7. label 只可使用「✓ +分數」「✕ 0」「△ +部分分」「未作答」「看不清楚」這類短標記。
-8. read 記錄你實際辨識到的考生答案，供系統稽核；note 只記錄整體辨識風險。
-9. 這是第一次簡批。禁止輸出詳解、提示、破題方向、錯誤類型或「從哪一步開始錯」；也不要把這些內容塞進 read、note 或 label。`,
+3. 特別防止誤判：圈住「印刷的題號」只代表考生想回頭看，絕對不是選了同號選項。若只圈題號並寫「不會」、沒有另外寫最終答案，必須回傳 hasFinalAnswer=false、status=unanswered、selectedOptions=[]；例如圈住印刷題號 4 不等於單選答案 (4)。
+4. hasFinalAnswer 只表示你是否真的找到考生另外寫出的最終答案。單選與填答答對得該題滿分，答錯或未答 0 分；等價分數、根式、小數形式可算對。
+5. 多選題的 selectedOptions 必須逐一列出你從考生「最終答案清單」辨識到的 1 起算選項，不可從算式中猜。依五個選項逐一比較：全對 5 分、差 1 個選項 3 分、差 2 個選項 1 分、差 3 個以上 0 分；系統仍會用正式答案重新計分。
+6. status：正確 correct、錯誤 incorrect、沒有作答 unanswered、筆跡真的無法辨識 uncertain。不要為了湊答案而猜。
+7. marks 的 box 是該張完整單頁 [左,上,右,下] 0–1 座標，必須落在考生實際寫下的最終答案或答案清單上，不可框題目、題號或中間算式。單選／填答各回傳一個 kind=check 或 cross；未答用 unanswered、看不清楚用 uncertain，option=0。
+8. 複選題必須像真人逐項批改：每個正確選到的手寫選項回傳 kind=check；每個錯選的手寫選項回傳 kind=strike；每個漏選的正確選項回傳 kind=add，box 放在答案清單旁可補寫的位置。這三種 mark 的 option 都填該選項 1–5。若部分得分，可另回傳一個 option=0 的 partial，但不可省略逐項 marks。
+9. label 只可放「✓」「✕」「△」「未答」「看不清楚」或補入的選項號碼；系統會在紅叉或部分得分旁強制寫出完整正解。
+10. read 只記錄實際辨識到的最終答案與必要的「寫了不會」事實，供稽核；note 只記錄整體辨識風險。
+11. 這是第一次簡批。禁止輸出詳解、提示、破題方向、錯誤類型或「從哪一步開始錯」；也不要把這些內容塞進 read、note 或 label。`,
   }];
   pages.forEach((b64, index) => {
     content.push({ type: 'text', text: `【完整單頁 ${index + 1}／${pages.length}】` });
@@ -6093,12 +6170,17 @@ async function paperAiGradeCall(source, pages) {
   if (!payload.json || typeof payload.json !== 'object') throw new Error('OpenAI 沒有回傳完整批改資料');
   return { json: payload.json, model: String(payload.model || '') };
 }
-function paperFallbackMark(source, no, page, label) {
+function paperFallbackMark(source, no, page, label, kind, option, slot) {
   const pageNos = source.key.map((_, index) => index + 1)
     .filter((itemNo) => paperQuestionScanIndex(source, itemNo) + 1 === page);
   const index = Math.max(0, pageNos.indexOf(no));
-  const y = .09 + index * (.78 / Math.max(1, pageNos.length));
-  return { box: [.77, y, .97, Math.min(.96, y + .055)], label };
+  const y = .09 + index * (.78 / Math.max(1, pageNos.length)) + (Number(slot) || 0) * .018;
+  return {
+    box: [.78, Math.min(.94, y), .85, Math.min(.97, y + .035)],
+    label,
+    kind: kind || 'uncertain',
+    option: Number(option) || 0,
+  };
 }
 function paperNormalizeAiGrade(source, raw, model) {
   const incoming = Array.isArray(raw && raw.questions) ? raw.questions : [];
@@ -6111,10 +6193,31 @@ function paperNormalizeAiGrade(source, raw, model) {
   const questions = source.key.map((q, index) => {
     const no = index + 1, item = byNo.get(no), page = paperQuestionScanIndex(source, no) + 1;
     const allowed = new Set(['correct', 'incorrect', 'unanswered', 'uncertain']);
-    const status = allowed.has(item.status) ? item.status : 'uncertain';
+    let status = allowed.has(item.status) ? item.status : 'uncertain';
+    const selectedOptionsProvided = Array.isArray(item.selectedOptions);
+    const selectedOptions = selectedOptionsProvided
+      ? [...new Set(item.selectedOptions.map(Number).filter((option) => Number.isInteger(option) && option >= 1 && option <= 5))].sort((a, b) => a - b)
+      : [];
+    const correctOptions = q.type === 'multi' ? q.ans.map((option) => option + 1).sort((a, b) => a - b) : [];
+    const explicitlyUnanswered = item.hasFinalAnswer === false || status === 'unanswered';
     let points = Number(item.points);
-    if (status === 'correct') points = q.points;
-    else if (status === 'unanswered' || status === 'uncertain' || q.type !== 'multi') points = 0;
+    if (status === 'uncertain') points = 0;
+    else if (q.type === 'multi' && selectedOptionsProvided) {
+      if (explicitlyUnanswered || !selectedOptions.length) {
+        status = 'unanswered';
+        points = 0;
+      } else {
+        const selected = new Set(selectedOptions), correct = new Set(correctOptions);
+        const differences = [1, 2, 3, 4, 5]
+          .filter((option) => selected.has(option) !== correct.has(option)).length;
+        points = differences === 0 ? q.points : differences === 1 ? q.points * .6 : differences === 2 ? q.points * .2 : 0;
+        status = differences === 0 ? 'correct' : 'incorrect';
+      }
+    } else if (explicitlyUnanswered) {
+      status = 'unanswered';
+      points = 0;
+    } else if (status === 'correct') points = q.points;
+    else if (q.type !== 'multi') points = 0;
     else {
       const allowedPartial = [0, q.points * .2, q.points * .6];
       points = allowedPartial.reduce((best, value) => Math.abs(value - points) < Math.abs(best - points) ? value : best, 0);
@@ -6124,16 +6227,49 @@ function paperNormalizeAiGrade(source, raw, model) {
       : status === 'incorrect' && points > 0 ? `△ +${points}`
       : status === 'incorrect' ? '✕ 0'
       : status === 'unanswered' ? '未作答' : '看不清楚';
-    const marks = (Array.isArray(item.marks) ? item.marks : []).slice(0, 2).map((mark) => {
+    const rawMarks = (Array.isArray(item.marks) ? item.marks : []).slice(0, 7).map((mark) => {
       const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
       if (box.length !== 4 || box.some((n) => !Number.isFinite(n))) return null;
-      return { box: box.map((n) => Math.max(0, Math.min(1, n))), label };
+      return {
+        box: box.map((n) => Math.max(0, Math.min(1, n))),
+        kind: String(mark.kind || ''),
+        option: Number(mark.option) || 0,
+      };
     }).filter(Boolean);
+    const used = new Set();
+    const locate = (kind, option, slot) => {
+      let found = rawMarks.findIndex((mark, markIndex) => !used.has(markIndex)
+        && mark.option === option && (!mark.kind || mark.kind === kind));
+      if (found < 0) found = rawMarks.findIndex((mark, markIndex) => !used.has(markIndex) && mark.option === option);
+      if (found < 0 && option === 0) found = rawMarks.findIndex((mark, markIndex) => !used.has(markIndex));
+      if (found >= 0) {
+        used.add(found);
+        return { ...rawMarks[found], kind, option, label: kind === 'add' ? `(${option})` : label };
+      }
+      return paperFallbackMark(source, no, page, kind === 'add' ? `(${option})` : label, kind, option, slot);
+    };
+    let marks;
+    if (q.type === 'multi' && selectedOptionsProvided && status !== 'unanswered' && status !== 'uncertain') {
+      const selected = new Set(selectedOptions), correct = new Set(correctOptions);
+      const expected = [
+        ...selectedOptions.map((option) => ({ kind: correct.has(option) ? 'check' : 'strike', option })),
+        ...correctOptions.filter((option) => !selected.has(option)).map((option) => ({ kind: 'add', option })),
+      ];
+      marks = expected.map((mark, slot) => locate(mark.kind, mark.option, slot));
+    } else {
+      const kind = status === 'correct' ? 'check'
+        : status === 'incorrect' && points > 0 ? 'partial'
+        : status === 'incorrect' ? 'cross'
+        : status === 'unanswered' ? 'unanswered' : 'uncertain';
+      marks = [locate(kind, 0, 0)];
+    }
     return {
       no, page, status, points,
       answer: paperFinalAnswerText(q),
       read: String(item.read || '').slice(0, 120),
-      marks: marks.length ? marks : [paperFallbackMark(source, no, page, label)],
+      hasFinalAnswer: status !== 'unanswered' && item.hasFinalAnswer !== false,
+      selectedOptions: q.type === 'multi' ? selectedOptions : [],
+      marks,
     };
   });
   const score = Math.round(questions.reduce((sum, item) => sum + item.points, 0) * 100) / 100;
@@ -6209,8 +6345,7 @@ function paperSourceRecordGrade(source, run, grade) {
 }
 function paperSourceGradeLoading(source, reason, progress, error) {
   app().innerHTML = `<div class="paper-grade-loading card${error ? ' warn' : ''}"><span class="eyebrow">第一次批改｜GPT‑5.5 整卷視覺核分</span><h1>${error ? '這次批改沒有完成' : escH(reason)}</h1><p id="paper-grade-progress">${escH(progress)}</p>
-    ${error ? `<p class="warnc">${escH(error)}</p><div class="actr"><button class="btn" onclick="exitFlow()">先離開</button><button class="btn primary" onclick="paperSourceGrade('重新批改')">重新批改整份原卷</button></div>` : '<div class="paper-grade-pulse" aria-hidden="true"><span></span></div><p class="dim">正在辨識卷面上的黑、藍、綠筆跡並逐題核分。今天不會顯示正解或詳解。</p>'}
-    ${error ? `<p class="warnc">${escH(error)}</p><div class="actr"><button class="btn" onclick="exitFlow()">先離開</button><button class="btn primary" onclick="paperSourceGrade('重新批改')">重新批改整份原卷</button></div>` : '<div class="paper-grade-pulse" aria-hidden="true"><span></span></div><p class="dim">這一輪只判定對錯、計分並標出正式答案；不分析步驟，也不提供詳解。</p>'}
+    ${error ? `<p class="warnc">${escH(error)}</p><div class="actr"><button class="btn" onclick="exitFlow()">先離開</button><button class="btn primary" onclick="paperSourceGrade('重新批改')">重新批改整份原卷</button></div>` : '<div class="paper-grade-pulse" aria-hidden="true"><span></span></div><p class="dim">正在辨識卷面上的黑、藍、綠筆跡並逐題核分。這一輪會在錯答旁標出正解，但不分析步驟，也不提供詳解。</p>'}
     <small>${escH(source.title)}｜請保持此頁開啟；即使失敗，原筆跡也不會消失。</small></div>`;
   sessionChrome(true);
 }
