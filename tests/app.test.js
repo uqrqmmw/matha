@@ -456,11 +456,8 @@ test('註冊確認信固定回到 GitHub Pages 的 matha 專案路徑', async ()
   assert.equal(context.__signupPayload.options.emailRedirectTo, 'https://uqrqmmw.github.io/matha/');
 });
 
-test('公式卡 id 唯一，模擬卷符合 20 題、100 分與正式題型順序', () => {
+test('模擬卷符合 20 題、100 分與正式題型順序', () => {
   const { run } = loadApp();
-  const flashIds = plain(run('FLASH.map((card) => card.id)'));
-  assert.equal(flashIds.length, 65);
-  assert.equal(new Set(flashIds).size, flashIds.length);
   for (let i = 0; i < 20; i++) {
     const paper = plain(run('buildPaper().map((q) => ({ id:q.id, no:q.examNo, section:q.examSection, points:q.points, groupId:q.groupId, stem:q.stem, responseType:q.responseType }))'));
     assert.equal(paper.length, 20);
@@ -576,4 +573,71 @@ test('revision compare-and-swap 遇到另一台搶先更新會重拉合併，不
   await run('syncPush()');
   assert.deepEqual(context.__updates, [{ revision: 8, expected: 7 }, { revision: 9, expected: 8 }]);
   assert.deepEqual(context.__remote.data.attempts.map((x) => x.qid), ['remote-a', 'remote-b', 'local']);
+});
+
+test('匯入題包的 fill 正解與 src 皆經跳脫，不得成為儲存型 XSS', () => {
+  const { context, run } = loadApp();
+  // 1) texVal / mDispOpt：fill 題 ans 是匯入資料，裸 < 不可原樣進 innerHTML
+  const island = run(`mDispOpt('<img src=x onerror=alert(1)>')`);
+  assert.equal(island.includes('<img'), false);
+  assert.match(island, /&lt;img/);
+  // 合法數學（0<x<1）跳脫後仍保留語意（innerHTML 還原成文字節點給 KaTeX）
+  assert.equal(run(`mDispOpt('0<x<1')`), '\\(0&lt;x&lt;1\\)');
+  // 2) renderQuestion 的 src 標籤
+  context.__app = { innerHTML: '' };
+  context.document.querySelector = (selector) => selector === '#app' ? context.__app : null;
+  const html = run(`(() => {
+    sessionChrome = () => {}; inkStart = () => {}; startTicker = () => {}; rtTxt = (value) => escH(String(value || ''));
+    const q = { id: 'xss-src', topic: 'prob', type: 'fill', diff: 1, q: '題目', ans: ['1'], src: '<img src=x onerror=alert(1)>' };
+    renderQuestion(q, { head: 1, noTimer: true, onDone: () => {} });
+    return __app.innerHTML;
+  })()`);
+  assert.equal(html.includes('<img src=x'), false);
+  assert.match(html, /&lt;img/);
+});
+
+test('validateQ 拒絕原型鏈保留字 id', () => {
+  const { run } = loadApp();
+  const errs = plain(run(`['__proto__', 'constructor', 'prototype', 'normal-1'].map((id) =>
+    validateQ({ id, topic: 'prob', type: 'fill', diff: 1, q: 'q', ans: ['1'] }))`));
+  assert.equal(errs[0] !== null && errs[1] !== null && errs[2] !== null, true);
+  assert.equal(errs[3], null);
+});
+
+test('多選題空白送出＝未作答＝0 分；部分給分依學測 3/5、1/5 階梯且兩套批改一致', () => {
+  const { run } = loadApp();
+  const q = { id: 'm1', type: 'multi', ans: [0, 2], opts: ['a', 'b', 'c', 'd', 'e'], points: 5 };
+  const cases = plain(run(`(() => {
+    const q = ${JSON.stringify({ id: 'm1', type: 'multi', ans: [0, 2], opts: ['a', 'b', 'c', 'd', 'e'], points: 5 })};
+    return {
+      empty: mockAnswerResult(q, { type: 'multi', v: [] }).points,
+      skip: mockAnswerResult(q, null).points,
+      oneErr: mockAnswerResult(q, { type: 'multi', v: [0] }).points,
+      twoErr: mockAnswerResult(q, { type: 'multi', v: [0, 1] }).points,
+      threeErr: mockAnswerResult(q, { type: 'multi', v: [1, 3, 4] }).points,
+      full: mockAnswerResult(q, { type: 'multi', v: [0, 2] }).points,
+      paperOneErr: multiPartialPoints(5, [1], [1, 3], [1, 2, 3, 4, 5]),
+      paperEmpty: multiPartialPoints(5, [], [1, 3], [1, 2, 3, 4, 5]),
+    };
+  })()`));
+  assert.equal(cases.empty, 0, '空白送出不得優於跳過');
+  assert.equal(cases.skip, 0);
+  assert.equal(cases.oneErr, 3);
+  assert.equal(cases.twoErr, 1);
+  assert.equal(cases.threeErr, 0);
+  assert.equal(cases.full, 5);
+  assert.equal(cases.paperOneErr, 3, '掃描卷與系統模考同一套階梯');
+  assert.equal(cases.paperEmpty, 0);
+});
+
+test('src 為 __proto__ 的匯入題不會污染原型鏈或炸掉題包卡', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    extBankArr = () => [{ id: 'evil-1', topic: 'prob', type: 'fill', diff: 1, q: 'q', ans: ['1'], src: '__proto__' }];
+    curatedState = { lastChecked: 0 };
+    const html = packCard();
+    return { html: typeof html === 'string', polluted: {}.n !== undefined };
+  })()`));
+  assert.equal(result.html, true, 'packCard 不得因 __proto__ src 拋錯');
+  assert.equal(result.polluted, false, 'Object.prototype 不得被寫入 n');
 });

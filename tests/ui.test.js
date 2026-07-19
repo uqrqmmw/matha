@@ -80,20 +80,17 @@ test('AI 回饋欄位統一經數學字串修復後再渲染', () => {
     'escH(v.firstError)',
     'escH(v.praise)',
     'escH(v.nextTime)',
-    'escH(w.adv.fe)',
-    'escH(w.adv.nt)',
     'escH(s.what)',
     'escH(s.fix)',
   ];
   unsafeAiEscapes.forEach((pattern) => assert.equal(source.includes(pattern), false, pattern));
   assert.match(source, /rtAi\(v\.firstError\)/);
-  assert.match(source, /rtAi\(w\.adv\.nt\)/);
   assert.match(source, /rtAi\(s\.what/);
 });
 
 test('OpenAI 金鑰只存在 Edge Function secret，不進瀏覽器程式', () => {
   const source = read('app.js');
-  const proxy = read('supabase/functions/openai-proxy/index.ts');
+  const proxy = read('supabase/functions/openai-proxy/index.ts') + read('supabase/functions/openai-proxy/lib.ts');
   assert.doesNotMatch(source, /api\.openai\.com|Authorization:\s*[`'"]Bearer\s+\$\{?apiKey/i);
   assert.doesNotMatch(source, /id="aikey"|aiKeySave\(/);
   assert.match(source, /const AI_FUNCTION_URL = 'https:\/\/rrihysbxhsbxjteqmtdu\.supabase\.co\/functions\/v1\/' \+ AI_FUNCTION/);

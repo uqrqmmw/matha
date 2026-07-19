@@ -65,6 +65,16 @@ Deno.serve(async (req: Request) => {
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+  // 與資料層同一份白名單（app_users）：未核可帳號連配對碼也不給，別留第二套授權標準
+  const userId = String(userData.user?.id || "");
+  const { data: approved } = await admin
+    .from("app_users")
+    .select("enabled")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!approved || approved.enabled !== true) {
+    return reply(origin, 403, { message: "這個帳號尚未被核可使用本系統" });
+  }
   const { data, error } = await admin.auth.admin.generateLink({
     type: "magiclink",
     email,

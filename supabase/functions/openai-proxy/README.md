@@ -2,7 +2,7 @@
 
 這個 Edge Function 是數A前端與 OpenAI Responses API 之間的安全代理。`OPENAI_API_KEY` 只存在 Supabase Secret，不會進入 `app.js`、localStorage、`app_state`、備份或公開 GitHub 程式碼。
 
-目前支援四種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）與定義語意理解（`concept`）。手寫大綱以 Responses API 圖片輸入的 `detail: original` 傳入，密集文字不先縮成低解析度；大綱原文只來自使用者的私人內容層。
+目前支援六種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）、定義語意理解（`concept`）、原版掃描卷整卷批改（`paper_grade`）與逐題詳批（`paper_detail`，由後端驗證隔日＋至少一次獨立重想才解鎖）。手寫大綱以 Responses API 圖片輸入的 `detail: original` 傳入，密集文字不先縮成低解析度；大綱原文只來自使用者的私人內容層。
 
 ## 專案配置
 
@@ -17,6 +17,13 @@
 - `OPENAI_ALLOWED_ORIGINS`：選填。程式已內建正式 GitHub Pages 與 `127.0.0.1:8899`、`localhost:8899`；只有新增其他網站來源時才需要設定。
 
 請在 Supabase Dashboard 的 Edge Functions → Secrets 儲存 Secret，避免 Key 留在 shell history 或 `.env`。更新 Secret 不必重新部署函式。
+
+## 程式結構與測試
+
+- `index.ts`：設定、驗證登入、額度扣抵/退還、呼叫 OpenAI。
+- `lib.ts`：純邏輯（訊息正規化、schema、詳批解鎖判定…），不碰環境變數與網路。
+- `lib.test.ts`：`deno test` 行為測試（CI 會跑；零遠端依賴）。
+- OpenAI 呼叫失敗（逾時/HTTP 錯誤/沒回文字）會呼叫 `refund_ai_request` 退還本次額度；token 用量記回扣額當天（跨午夜不漏記）。
 
 ## 部署
 

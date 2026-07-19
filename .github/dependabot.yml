@@ -1,0 +1,7 @@
+# GitHub Actions 版本更新提醒（vendor 的 KaTeX/supabase-js 是手動 vendoring，見 vendor/README.md）
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

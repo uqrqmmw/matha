@@ -91,7 +91,8 @@ test('一次性配對 Edge Function 只為已登入使用者產生 magic link ha
 });
 
 test('整卷 AI schema 強制回傳可獨立核分的 finalAnswer', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8')
+    + fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'lib.ts'), 'utf8');
   const schemaStart = source.indexOf('paper_grade: {', source.indexOf('const responseSchemas'));
   const block = source.slice(schemaStart, source.indexOf('paper_detail: {', schemaStart));
   assert.match(block, /finalAnswer:\s*\{\s*type:\s*"string"/);
@@ -100,7 +101,8 @@ test('整卷 AI schema 強制回傳可獨立核分的 finalAnswer', () => {
 
 test('AI 代理固定 GPT-5.5，並以後端原子額度阻止連點與超額', () => {
   const schema = fs.readFileSync(path.join(ROOT, 'supabase', 'schema.sql'), 'utf8');
-  const source = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8')
+    + fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'lib.ts'), 'utf8');
   assert.match(source, /const model = "gpt-5\.5"/);
   assert.doesNotMatch(source, /fallback|gpt-5\.[0-46-9]|gpt-4/i);
   assert.match(source, /paper_grade:\s*12/);
@@ -113,10 +115,12 @@ test('AI 代理固定 GPT-5.5，並以後端原子額度阻止連點與超額', 
 });
 
 test('第二次詳批由後端驗證隔日與至少一次重想，不只信任前端按鈕', () => {
-  const proxy = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8');
+  const proxy = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8')
+    + fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'lib.ts'), 'utf8');
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   assert.match(proxy, /verifyPaperDetailGate\(userId, body\.context\)/);
-  assert.match(proxy, /String\(run\.due \|\| ""\) > taipeiDate\(\)/);
+  assert.match(proxy, /paperDetailGateAllows\(data, runId, questionNo, taipeiDate\(\)\)/, '隔日判定必須以台北時區為準（改成 UTC 會讓解鎖時刻偏移最多 8 小時）');
+  assert.match(proxy, /String\(run\.due \|\| ""\) > today/);
   assert.match(proxy, /Number\(state\.attempts\) > 0 \|\| logs\.length > 0/);
   assert.match(app, /context:\s*\{[\s\S]*paperRunId:[\s\S]*questionNo: no/);
   assert.match(app, /await syncPush\(\);[\s\S]*paperAiDetailCall/);

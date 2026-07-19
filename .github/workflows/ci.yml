@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -12,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -20,5 +22,6 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno fmt --check supabase/functions/openai-proxy/index.ts supabase/functions/device-pair/index.ts
-      - run: deno check --node-modules-dir=auto supabase/functions/openai-proxy/index.ts supabase/functions/device-pair/index.ts
+      - run: deno fmt --check supabase/functions/openai-proxy/index.ts supabase/functions/openai-proxy/lib.ts supabase/functions/openai-proxy/lib.test.ts supabase/functions/device-pair/index.ts
+      - run: deno check --node-modules-dir=auto supabase/functions/openai-proxy/index.ts supabase/functions/openai-proxy/lib.test.ts supabase/functions/device-pair/index.ts
+      - run: deno test supabase/functions/openai-proxy/lib.test.ts

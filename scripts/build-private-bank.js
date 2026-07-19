@@ -35,6 +35,7 @@ function normalizeQuestion(value, maskNumbers) {
 function validateQuestion(q) {
   if (!q || typeof q.id !== 'string' || !q.id) return 'id-missing';
   if (!/^[\w.:-]+$/.test(q.id)) return 'id-invalid';
+  if (['__proto__', 'constructor', 'prototype'].includes(q.id)) return 'id-reserved';
   if (!TOPICS.has(q.topic)) return 'topic-invalid';
   if (!TYPES.has(q.type)) return 'type-invalid';
   if (![1, 2, 3].includes(q.diff)) return 'difficulty-invalid';
@@ -42,7 +43,7 @@ function validateQuestion(q) {
   if (q.type === 'fill') {
     if (!Array.isArray(q.ans) || !q.ans.length || q.ans.some((a) => typeof a !== 'string' && typeof a !== 'number')) return 'answer-invalid';
   } else {
-    if (!Array.isArray(q.opts) || q.opts.length < 2) return 'options-invalid';
+    if (!Array.isArray(q.opts) || q.opts.length < 2 || q.opts.some((o) => typeof o !== 'string' && typeof o !== 'number')) return 'options-invalid';
     if (!Array.isArray(q.ans) || !q.ans.length || q.ans.some((a) => !Number.isInteger(a) || a < 0 || a >= q.opts.length)) return 'answer-invalid';
   }
   return null;
@@ -83,7 +84,8 @@ function sanitizeBank(items, builtinQuestions) {
   const accepted = [];
 
   for (const original of items) {
-    const joined = [original && original.q, original && original.stem, original && original.sol, original && original.tip, ...((original && original.opts) || [])]
+    // 掃描面涵蓋所有會被前端渲染的欄位：ans（fill 正解會進 innerHTML）、src、fig/solFig（SVG）不能漏
+    const joined = [original && original.q, original && original.stem, original && original.sol, original && original.tip, original && original.src, original && original.fig, original && original.solFig, ...((original && original.opts) || []), ...((original && Array.isArray(original.ans) ? original.ans : []))]
       .filter((v) => typeof v === 'string').join('\n');
     if (/\p{Extended_Pictographic}/u.test(joined)) report.emojiCleaned++;
     const q = sanitizeQuestion(original || {});

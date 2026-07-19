@@ -1,3 +1,5 @@
+> 【2026-07-18 註】本文件是救援當日的歷史快照。現況更正：預設分支為 `main`（非 `master`）；文中 ESLint 為一次性手動檢查，常設關卡是 `npm test`＋`deno fmt/check/test`（見 `.github/workflows/ci.yml`）。
+
 # matha 搶救稽核（2026-07-16）
 
 ## 結論
