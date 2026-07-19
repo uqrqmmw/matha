@@ -28,7 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
       # 部署前先跑完整測試：紅燈不上線（原本測試與部署平行，壞版照樣發佈）
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Test before deploy
