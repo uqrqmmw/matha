@@ -241,8 +241,7 @@ Deno.serve(async (req: Request) => {
       !(await verifyPaperDetailGate(userId, body.context))
     ) {
       return reply(origin, 403, {
-        message:
-          "第二次詳批尚未解鎖：必須到隔天，且先同步至少一次獨立重想紀錄。",
+        message: "本題詳解尚未開放：必須先進入已到期的隔日訂正。",
       });
     }
     const budget = await claimAiBudget(userId, responseType);

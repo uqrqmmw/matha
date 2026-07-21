@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0722b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0722c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -6029,7 +6029,7 @@ function renderPaperGradeResult() {
     <div class="paper-workbar"><div class="paper-work-title"><b>第一次批改｜對錯、分數、正確答案</b><small>${escH(source.title)}</small></div><strong class="paper-result-score">${grade.score} / 100</strong>
       <div class="paper-workgroup right"><button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace" aria-label="你的原筆跡＋AI 紅筆標記"><section class="paper-source-pane"><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div></div></div></section></div>
-    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜第二次詳批最早 ${run.due}</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen()">核對／修正分數</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
+    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen()">核對／修正分數</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true);
   paperInkAttach();
@@ -6527,7 +6527,7 @@ function renderCorrections() {
     const dueNow = String(run.due || '') <= today();
     return `<div class="card paper-key-wait"><span class="eyebrow">原版紙本卷｜${dueNow ? '已到訂正日' : '尚未到期'}</span><h2>${escH(run.name || '原版模考')}｜${run.d}</h2>
       <p><b>${run.score}/100</b>｜錯題 ${Array.isArray(run.wrongNos) && run.wrongNos.length ? run.wrongNos.join('、') : '無'}。</p>
-      <div class="notice"><b>${dueNow ? '今天直接在第一次紅筆卷上重新做；仍然卡住才開第二次 AI 詳批。' : `第二次 AI 詳批鎖到 ${run.due}。`}</b><p>${dueNow ? '卷面只提示最終答案；請在原題與留白處寫下完整重算或破題方向。重新批改後仍不成立，才會開放第一個錯誤與完整詳解。' : '第一次批改已標出對錯、分數與正確答案；今天不分析錯誤步驟，也不看詳解。'}</p></div>
+      <div class="notice"><b>${dueNow ? '今天直接在第一次紅筆卷上重新做；每一道錯題都可一按查看本題詳解。' : `逐題詳解鎖到 ${run.due}。`}</b><p>${dueNow ? '卷面先提示最終答案；請盡量在原題與留白處重新思考。需要時可直接按「看本題詳解」，看過後仍要重算並再次批改。' : '第一次批改已標出對錯、分數與正確答案；隔日才開放逐題詳解與重算。'}</p></div>
       <div class="actr"><button class="btn" onclick="openPaperGradeResult('${jsA(run.id)}')">查看第一次紅筆卷／輸出 PDF</button><button class="btn" onclick="renderPaperTeacherReport('${jsA(run.id)}')">給老師看逐題紀錄</button>${dueNow ? `<button class="btn primary" onclick="startPaperAnswerReview('${jsA(run.id)}')">在紅筆卷上開始訂正</button>` : ''}</div>
     </div>`;
   }).join('');
@@ -6583,7 +6583,7 @@ function renderPaperTeacherReport(runId) {
     return `<article class="teacher-q level-${level}"><header><span>第 ${no} 題｜${statusName[item.status] || item.status}｜${Number(item.points) || 0}/${Number(source.key[no - 1] && source.key[no - 1].points) || 0} 分</span><b>${levelName(level)}</b></header>
       <p class="teacher-answer">AI 讀到：${escH(item.read || '（未辨識）')}｜正確答案：${escH(paperFinalAnswerText(source.key[no - 1]))}</p>
       ${logs || (level === 1 ? '<p class="dim">考場直接答對，不需隔日重想。</p>' : '<p class="dim">尚未留下隔日重想紀錄。</p>')}
-      ${detail ? `<div class="teacher-attempt"><b>第二次 AI 詳批</b>${detail.errorKind ? `<p>AI 錯因：${escH(detail.errorKind)}</p>` : ''}${detail.firstError ? `<p>第一個錯誤：${rtAi(detail.firstError)}</p>` : ''}${detail.nextTime ? `<p>下次訊號：${rtAi(detail.nextTime)}</p>` : ''}</div>` : ''}</article>`;
+      ${detail ? `<div class="teacher-attempt"><b>逐題 AI 詳解</b>${state.detailFirstOpenedAt ? `<p>首次查看：${escH(new Date(Number(state.detailFirstOpenedAt)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}｜開啟 ${Number(state.detailViewCount) || 1} 次</p>` : ''}${detail.errorKind ? `<p>AI 錯因：${escH(detail.errorKind)}</p>` : ''}${detail.firstError ? `<p>第一個錯誤：${rtAi(detail.firstError)}</p>` : ''}${detail.nextTime ? `<p>下次訊號：${rtAi(detail.nextTime)}</p>` : ''}</div>` : ''}</article>`;
   }).join('');
   const calibration = source.calibrationEligible === false
     ? '本卷原始結構為 19 題，只作練習與訂正分析，不列入正式級分校準。'
@@ -6595,8 +6595,8 @@ function renderPaperTeacherReport(runId) {
 }
 
 /* 原版紙本卷兩階段批改：
-   第一次交卷只給對錯、分數與正式答案；隔天至少保存一次自己的重想後，第二顆 AI 按鈕才會解鎖，
-   並只針對當前錯題分析第一個錯誤與完整解法。 */
+   第一次交卷只給對錯、分數與正式答案；隔日訂正時，每一道當前錯題都固定提供「看本題詳解」。
+   詳解會保存查看時間與內容；看過後仍須在原卷訂正層重算並經 AI 再批改，才算完成第三級。 */
 let paperReview = null;
 function paperFinalAnswerText(q) {
   if (!q) return '答案資料不存在';
@@ -6631,20 +6631,20 @@ async function paperAiDetailCall(source, no, imageB64, logs) {
   }));
   const content = [{
     type: 'text',
-    text: `你是台灣學測數學的訂正老師。這是「${source.title}」第 ${no} 題的第二次詳細批改。附圖已分層合成：原掃描與考試當天筆跡是底稿、紅筆是第一次簡批、紫色筆跡是考生隔日只看最終答案後新增的重算。考生已重新嘗試，仍然無法完成。
+    text: `你是台灣學測數學的訂正老師。使用者主動開啟「${source.title}」第 ${no} 題的逐題詳解。附圖已分層合成：原掃描與考試當天筆跡是底稿、紅筆是第一次簡批；如果卷面已有紫色筆跡，那是考生隔日新增的重算。
 
 正式最終答案：${answer}
 題型：${q.type}
-考生隔日重想紀錄：${JSON.stringify(attempts)}
+考生隔日重想紀錄（可能尚未留下）：${JSON.stringify(attempts)}
 
 請依序完成：
 1. 先如實轉錄你看見的關鍵作答；看不清楚就明說，不可猜。
-2. 優先從紫色隔日訂正找出「最早可證明不成立」的一步；必要時才對照考試當天底稿。若前面不是算錯，而是方向停在缺口，就精確指出缺少的推論；不可假裝看見圖上沒有的式子。
-3. 說明為何錯，接著提供可完整走到正式答案的詳解步驟。
+2. 若有紫色隔日訂正，優先從紫色筆跡找出「最早可證明不成立」的一步；沒有紫色筆跡時才對照考試當天底稿。若前面不是算錯，而是方向停在缺口，就精確指出缺少的推論；不可假裝看見圖上沒有的式子。
+3. 不論考生是否已留下隔日重想，都要提供可完整走到正式答案、適合學測程度的詳解步驟。
 4. 給一個下次看到相似條件時可立即辨識的短訊號。
 5. marks 只框住第一個錯誤所在的卷面區域；若無法可靠定位，回傳空陣列。label 只寫「第一個錯誤」。
 
-這是第二次詳細批改，現在才可以提供錯誤步驟分析與完整詳解。`,
+這是使用者主動要求的本題詳解，現在可以提供錯誤步驟分析與完整解法。`,
   }, {
     type: 'image',
     source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 },
@@ -6764,13 +6764,32 @@ async function paperReviewBack() {
 function renderPaperAnswerReview() {
   return renderPaperAnswerReviewWorkspace();
 }
-async function paperReviewDetailed() {
+function paperReviewRecordDetailOpen(state) {
+  if (!state) return;
+  const now = Date.now();
+  state.detailFirstOpenedAt = Number(state.detailFirstOpenedAt) || now;
+  state.detailLastOpenedAt = now;
+  state.detailViewCount = (Number(state.detailViewCount) || 0) + 1;
+  state.mt = now;
+  if (paperReview && paperReview.run) {
+    paperReview.run.mt = now;
+    save();
+  }
+}
+async function paperReviewDetailed(force = false) {
   if (!paperReview || paperReview.detailLoading) return;
   const review = paperReview;
   const no = review.nos[review.i], state = review.run.review[no];
-  if (String(review.run.due || '') > today() || !(state && state.attempts > 0)) {
+  if (String(review.run.due || '') > today() || !state) {
     const msg = $('#paper-review-msg');
-    if (msg) msg.textContent = '必須到隔天，並先保存至少一次重新嘗試，才可使用第二次 AI 詳批。';
+    if (msg) msg.textContent = '詳解會在隔日訂正開始後開放。';
+    return;
+  }
+  if (state.aiDetail && !force) {
+    paperReviewRecordDetailOpen(state);
+    review.detailOpen = true;
+    review.detailError = '';
+    renderPaperAnswerReview();
     return;
   }
   review.detailLoading = true; review.detailError = ''; renderPaperAnswerReview();
@@ -6788,9 +6807,9 @@ async function paperReviewDetailed() {
     const response = await paperAiDetailCall(review.source, no, image, state.logs || []);
     if (paperReview !== review) return;
     state.aiDetail = paperNormalizeAiDetail(review.source, no, response.json, response.model);
-    state.solutionUnlockedAt = Date.now();
+    state.solutionUnlockedAt = Number(state.solutionUnlockedAt) || Date.now();
+    paperReviewRecordDetailOpen(state);
     review.detailOpen = true;
-    review.run.mt = Date.now(); save();
   } catch (error) {
     if (paperReview === review) review.detailError = (error && error.message) || String(error);
   } finally {
@@ -6803,7 +6822,7 @@ async function paperReviewDetailed() {
 function paperReviewFinishDetailed() {
   if (!paperReview) return;
   const no = paperReview.nos[paperReview.i], state = paperReview.run.review[no];
-  if (!state || !(state.attempts > 0) || !state.aiDetail) return;
+  if (!state || !state.aiDetail) return;
   paperReviewGrade(3);
 }
 function paperReviewInkToolsHTML() {
@@ -6813,15 +6832,17 @@ function paperReviewInkToolsHTML() {
 function paperReviewDetailDrawerHTML(state) {
   const detail = state && state.aiDetail;
   if (!detail || !paperReview || paperReview.detailOpen === false) return '';
-  return `<aside class='paper-detail-drawer' aria-label='第二次 AI 詳細批改'><div class='paper-detail-drawer-head'><div><span class='eyebrow'>第二次批改｜GPT‑5.5</span><h2>第一個錯誤與詳解</h2></div><button class='paper-icon-btn' onclick='paperReviewDetailToggle(false)' aria-label='收起詳解'>${uiIcon('x')}</button></div><div class='paper-detail-drawer-body'><p class='${detail.firstError ? 'badc' : 'dim'}'>${detail.firstError ? rtAi(detail.firstError) : '目前無法可靠定位第一個錯誤，以下改說明方向缺口。'}</p>${detail.errorKind ? `<p class='paper-detail-kind'>錯誤類型：${escH(detail.errorKind)}</p>` : ''}${detail.read ? `<details><summary>AI 讀到的作答</summary><p>${rtAi(detail.read)}</p></details>` : ''}<h3>為什麼會卡住</h3><div>${rtAi(detail.explanation || '沒有足夠可讀資訊可分析。')}</div><h3>完整詳解</h3>${detail.solution.length ? `<ol class='paper-detail-steps'>${detail.solution.map((step) => `<li>${rtAi(step)}</li>`).join('')}</ol>` : '<p class="warnc">AI 沒有產生足夠步驟，請重新詳批。</p>'}<p class='blind-answer'>正式答案：<b>${escH(detail.answer)}</b></p>${detail.nextTime ? `<div class='next-step'><b>下次辨識訊號</b>${rtAi(detail.nextTime)}</div>` : ''}<div class='actr'><button class='btn primary' onclick='paperReviewFinishDetailed()'>看完詳解並重算，AI 再批改</button><button class='btn' onclick='paperReviewDetailed()' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新詳批中…' : '重新產生詳批'}</button></div></div></aside>`;
+  const no = Number(detail.no) || Number(paperReview.nos[paperReview.i]);
+  return `<aside class='paper-detail-drawer' aria-label='第 ${no} 題 AI 詳解'><div class='paper-detail-drawer-head'><div><span class='eyebrow'>第 ${no} 題詳解｜GPT‑5.5</span><h2>完整解法與第一個錯誤</h2></div><button class='paper-icon-btn' onclick='paperReviewDetailToggle(false)' aria-label='收起詳解'>${uiIcon('x')}</button></div><div class='paper-detail-drawer-body'><p class='paper-detail-view-note'>已記錄你查看過本題詳解；重算後仍可交給 AI 正常批改。</p><p class='${detail.firstError ? 'badc' : 'dim'}'>${detail.firstError ? rtAi(detail.firstError) : '目前無法可靠定位第一個錯誤，以下改說明方向缺口。'}</p>${detail.errorKind ? `<p class='paper-detail-kind'>錯誤類型：${escH(detail.errorKind)}</p>` : ''}${detail.read ? `<details><summary>AI 讀到的作答</summary><p>${rtAi(detail.read)}</p></details>` : ''}<h3>為什麼會卡住</h3><div>${rtAi(detail.explanation || '沒有足夠可讀資訊可分析。')}</div><h3>完整詳解</h3>${detail.solution.length ? `<ol class='paper-detail-steps'>${detail.solution.map((step) => `<li>${rtAi(step)}</li>`).join('')}</ol>` : '<p class="warnc">AI 沒有產生足夠步驟，請重新詳批。</p>'}<p class='blind-answer'>正式答案：<b>${escH(detail.answer)}</b></p>${detail.nextTime ? `<div class='next-step'><b>下次辨識訊號</b>${rtAi(detail.nextTime)}</div>` : ''}<div class='actr'><button class='btn primary' onclick='paperReviewFinishDetailed()'>看完詳解並重算，AI 再批改</button><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新產生中…' : '重新產生詳解'}</button></div></div></aside>`;
 }
 function paperReviewStatusHTML(state) {
   if (!paperReview) return '';
   if (paperReview.grading) return `<div class='paper-review-toast is-working'><b>正在批改這次訂正</b><span>只判斷你這次重算是否成立，不會偷給下一步。</span></div>`;
   if (paperReview.gradeError) return `<div class='paper-review-toast is-error'><b>這次沒有完成批改</b><span>${escH(paperReview.gradeError)}</span></div>`;
+  if (paperReview.detailError) return `<div class='paper-review-toast is-error'><b>本題詳解尚未載入</b><span>${escH(paperReview.detailError)}</span></div>`;
   if (state && state.pendingLevel) return `<div class='paper-review-toast is-pass'><b>這次訂正已算對</b><span>紅勾已標在訂正卷面；確認後再進下一題。</span></div>`;
   const grade = state && state.correctionGrade;
-  if (grade && !grade.correct) return `<div class='paper-review-toast is-retry'><b>這次訂正還沒完整成立</b><span>只標對錯與正確答案；你可以繼續在原位重算，或在努力後開第二次詳批。</span></div>`;
+  if (grade && !grade.correct) return `<div class='paper-review-toast is-retry'><b>這次訂正還沒完整成立</b><span>只標對錯與正確答案；你可以繼續在原位重算，或直接按「看本題詳解」。</span></div>`;
   return '';
 }
 function renderPaperAnswerReviewWorkspace() {
@@ -6855,15 +6876,17 @@ function renderPaperAnswerReviewWorkspace() {
   const scan = paperReview.source.scans[page];
   const answer = paperFinalAnswerText(q);
   const detailAvailable = !!state.aiDetail;
+  const detailButtonLabel = paperReview.detailLoading ? '正在產生詳解…' : detailAvailable ? `打開第 ${no} 題詳解` : `看第 ${no} 題詳解`;
+  const detailShortcut = `<button id='paper-detail-shortcut' class='paper-detail-shortcut' onclick='paperReviewDetailed()' ${paperReview.detailLoading ? 'disabled' : ''}>${uiIcon('book')}<span>${detailButtonLabel}</span></button>`;
   let actions = '';
   if (state.pendingLevel) {
     actions = `<button class='btn primary' onclick='paperReviewAcceptCorrection()'>確認訂正完成，下一題</button>`;
   } else if (detailAvailable) {
-    actions = `${paperReview.detailOpen === false ? `<button class='btn' onclick='paperReviewDetailToggle(true)'>顯示詳解</button>` : `<button class='btn' onclick='paperReviewDetailToggle(false)'>收起詳解，專心重算</button>`}<button class='btn primary' onclick='paperReviewGrade(3)' ${paperReview.grading ? 'disabled' : ''}>${paperReview.grading ? 'AI 批改中…' : '重算完，AI 再批改'}</button>`;
+    actions = `${paperReview.detailOpen === false ? `<button class='btn' onclick='paperReviewDetailed()'>顯示詳解</button>` : `<button class='btn' onclick='paperReviewDetailToggle(false)'>收起詳解，專心重算</button>`}<button class='btn primary' onclick='paperReviewGrade(3)' ${paperReview.grading ? 'disabled' : ''}>${paperReview.grading ? 'AI 批改中…' : '重算完，AI 再批改'}</button>`;
   } else {
-    actions = `<button class='btn' onclick='paperReviewStuckWorkspace()'>仍沒算出，保存這次重想</button>${state.attempts > 0 ? `<button id='paper-detail-button' class='btn' onclick='paperReviewDetailed()' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '第二次詳批中…' : '努力後仍不行，開第二次詳批'}</button>` : ''}<button class='btn primary' onclick='paperReviewGrade(2)' ${paperReview.grading ? 'disabled' : ''}>${paperReview.grading ? 'AI 批改中…' : '寫完了，AI 再批改'}</button>`;
+    actions = `<button class='btn' onclick='paperReviewStuckWorkspace()'>仍沒算出，保存這次重想</button><button class='btn primary' onclick='paperReviewGrade(2)' ${paperReview.grading ? 'disabled' : ''}>${paperReview.grading ? 'AI 批改中…' : '寫完了，AI 再批改'}</button>`;
   }
-  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span><div class='paper-workgroup right'><button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'><span>黑、藍、綠是你的訂正筆跡；紅色是 AI 批改。訂正筆跡獨立保存，不會改掉考試原稿。</span><div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
+  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'><button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'><span>黑、藍、綠是你的訂正筆跡；紅色是 AI 批改。訂正筆跡獨立保存，不會改掉考試原稿。</span><div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true); paperInkAttach(); paperInkStatusRender();
   startTicker(() => {
     if (!paperReview || !paperSourceSession || sessionMode !== 'paper-review') return stopTicker();
@@ -7462,6 +7485,7 @@ function paperReviewRetryLogCount(logs, A, B) {
 function mergePaperReviewState(A, B) {
   const newer = Number(B && (B.mt || B.completedAt) || 0) >= Number(A && (A.mt || A.completedAt) || 0) ? B : A;
   const older = newer === A ? B : A;
+  const detailOpenTimes = [A && A.detailFirstOpenedAt, B && B.detailFirstOpenedAt].map(Number).filter(Boolean);
   const logs = [], seen = new Set();
   for (const log of [...(older && older.logs || []), ...(newer && newer.logs || [])]) {
     const key = `${log && log.ts || ''}|${log && log.note || ''}|${log && log.resolved ? 1 : 0}`;
@@ -7482,6 +7506,15 @@ function mergePaperReviewState(A, B) {
       Number(A && (A.solutionUnlockedAt || A.detailUnlockedAt) || 0),
       Number(B && (B.solutionUnlockedAt || B.detailUnlockedAt) || 0),
     ) || null,
+    detailFirstOpenedAt: detailOpenTimes.length ? Math.min(...detailOpenTimes) : null,
+    detailLastOpenedAt: Math.max(
+      Number(A && A.detailLastOpenedAt || 0),
+      Number(B && B.detailLastOpenedAt || 0),
+    ) || null,
+    detailViewCount: Math.max(
+      Number(A && A.detailViewCount || 0),
+      Number(B && B.detailViewCount || 0),
+    ),
     mt: Math.max(Number(A && A.mt || 0), Number(B && B.mt || 0)),
   };
 }

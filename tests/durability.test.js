@@ -119,14 +119,16 @@ test('AI 代理固定 GPT-5.5，並以後端原子額度阻止連點與超額', 
   assert.match(schema, /last_request_at > now\(\) - interval '4 seconds'/i);
 });
 
-test('第二次詳批由後端驗證隔日與至少一次重想，不只信任前端按鈕', () => {
+test('逐題詳解由後端驗證已到隔日且題目屬於該次訂正，不只信任前端按鈕', () => {
   const proxy = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8')
     + fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'lib.ts'), 'utf8');
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   assert.match(proxy, /verifyPaperDetailGate\(userId, body\.context\)/);
   assert.match(proxy, /paperDetailGateAllows\(data, runId, questionNo, taipeiDate\(\)\)/, '隔日判定必須以台北時區為準（改成 UTC 會讓解鎖時刻偏移最多 8 小時）');
   assert.match(proxy, /String\(run\.due \|\| ""\) > today/);
-  assert.match(proxy, /Number\(state\.attempts\) > 0 \|\| logs\.length > 0/);
+  assert.match(proxy, /const state = review\[String\(questionNo\)\]/);
+  assert.match(proxy, /return !!state/);
+  assert.doesNotMatch(proxy, /Number\(state\.attempts\) > 0 \|\| logs\.length > 0/);
   assert.match(app, /context:\s*\{[\s\S]*paperRunId:[\s\S]*questionNo: no/);
   assert.match(app, /await syncPush\(\);[\s\S]*paperAiDetailCall/);
 });

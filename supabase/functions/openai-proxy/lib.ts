@@ -326,8 +326,8 @@ export function taipeiDate() {
   }).format(new Date());
 }
 
-/* 第二次詳批解鎖判定（純函式）：data＝該使用者 app_state.data。
-   規則：run 存在、已到隔天（due ≤ 台北今天）、且該題至少留過一次獨立重想（attempts>0 或 logs 非空）。 */
+/* 逐題詳解開放判定（純函式）：data＝該使用者 app_state.data。
+   規則：run 與該題訂正狀態存在，且已到隔天（due ≤ 台北今天）。前端另記查看時間；不再強迫先保存失敗紀錄。 */
 export function paperDetailGateAllows(
   data: Record<string, unknown> | undefined,
   runId: string,
@@ -353,10 +353,7 @@ export function paperDetailGateAllows(
   const state = review[String(questionNo)] as
     | Record<string, unknown>
     | undefined;
-  if (!state) return false;
-  const rawLogs = state.logs;
-  const logs: unknown[] = Array.isArray(rawLogs) ? rawLogs : [];
-  return Number(state.attempts) > 0 || logs.length > 0;
+  return !!state;
 }
 
 export function outputText(response: Record<string, unknown>) {
