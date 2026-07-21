@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0722c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0722d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -6575,7 +6575,7 @@ function renderPaperTeacherReport(runId) {
   const items = grade.questions.slice().sort((a, b) => Number(a.no) - Number(b.no)).map((item) => {
     const no = Number(item.no), state = run.review && run.review[no] || {};
     const level = item.status === 'correct' ? 1 : Number(state.level) || 0;
-    const logs = (state.logs || []).map((log, index) => `<div class="teacher-attempt"><b>第 ${index + 1} 次重想</b>
+    const logs = (state.logs || []).filter((log) => String(log && log.kind || '') !== 'detail-gate').map((log, index) => `<div class="teacher-attempt"><b>第 ${index + 1} 次重想</b>
       <p>方向：${escH(log.direction || '尚未找到具體方向')}</p>
       ${log.topic || log.concept ? `<p>單元判斷：${escH(TOPICS[log.topic] || '未選單元')}${log.concept ? `／${escH(log.concept)}` : ''}</p>` : ''}
       ${log.errorKind ? `<p>自評卡點：${escH(log.errorKind)}</p>` : ''}</div>`).join('');
@@ -6776,6 +6776,30 @@ function paperReviewRecordDetailOpen(state) {
     save();
   }
 }
+function paperReviewDetailLogs(state) {
+  return (state && Array.isArray(state.logs) ? state.logs : [])
+    .filter((log) => String(log && log.kind || '') !== 'detail-gate');
+}
+async function paperReviewDetailCallCompat(review, no, state, image) {
+  try {
+    return await paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state));
+  } catch (error) {
+    const message = String(error && error.message || error || '');
+    const logs = state && Array.isArray(state.logs) ? state.logs : [];
+    const alreadyMarked = logs.some((log) => String(log && log.kind || '') === 'detail-gate');
+    if (!message.includes('本題詳解尚未開放') || alreadyMarked) throw error;
+
+    // 舊版 Edge Function 仍要求 logs 非空。這筆只用於相容閘門，不算一次重想、也不顯示在老師報告。
+    const now = Date.now();
+    state.logs = [...logs, { kind:'detail-gate', ts:now, resolved:false }];
+    state.detailGateCompatAt = now;
+    state.mt = now;
+    review.run.mt = now;
+    save();
+    await syncPush();
+    return paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state));
+  }
+}
 async function paperReviewDetailed(force = false) {
   if (!paperReview || paperReview.detailLoading) return;
   const review = paperReview;
@@ -6804,7 +6828,7 @@ async function paperReviewDetailed(force = false) {
     const page = paperQuestionScanIndex(review.source, no);
     const image = await paperReviewPageComposite(page);
     if (paperReview !== review) return;
-    const response = await paperAiDetailCall(review.source, no, image, state.logs || []);
+    const response = await paperReviewDetailCallCompat(review, no, state, image);
     if (paperReview !== review) return;
     state.aiDetail = paperNormalizeAiDetail(review.source, no, response.json, response.model);
     state.solutionUnlockedAt = Number(state.solutionUnlockedAt) || Date.now();
@@ -7477,7 +7501,7 @@ function paperReviewRetryLogCount(logs, A, B) {
   }
   return (logs || []).reduce((count, log, index) => {
     const kind = String(log && log.kind || '');
-    if (kind === 'complete') return count;
+    if (kind === 'complete' || kind === 'detail-gate') return count;
     if (kind === 'retry') return count + 1;
     return count + (excluded.has(index) ? 0 : 1);
   }, 0);
