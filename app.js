@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0722d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0722e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -4814,13 +4814,28 @@ function paperAiPaintCanvas(cv, questions, includeAnswer, forcedScale) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   const baseSize = Math.max(14, Math.min(25, width / 46));
-  const teacherText = (text, x, y, size) => {
-    const label = String(text || '').slice(0, 46);
+  const summaryRail = { left:width * .765, right:width * .974 };
+  const summaryFont = Math.max(11, Math.min(18, width / 62));
+  let summaryRailBottom = 0;
+  const teacherText = (text, x, y, size, limits) => {
+    let label = String(text || '').slice(0, 46);
     if (!label) return;
-    const fontSize = size || baseSize;
+    let fontSize = size || baseSize;
+    const minX = limits ? Number(limits.left) : 4;
+    const maxX = limits ? Number(limits.right) : width - 4;
+    const available = Math.max(20, maxX - minX);
     ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
-    const metrics = ctx.measureText(label);
-    const tx = Math.max(4, Math.min(width - metrics.width - 4, x));
+    let metrics = ctx.measureText(label);
+    while (metrics.width > available && fontSize > 10) {
+      fontSize--;
+      ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+      metrics = ctx.measureText(label);
+    }
+    while (metrics.width > available && label.length > 3) {
+      label = label.slice(0, -2).trimEnd() + '…';
+      metrics = ctx.measureText(label);
+    }
+    const tx = Math.max(minX, Math.min(maxX - metrics.width, x));
     const ty = Math.max(fontSize + 3, Math.min(height - 4, y));
     if (typeof ctx.save === 'function') ctx.save();
     ctx.lineJoin = 'round';
@@ -4832,6 +4847,7 @@ function paperAiPaintCanvas(cv, questions, includeAnswer, forcedScale) {
     if (typeof ctx.restore === 'function') ctx.restore();
     ctx.strokeStyle = PAPER_AI_RED;
     ctx.fillStyle = PAPER_AI_RED;
+    return { x:tx, y:ty, width:metrics.width, fontSize, label };
   };
   const teacherCheck = (x, y, size) => {
     ctx.beginPath();
@@ -4868,8 +4884,8 @@ function paperAiPaintCanvas(cv, questions, includeAnswer, forcedScale) {
         if (legacyLabel) teacherText(legacyLabel, left, top >= baseSize + 8 ? top - 5 : bottom + baseSize + 4);
         continue;
       }
-      const symbolSize = Math.max(15, Math.min(34, width / 34));
-      const symbolX = Math.max(symbolSize * .6, Math.min(width - symbolSize * .6, right + symbolSize * .55));
+      const symbolSize = Math.max(12, Math.min(24, width / 48));
+      const symbolX = Math.max(symbolSize * .6, Math.min(width - symbolSize * .6, (left + right) / 2));
       const symbolY = Math.max(symbolSize * .6, Math.min(height - symbolSize * .6, (top + bottom) / 2));
       if (kind === 'check') {
         teacherCheck(symbolX, symbolY, symbolSize);
@@ -4882,40 +4898,50 @@ function paperAiPaintCanvas(cv, questions, includeAnswer, forcedScale) {
         ctx.stroke();
       } else if (kind === 'add') {
         const option = Number(mark.option);
-        teacherText(option >= 1 && option <= 5 ? `(${option})` : String(mark.label || ''), left, Math.max(top + baseSize, (top + bottom) / 2 + baseSize * .42));
-      } else if (kind === 'partial') {
-        ctx.beginPath();
-        ctx.moveTo(symbolX, symbolY - symbolSize * .48);
-        ctx.lineTo(symbolX - symbolSize * .48, symbolY + symbolSize * .38);
-        ctx.lineTo(symbolX + symbolSize * .48, symbolY + symbolSize * .38);
-        ctx.closePath();
-        ctx.stroke();
-      } else if (kind === 'unanswered') {
-        teacherText('未答', left, Math.max(top + baseSize, (top + bottom) / 2 + baseSize * .42));
-      } else if (kind === 'uncertain') {
-        teacherText('看不清楚', left, Math.max(top + baseSize, (top + bottom) / 2 + baseSize * .42));
+        if (left >= summaryRail.left) {
+          teacherText(option >= 1 && option <= 5 ? `+(${option})` : String(mark.label || ''), left,
+            Math.max(top + summaryFont, (top + bottom) / 2 + summaryFont * .42), summaryFont,
+            summaryRail);
+        } else {
+          teacherCheck(symbolX, symbolY, symbolSize * .78);
+        }
       }
-      if (!summaryAnchor || kind === 'cross' || kind === 'strike' || kind === 'add') {
-        summaryAnchor = { x: symbolX + symbolSize * .65, y: Math.max(baseSize + 3, symbolY + baseSize * .35) };
+      if (!summaryAnchor || kind === 'cross' || kind === 'strike' || kind === 'add' || kind === 'partial') {
+        summaryAnchor = { y:Math.max(summaryFont + 3, symbolY) };
       }
     }
     if (summaryAnchor && item.status) {
       const points = Number(item.points) || 0;
       const storedAnswer = item.answer || (includeAnswer && paperSourceSession && paperSourceSession.source
         ? paperFinalAnswerText(paperSourceSession.source.key[Number(item.no) - 1]) : '');
-      let summary = item.status === 'correct' ? `+${points}`
+      let summary = `第 ${Number(item.no) || '?'} 題　` + (item.status === 'correct' ? `✓ +${points}`
         : item.status === 'incorrect' && points > 0 ? `△ +${points}`
         : item.status === 'incorrect' ? '✕ 0'
-        : item.status === 'unanswered' ? '未答 0' : '看不清楚 0';
+        : item.status === 'unanswered' ? '未答 0' : '看不清楚 0');
+      const lines = [summary];
       if (includeAnswer && item.status !== 'correct' && storedAnswer) {
-        summary += `　正解 ${String(storedAnswer).slice(0, 26)}`;
+        lines.push(`正解 ${String(storedAnswer).slice(0, 26)}`);
       }
-      teacherText(summary, summaryAnchor.x, summaryAnchor.y);
+      const lineHeight = summaryFont + 5;
+      const maximumFirstLine = Math.max(summaryFont + 3, height - 5 - (lines.length - 1) * lineHeight);
+      let firstLine = Math.max(summaryFont + 3, summaryAnchor.y, summaryRailBottom + summaryFont + 7);
+      firstLine = Math.min(maximumFirstLine, firstLine);
+      lines.forEach((line, index) => teacherText(line, summaryRail.left, firstLine + index * lineHeight,
+        summaryFont, summaryRail));
+      summaryRailBottom = firstLine + (lines.length - 1) * lineHeight + 4;
     }
   }
 }
 function paperAiPaint() {
   if (!paperSourceSession) return;
+  const canvas = $('#paper-ai-canvas');
+  if (paperSourceSession.aiMarksHidden) {
+    if (canvas && (Number(canvas.clientWidth) || Number(canvas.width)) && (Number(canvas.clientHeight) || Number(canvas.height))) {
+      const prepared = paperCanvasPrepare(canvas);
+      prepared.ctx.clearRect(0, 0, prepared.width, prepared.height);
+    }
+    return;
+  }
   const page = Number(paperSourceSession.page) || 0;
   const questions = paperAiPageQuestions(page).slice();
   if (paperSourceSession.reviewMode && paperSourceSession.run && paperSourceSession.run.review) {
@@ -4932,7 +4958,21 @@ function paperAiPaint() {
       });
     }
   }
-  paperAiPaintCanvas($('#paper-ai-canvas'), questions, true);
+  paperAiPaintCanvas(canvas, questions, true);
+}
+function paperAiToggleButtonHTML() {
+  const hidden = !!(paperSourceSession && paperSourceSession.aiMarksHidden);
+  return `<button id='paper-ai-toggle' class='paper-ai-toggle-button' onclick='paperAiMarksToggle()' aria-pressed='${hidden}'>${hidden ? '顯示紅筆' : '隱藏紅筆'}</button>`;
+}
+function paperAiMarksToggle() {
+  if (!paperSourceSession) return;
+  paperSourceSession.aiMarksHidden = !paperSourceSession.aiMarksHidden;
+  paperAiPaint();
+  const button = $('#paper-ai-toggle');
+  if (button) {
+    button.textContent = paperSourceSession.aiMarksHidden ? '顯示紅筆' : '隱藏紅筆';
+    button.setAttribute('aria-pressed', String(!!paperSourceSession.aiMarksHidden));
+  }
 }
 function paperInkPoint(e, cv) {
   const rect = cv.getBoundingClientRect();
@@ -6027,7 +6067,7 @@ function renderPaperGradeResult() {
   const uncertain = Array.isArray(grade.uncertainNos) ? grade.uncertainNos : [];
   app().innerHTML = `<div class="paper-session-shell is-graded">
     <div class="paper-workbar"><div class="paper-work-title"><b>第一次批改｜對錯、分數、正確答案</b><small>${escH(source.title)}</small></div><strong class="paper-result-score">${grade.score} / 100</strong>
-      <div class="paper-workgroup right"><button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
+      <div class="paper-workgroup right">${paperAiToggleButtonHTML()}<button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace" aria-label="你的原筆跡＋AI 紅筆標記"><section class="paper-source-pane"><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div></div></div></section></div>
     <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen()">核對／修正分數</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
@@ -6910,7 +6950,7 @@ function renderPaperAnswerReviewWorkspace() {
   } else {
     actions = `<button class='btn' onclick='paperReviewStuckWorkspace()'>仍沒算出，保存這次重想</button><button class='btn primary' onclick='paperReviewGrade(2)' ${paperReview.grading ? 'disabled' : ''}>${paperReview.grading ? 'AI 批改中…' : '寫完了，AI 再批改'}</button>`;
   }
-  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'><button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'><span>黑、藍、綠是你的訂正筆跡；紅色是 AI 批改。訂正筆跡獨立保存，不會改掉考試原稿。</span><div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
+  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'>${paperAiToggleButtonHTML()}<button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'><span>黑、藍、綠是你的訂正筆跡；紅色是 AI 批改。訂正筆跡獨立保存，不會改掉考試原稿。</span><div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true); paperInkAttach(); paperInkStatusRender();
   startTicker(() => {
     if (!paperReview || !paperSourceSession || sessionMode !== 'paper-review') return stopTicker();

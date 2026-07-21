@@ -1528,6 +1528,12 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 }
 .paper-answer-chip small { color: var(--dim); font-size: 10px; }
 .paper-answer-chip b { font-size: 20px; }
+.paper-ai-toggle-button {
+  min-height: 44px; padding: 7px 11px; border: 1px solid #b8aa98; border-radius: 8px;
+  background: rgba(251, 250, 247, .94); color: var(--text); font: inherit; font-size: 13px;
+  white-space: nowrap; cursor: pointer;
+}
+.paper-ai-toggle-button[aria-pressed="true"] { background: #e7e2d9; color: var(--dim); }
 .paper-review-quick-actions { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 7px; }
 .paper-detail-shortcut {
   appearance: none; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
