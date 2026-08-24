@@ -39,6 +39,7 @@ function freshState() {
   return {
     attempts: [], wrong: {}, drills: {}, mocks: [], corrections: [], daily: {},
     outlineAttempts: [], visionQueue: [], visionHistory: [], conceptAttempts: [], paperRuns: [],
+    questionFeedback: [],
     learningBaselineResetAt: 0, ver: 3,
   };
 }
@@ -3696,11 +3697,50 @@ function learnerContextForAi(topic) {
   const errors = model.topErrors.slice(0, 2).map(([name, count]) => `${name} ${count} 次`).join('、') || '尚未形成重複錯因';
   return `【累積學習者模型 v${model.version}】${cal}。${topicLine ? topicLine + '。' : ''}目前優先補：${needs}；重複訊號：${errors}。依王老師路徑，目前優先找破題方向，不以單題速度作為主要回饋。這些只用來調整說明深度與下一步，不可取代本題卷面證據，也不可因既有弱項預設本題答錯。`;
 }
+const QUESTION_FEEDBACK_LABELS = {
+  obvious: '一眼就會，暫時不用寫',
+  swap: '現在不適合，換一題',
+  wrongTopic: '單元標記可能不對',
+  issue: '題目、圖片或答案可能有問題',
+  restore: '已恢復出題',
+};
+function questionFeedbackRows(qid) {
+  return (S.questionFeedback || []).filter((row) => row && (!qid || row.qid === qid))
+    .sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
+}
+function questionFeedbackLatest(qid) {
+  const rows = questionFeedbackRows(qid);
+  return rows.length ? rows[rows.length - 1] : null;
+}
+function questionFeedbackBlocked(q) {
+  const latest = q && questionFeedbackLatest(q.id);
+  return !!latest && ['wrongTopic', 'issue'].includes(latest.kind);
+}
+function questionFeedbackRecord(q, kind, note) {
+  if (!q || !QUESTION_FEEDBACK_LABELS[kind]) return null;
+  const row = {
+    id:`question-feedback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    qid:q.id, source:String(q.src || q.bookId || ''), kind,
+    note:String(note || '').trim().slice(0, 500), d:today(), ts:Date.now(), mt:Date.now(),
+  };
+  S.questionFeedback = S.questionFeedback || [];
+  S.questionFeedback.push(row);
+  save();
+  return row;
+}
+function questionFeedbackRestore(qid) {
+  const q = bankById(qid); if (!q) return false;
+  questionFeedbackRecord(q, 'restore');
+  renderStats();
+  return true;
+}
 function questionIsTemporarilyObvious(q, signals, maxDays = 30) {
   if (!q) return false;
   signals ||= learningSignalIndex();
   const row = signals.questions.get(q.id);
-  if (!row || !row.obvious || dayDistance(row.lastObviousD) > maxDays) return false;
+  const feedback = questionFeedbackLatest(q.id);
+  const feedbackObvious = feedback && feedback.kind === 'obvious' && dayDistance(feedback.d) <= maxDays;
+  if ((!row || !row.obvious || dayDistance(row.lastObviousD) > maxDays) && !feedbackObvious) return false;
   const rawWrong = S.wrong && S.wrong[q.id];
   const wrong = rawWrong && learningRecordCurrent(rawWrong.mt) ? rawWrong : null;
   /* 已到保留重測或錯題重測的題仍要出現；除此之外，「一眼就會」30 天內不再占用主訓練。 */
@@ -4396,6 +4436,45 @@ function pracNext() {
     },
   });
 }
+function questionFeedbackControlsHTML() {
+  if (!prac || prac.mode !== 'adaptive-textbook') return '';
+  return `<details class="question-fit-controls"><summary>這題不適合現在練習</summary><div>
+    <button class="btn sm" onclick="questionFeedbackAction('obvious')">一眼就會</button>
+    <button class="btn sm" onclick="questionFeedbackAction('swap')">現在想換題</button>
+    <button class="btn sm" onclick="questionFeedbackAction('wrongTopic')">單元標記不對</button>
+    <button class="btn sm err" onclick="questionFeedbackAction('issue')">題目／圖片／答案有問題</button>
+    <small>這些操作不會算成答錯、未答或能力證據；系統會補一題維持本輪題數。</small>
+  </div></details>`;
+}
+async function questionFeedbackAction(kind) {
+  if (!qsess || qsess.locked || !prac || prac.mode !== 'adaptive-textbook' || !QUESTION_FEEDBACK_LABELS[kind]) return false;
+  const sess = qsess, q = sess.q;
+  sess.locked = true;
+  stopTicker();
+  const proc = inkStop();
+  if (proc && proc.n) syncInk(q.id, sess.t0, { ...proc, mode:'question-feedback', feedbackKind:kind, excluded:true });
+  questionFeedbackRecord(q, kind);
+  prac.results.push({ excluded:true, feedback:kind });
+
+  /* 換題不是少做一題：從同一套推薦器補位；但回報的題永久不進能力模型。 */
+  const existing = new Set(prac.queue.map((item) => item.id));
+  const candidate = adaptiveTextbookQueue(Math.max(20, (prac.cnt || 10) + 10))
+    .find((item) => !existing.has(item.id) && !questionFeedbackBlocked(item));
+  if (candidate) {
+    const task = preflightQuestionFigures([candidate]);
+    const ready = !task || await task.catch(() => false);
+    if (ready && qsess === sess) {
+      prac.queue.push(candidate);
+      const signals = adaptiveTextbookQueue.lastSignals || learningSignalIndex();
+      prac.reasons = prac.reasons || {};
+      prac.reasons[candidate.id] = questionSelectionReason(candidate, signals);
+    }
+  }
+  if (qsess !== sess) return false;
+  prac.i++;
+  pracNext();
+  return true;
+}
 function pracDone() {
   sessionActive = false;
   sessionMode = null;
@@ -4408,7 +4487,7 @@ function pracDone() {
   const hardWins = all.filter((x, i) => !x.excluded && x.ok && prac.queue[i].diff === 3).length;
   const rows = all.map((x, i) => {
     const q = prac.queue[i];
-    if (x.excluded) return `<tr><td>${TOPICS[q.topic]}</td><td colspan="${showSpeed ? 3 : 2}" class="dim">（中途離開，未列入紀錄）</td></tr>`;
+    if (x.excluded) return `<tr><td>${TOPICS[q.topic]}</td><td colspan="${showSpeed ? 3 : 2}" class="dim">${x.feedback ? escH(QUESTION_FEEDBACK_LABELS[x.feedback] || '已換題') + '；未列入能力紀錄' : '中途離開，未列入紀錄'}</td></tr>`;
     return `<tr><td>${TOPICS[q.topic]}</td><td>${x.ok ? '✔' : '✘'}</td>
       ${showSpeed ? `<td class="${x.ms > x.target ? 'badc' : 'okc'}">${fmtSec(x.ms)} / ${fmtSec(x.target)}</td>` : ''}
       <td>${x.err || '—'}</td></tr>`;
@@ -4524,6 +4603,7 @@ function renderQuestion(q, cfg) {
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
     ${selectionNote}
+    ${questionFeedbackControlsHTML()}
     ${showTimer ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
     <div id="q-flash" class="ink-flash" style="display:none"></div>
     <div id="qhint"></div><!-- 提示放在書寫卡「外面、上方」：出現時把整張卡連同手寫往下推、不蓋到手寫（卡內任何面板都會蓋到滿版書寫層） -->
@@ -7164,7 +7244,7 @@ function renderPaperGradeResult() {
     <div class="paper-workbar"><div class="paper-work-title"><b>第一次批改｜對錯、分數、正確答案</b><small>${escH(source.title)}</small></div><strong class="paper-result-score">${grade.score} / 100</strong>
       <div class="paper-workgroup right">${paperAiToggleButtonHTML()}<button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace" aria-label="你的原筆跡＋AI 紅筆標記"><section class="paper-source-pane"><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div></div></div></section></div>
-    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen()">核對／修正分數</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
+    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen(${page})">AI 看錯／修正這頁</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true);
   paperInkAttach();
@@ -7197,25 +7277,26 @@ async function openPaperGradeResult(runId) {
     return false;
   }
 }
-function paperGradeAuditOpen() {
+function paperGradeAuditOpen(pageIndex = null) {
   if (!paperSourceSession || !paperSourceSession.run || !paperSourceSession.run.aiGrade) return;
   const { source, run } = paperSourceSession;
-  const rows = run.aiGrade.questions.map((item) => {
+  const questions = pageIndex == null ? run.aiGrade.questions : run.aiGrade.questions.filter((item) => Number(item.page) === Number(pageIndex) + 1);
+  const rows = (questions.length ? questions : run.aiGrade.questions).map((item) => {
     const key = source.key[item.no - 1];
     const options = [
       ['correct', '正確'], ['incorrect', '錯誤'], ['unanswered', '未答'], ['uncertain', '看不清楚'],
     ].map(([value, label]) => `<option value="${value}"${item.status === value ? ' selected' : ''}>${label}</option>`).join('');
-    return `<tr data-no="${item.no}"><th>${item.no}</th><td>${escH(paperFinalAnswerText(key))}</td><td><select class="paper-audit-status" aria-label="第 ${item.no} 題狀態">${options}</select></td><td><input class="paper-audit-points" type="number" min="0" max="${Number(key.points) || 0}" step="1" value="${Number(item.points) || 0}" aria-label="第 ${item.no} 題得分"> / ${Number(key.points) || 0}</td></tr>`;
+    return `<tr data-no="${item.no}"><th>${item.no}</th><td><input class="paper-audit-read" type="text" value="${escH(item.read || '')}" placeholder="AI 讀到的答案" aria-label="第 ${item.no} 題 AI 辨識"></td><td>${escH(paperFinalAnswerText(key))}</td><td><select class="paper-audit-status" aria-label="第 ${item.no} 題狀態">${options}</select></td><td><input class="paper-audit-points" type="number" min="0" max="${Number(key.points) || 0}" step="1" value="${Number(item.points) || 0}" aria-label="第 ${item.no} 題得分"> / ${Number(key.points) || 0}</td></tr>`;
   }).join('');
   const history = Array.isArray(run.gradeAudit) ? run.gradeAudit.length : 0;
-  modal(`<div class="paper-grade-audit"><span class="eyebrow">人工覆核</span><h2>逐題核對分數</h2><p>只在確認 AI 看錯答案或配分時修改。每次修改前的版本都會保留，不會覆蓋歷史。</p><div class="paper-audit-scroll"><table><thead><tr><th>題</th><th>正解</th><th>判定</th><th>得分</th></tr></thead><tbody>${rows}</tbody></table></div><p class="dim">目前已有 ${history} 份歷史批改快照。</p><button class="btn primary" onclick="paperGradeAuditSave()">保存人工覆核</button></div>`, [['取消']]);
+  modal(`<div class="paper-grade-audit"><span class="eyebrow">人工覆核${pageIndex == null ? '' : `｜第 ${Number(pageIndex) + 1} 頁`}</span><h2>AI 看錯時，直接改它讀到的答案</h2><p>只列目前這一頁的題目。修正辨識、對錯或配分即可；不必重新付費批改整份。每次修改前的版本都會保留。</p><div class="paper-audit-scroll"><table><thead><tr><th>題</th><th>AI 讀到</th><th>正解</th><th>判定</th><th>得分</th></tr></thead><tbody>${rows}</tbody></table></div><p class="dim">目前已有 ${history} 份歷史批改快照。</p><button class="btn primary" onclick="paperGradeAuditSave()">保存這頁修正</button></div>`, [['取消']]);
 }
 function paperGradeAuditSave() {
   if (!paperSourceSession || !paperSourceSession.run || !paperSourceSession.run.aiGrade) return;
   const { source, run } = paperSourceSession;
   const grade = run.aiGrade;
   const rows = [...document.querySelectorAll('.paper-grade-audit tbody tr')];
-  if (rows.length !== grade.questions.length) { alert('覆核表不完整，沒有修改任何分數。'); return; }
+  if (!rows.length) { alert('這一頁沒有可覆核的題目。'); return; }
   paperGradeAuditPush(run, '人工覆核前');
   const adjustedAt = Date.now();
   for (const row of rows) {
@@ -7224,9 +7305,11 @@ function paperGradeAuditSave() {
     if (!item || !key) continue;
     const status = row.querySelector('.paper-audit-status').value;
     const points = Math.max(0, Math.min(Number(key.points) || 0, Number(row.querySelector('.paper-audit-points').value) || 0));
+    const read = String(row.querySelector('.paper-audit-read').value || '').trim().slice(0, 240);
     const nextStatus = ['correct', 'incorrect', 'unanswered', 'uncertain'].includes(status) ? status : 'uncertain';
     const nextPoints = Math.round(points * 100) / 100;
-    const changed = item.status !== nextStatus || Number(item.points) !== nextPoints;
+    const changed = item.status !== nextStatus || Number(item.points) !== nextPoints || String(item.read || '') !== read;
+    item.read = read;
     item.status = nextStatus;
     item.points = nextPoints;
     if (changed) {
@@ -7278,7 +7361,7 @@ function buildPaper(forVision) {
   const scores = new Map(BANK.map((q) => [q.id, questionLearningValue(q, signals, { forVision })]));
   const eligible = (q) => {
     const skeleton = qSkeleton(q);
-    return !usedIds.has(q.id) && !heldUntilTomorrow.has(q.id)
+    return !usedIds.has(q.id) && !heldUntilTomorrow.has(q.id) && !questionFeedbackBlocked(q)
       && !(forVision && questionIsTemporarilyObvious(q, signals))
       && !(q.grp && usedGroups.has(q.grp))
       && !(skeleton.length >= 12 && usedSkeletons.has(skeleton))
@@ -8181,6 +8264,20 @@ function paperReviewStatusHTML(state) {
   if (grade && !grade.correct) return `<div class='paper-review-toast is-retry'><b>這次訂正還沒完整成立</b><span>只標對錯與正確答案；這次真實重想已保存，現在可選擇繼續重算或打開詳解。</span></div>`;
   return '';
 }
+function paperReviewStage(state) {
+  if (state && state.pendingLevel) return 4;
+  if (state && state.aiDetail) return 3;
+  if (state && ((Number(state.attempts) || 0) > 0 || state.correctionGrade)) return 2;
+  return 1;
+}
+function paperReviewStageHTML(state) {
+  const current = paperReviewStage(state);
+  const labels = ['只看答案重想', '保存一次真實嘗試', '需要時看詳解並重算', 'AI 驗證後完成'];
+  return `<div class="paper-review-stagebar" aria-label="隔日訂正目前步驟">${labels.map((label, index) => {
+    const step = index + 1;
+    return `<span class="${step < current ? 'done' : step === current ? 'current' : ''}"><b>${step}</b>${label}</span>`;
+  }).join('')}</div>`;
+}
 function renderPaperAnswerReviewWorkspace() {
   if (!paperReview || !paperSourceSession || !paperSourceSession.reviewMode) return renderCorrections();
   while (paperReview.i < paperReview.nos.length) {
@@ -8225,7 +8322,7 @@ function renderPaperAnswerReviewWorkspace() {
     actions = `<button class='btn' onclick='paperReviewStuckWorkspace()'>仍沒算出，保存這次重想</button><button class='btn primary' onclick='paperReviewGrade(2)' ${paperReview.grading ? 'disabled' : ''}>${paperReview.grading ? 'AI 批改中…' : '寫完了，AI 再批改'}</button>`;
   }
   const effortFields = !state.pendingLevel && !detailAvailable ? `<details class='paper-review-effort'><summary>沒有完整算式時，補記方向／單元</summary><div><label>破題方向<textarea id='paper-review-direction' rows='2' placeholder='例如：先把垂直改寫成內積為 0，再用條件建式。'></textarea></label><label>可能單元<select id='paper-review-topic'>${visionTopicOptions('')}</select></label><label>卡住的觀念<input id='paper-review-concept' type='text' placeholder='例如：兩事件獨立的判定'></label></div></details>` : '';
-  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'>${paperAiToggleButtonHTML()}<button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'>${effortFields}<span>黑、藍、綠是你的訂正筆跡；紅色是 AI 批改。訂正筆跡獨立保存，不會改掉考試原稿。</span><div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
+  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>步驟 ${paperReviewStage(state)} / 4｜${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'>${paperAiToggleButtonHTML()}<button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'>${effortFields}${paperReviewStageHTML(state)}<div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true); paperInkAttach(); paperInkStatusRender();
   startTicker(() => {
     if (!paperReview || !paperSourceSession || sessionMode !== 'paper-review') return stopTicker();
@@ -8506,7 +8603,7 @@ function renderTeacherReport(batchId) {
 /* 指定單元直開一輪刷題（錯題卡「同單元加練」/數據頁攻擊清單/戰力地圖共用） */
 function startPracTopics(topics, cnt) {
   if (!syncGate()) return;
-  let pool = BANK.filter((q) => topics.includes(q.topic));
+  let pool = BANK.filter((q) => topics.includes(q.topic) && !questionFeedbackBlocked(q));
   if (!pool.length) { alert('這些單元目前沒有題目。'); return; }
   const signals = learningSignalIndex();
   pool = pool.slice().sort((a, b) => questionLearningValue(b, signals) - questionLearningValue(a, signals) || String(a.id).localeCompare(String(b.id)));
@@ -8527,10 +8624,10 @@ function adaptiveTextbookQueue(cnt) {
   const readySources = new Set(ready.flatMap((book) => book.sourceNames || []));
   const held = new Set((S.visionQueue || []).filter((entry) => entry && !entry.done && entry.stage === 'waiting').map((entry) => entry.qid));
   const signals = learningSignalIndex();
-  let pool = BANK.filter((q) => !held.has(q.id) && !(q.src && packIsOff(q.src))
+  let pool = BANK.filter((q) => !held.has(q.id) && !questionFeedbackBlocked(q) && !(q.src && packIsOff(q.src))
     && !questionIsTemporarilyObvious(q, signals)
     && (readyIds.has(q.bookId) || readySources.has(q.src)));
-  if (!pool.length) pool = BANK.filter((q) => !held.has(q.id) && q.src && !packIsOff(q.src)
+  if (!pool.length) pool = BANK.filter((q) => !held.has(q.id) && !questionFeedbackBlocked(q) && q.src && !packIsOff(q.src)
     && !questionIsTemporarilyObvious(q, signals));
   const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals)]));
   const ranked = pool.slice().sort((a, b) => scores.get(b.id) - scores.get(a.id) || String(a.id).localeCompare(String(b.id)));
@@ -8615,6 +8712,49 @@ function textbookLibraryCard() {
     <p>其餘教材會逐本通過來源、頁碼、例題／章末角色、難度、圖資與答案驗證後才啟用，不用題目數量換取錯題風險。</p>
     <p class="dim">《週攻略數學 A》另列補充題源；數 B 讀寫教材不進數 A 正式校準。</p></section>`;
 }
+function learningWinsCard() {
+  const entries = (S.corrections || []).filter(correctionBatchInCurrentBaseline).flatMap((batch) => batch.entries || []);
+  let l2 = entries.filter((entry) => entry && entry.done && correctionLevel(entry) === 2).length;
+  let l3 = entries.filter((entry) => entry && entry.done && correctionLevel(entry) === 3).length;
+  let retained = entries.filter((entry) => entry && entry.retentionPassed).length;
+  for (const run of (S.paperRuns || []).filter((row) => row && paperRunInCurrentBaseline(row))) {
+    for (const state of Object.values(run.review || {})) {
+      if (!state || !state.done) continue;
+      if (Number(state.level) === 2) l2++;
+      if (Number(state.level) === 3) l3++;
+      if (state.retentionPassed) retained++;
+    }
+  }
+  const directionRecovered = (S.visionHistory || []).filter((row) => learningRecordCurrent(row && row.ts)
+    && Number(row.days || 0) >= 2 && ['works', 'different'].includes(row.outcome)).length;
+  const cal = mockCalibration();
+  const scoreChange = cal.recent.length >= 2
+    ? Math.round((Number(cal.recent[cal.recent.length - 1].acc) - Number(cal.recent[0].acc)) * 100)
+    : null;
+  const any = l2 + l3 + retained + directionRecovered > 0 || scoreChange != null;
+  return `<section class="card learning-wins-card"><span class="eyebrow">從新基準開始累積</span><h2>真正變得更會，而不只是多寫題</h2>
+    ${any ? `<div class="learning-win-grid">
+      <div><b>${l2}</b><span>題只看答案就重建出方法</span></div>
+      <div><b>${l3}</b><span>題看過詳解後重新獨立算通</span></div>
+      <div><b>${retained}</b><span>題通過 2／7 日保留驗證</span></div>
+      <div><b>${directionRecovered}</b><span>題第二天重新找到方向</span></div>
+    </div>${scoreChange != null ? `<p class="learning-score-change" data-direction="${scoreChange > 0 ? 'up' : scoreChange < 0 ? 'down' : 'flat'}">最近完整模考相較這段基準的第一回：<b>${scoreChange > 0 ? '+' : ''}${scoreChange} 分</b></p>` : ''}`
+      : '<p class="dim">完成第一回新制模考與隔日訂正後，這裡會只顯示可以驗證的進步：少看一次詳解、第二天找回方向、以及隔幾天仍能獨立做對。</p>'}
+  </section>`;
+}
+function questionFeedbackCard() {
+  const byQuestion = new Map();
+  for (const row of questionFeedbackRows()) byQuestion.set(row.qid, row);
+  const active = [...byQuestion.values()].filter((row) => row && ['wrongTopic', 'issue'].includes(row.kind))
+    .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+  const recent = questionFeedbackRows().filter((row) => row && row.kind !== 'restore').slice(-8).reverse();
+  if (!recent.length) return '';
+  const rows = recent.map((row) => {
+    const q = bankById(row.qid), blocked = active.some((item) => item.qid === row.qid);
+    return `<div class="question-feedback-row"><div><b>${escH(q && (q.src || q.bookId) || '題庫題目')}</b><span>${escH(QUESTION_FEEDBACK_LABELS[row.kind] || row.kind)}｜${escH(row.d || '')}</span></div>${blocked ? `<button class="btn sm" onclick="questionFeedbackRestore('${jsA(row.qid)}')">恢復出題</button>` : ''}</div>`;
+  }).join('');
+  return `<section class="card question-feedback-card"><span class="eyebrow">不污染能力模型</span><h2>題目品質與換題紀錄</h2><p>目前有 <b>${active.length}</b> 題因單元或內容疑慮暫停出題；「一眼就會」與「換一題」都不會被算成答錯。</p><div>${rows}</div></section>`;
+}
 function learnerModelCard() {
   const model = learnerModel(), cal = model.calibration;
   const topicRows = Object.values(model.topics);
@@ -8695,9 +8835,11 @@ function renderStats() {
       <section><span>破題方向</span><b>${visionFirst}</b><small>題第一天已有方向｜${visionTwoDay} 題用足兩天</small></section>
       <section><span>觀念理解</span><b>${conceptsUnderstood}/${CONCEPT_CARDS.length}</b><small>張能用自己的話說清楚</small></section>
     </div>
+    ${learningWinsCard()}
     ${learnerModelCard()}
     ${paperLearningSummaryCard()}
     ${textbookLibraryCard()}
+    ${questionFeedbackCard()}
     ${syncCard()}
     ${aiCard()}
     ${packCard()}
@@ -9211,6 +9353,7 @@ function mergeState(a, b) {
   const outlineAttempts = unionRecords(a.outlineAttempts, b.outlineAttempts, (x) => `${x.id || ''}|${x.ts || ''}|${x.unitId || ''}`);
   const conceptAttempts = unionRecords(a.conceptAttempts, b.conceptAttempts, (x) => `${x.id || ''}|${x.ts || ''}|${x.conceptId || ''}`);
   const visionHistory = unionRecords(a.visionHistory, b.visionHistory, (x) => `${x.id || ''}|${x.ts || ''}|${x.qid || ''}`);
+  const questionFeedback = unionRecords(a.questionFeedback, b.questionFeedback, (x) => `${x.id || ''}|${x.ts || ''}|${x.qid || ''}|${x.kind || ''}`);
   const visionMap = new Map();
   for (const x of [...(b.visionQueue || []), ...(a.visionQueue || [])]) {
     if (!x || !x.id) continue;
@@ -9226,7 +9369,7 @@ function mergeState(a, b) {
   }
   const paperRuns = [...paperMap.values()].sort((x, y) => Number(x.createdAt || 0) - Number(y.createdAt || 0));
   const merged = { ...b, ...a, attempts, wrong, drills, mocks, corrections, extMocks, daily, extbank, sidePractice,
-    outlineAttempts, conceptAttempts, visionHistory, visionQueue, paperRuns };
+    outlineAttempts, conceptAttempts, visionHistory, questionFeedback, visionQueue, paperRuns };
   /* 學習基準只能往前推，不能被尚未同步的新舊裝置倒退；原始作答仍完整聯集保留。 */
   merged.learningBaselineResetAt = Math.max(Number(a.learningBaselineResetAt || 0), Number(b.learningBaselineResetAt || 0));
   if (merged.learningBaselineResetAt === Number(b.learningBaselineResetAt || 0) && b.learningBaselineResetReason) merged.learningBaselineResetReason = b.learningBaselineResetReason;
