@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825m'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825n'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3737,10 +3737,10 @@ function questionFeedbackRestore(qid) {
 function questionIsTemporarilyObvious(q, signals, maxDays = 30) {
   if (!q) return false;
   signals ||= learningSignalIndex();
-  const row = signals.questions.get(q.id);
+  const row = signals.questions.get(q.id) || {};
   const feedback = questionFeedbackLatest(q.id);
   const feedbackObvious = feedback && feedback.kind === 'obvious' && dayDistance(feedback.d) <= maxDays;
-  if ((!row || !row.obvious || dayDistance(row.lastObviousD) > maxDays) && !feedbackObvious) return false;
+  if ((!row.obvious || dayDistance(row.lastObviousD) > maxDays) && !feedbackObvious) return false;
   const rawWrong = S.wrong && S.wrong[q.id];
   const wrong = rawWrong && learningRecordCurrent(rawWrong.mt) ? rawWrong : null;
   /* 已到保留重測或錯題重測的題仍要出現；除此之外，「一眼就會」30 天內不再占用主訓練。 */
@@ -4454,24 +4454,28 @@ async function questionFeedbackAction(kind) {
   const proc = inkStop();
   if (proc && proc.n) syncInk(q.id, sess.t0, { ...proc, mode:'question-feedback', feedbackKind:kind, excluded:true });
   questionFeedbackRecord(q, kind);
-  prac.results.push({ excluded:true, feedback:kind });
 
-  /* 換題不是少做一題：從同一套推薦器補位；但回報的題永久不進能力模型。 */
+  /* 直接替換目前位置，不新增結果列也不推進題號；換題不能把 10 題偷偷變成 11 題。 */
   const existing = new Set(prac.queue.map((item) => item.id));
-  const candidate = adaptiveTextbookQueue(Math.max(20, (prac.cnt || 10) + 10))
-    .find((item) => !existing.has(item.id) && !questionFeedbackBlocked(item));
-  if (candidate) {
-    const task = preflightQuestionFigures([candidate]);
+  const candidates = adaptiveTextbookQueue(Math.max(30, (prac.cnt || 10) + 20))
+    .filter((item) => !existing.has(item.id) && !questionFeedbackBlocked(item));
+  let candidate = null;
+  for (const item of candidates.slice(0, 8)) {
+    const task = preflightQuestionFigures([item]);
     const ready = !task || await task.catch(() => false);
-    if (ready && qsess === sess) {
-      prac.queue.push(candidate);
-      const signals = adaptiveTextbookQueue.lastSignals || learningSignalIndex();
-      prac.reasons = prac.reasons || {};
-      prac.reasons[candidate.id] = questionSelectionReason(candidate, signals);
-    }
+    if (ready) { candidate = item; break; }
   }
   if (qsess !== sess) return false;
-  prac.i++;
+  if (candidate) {
+    prac.queue[prac.i] = candidate;
+    const signals = adaptiveTextbookQueue.lastSignals || learningSignalIndex();
+    prac.reasons = prac.reasons || {};
+    prac.reasons[candidate.id] = questionSelectionReason(candidate, signals);
+  } else {
+    /* 極少數無安全替題的情況寧可少一題，也不能讓已回報的題繼續作答或污染證據。 */
+    prac.queue.splice(prac.i, 1);
+    if (prac.i >= prac.queue.length) { pracDone(); return true; }
+  }
   pracNext();
   return true;
 }
@@ -7813,6 +7817,38 @@ function paperRunLevelCounts(run) {
   }
   return counts;
 }
+function teacherReportPrint(summaryOnly = false) {
+  document.body.classList.toggle('teacher-summary-print', !!summaryOnly);
+  const cleanup = () => document.body.classList.remove('teacher-summary-print');
+  try { window.addEventListener('afterprint', cleanup, { once:true }); } catch (_) {}
+  window.print();
+  setTimeout(cleanup, 1500);
+}
+function paperTeacherSummaryHTML(run, source, grade, levels) {
+  const topicCounts = {}, errorCounts = {};
+  const discuss = [];
+  for (const item of grade.questions || []) {
+    const no = Number(item.no), state = run.review && run.review[no] || {};
+    const topic = state.topic || item.topic;
+    const error = state.aiErrorKind || state.errorKind || [...(state.logs || [])].reverse().find((log) => log && log.errorKind)?.errorKind;
+    if (topic && TOPICS[topic]) topicCounts[topic] = (topicCounts[topic] || 0) + 1;
+    if (error) errorCounts[error] = (errorCounts[error] || 0) + 1;
+    const level = item.status === 'correct' ? 1 : Number(state.level) || 0;
+    if (level === 3 || level === 0) discuss.push(no);
+  }
+  const top = (rows, label) => Object.entries(rows).sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([key, count]) => `${label(key)} ${count} 題`).join('、') || '尚無足夠訂正紀錄';
+  const prior = (S.paperRuns || []).filter((row) => row && row.id !== run.id && paperRunInCurrentBaseline(row)
+    && row.aiGrade && Number(row.submittedAt || 0) < Number(run.submittedAt || 0)
+    && paperSourceById(row.sourceId)?.calibrationEligible !== false)
+    .sort((a, b) => Number(b.submittedAt || 0) - Number(a.submittedAt || 0))[0];
+  const delta = prior ? Number(run.score) - Number(prior.score) : null;
+  return `<section class="teacher-one-page"><header><div><span class="eyebrow">給王老師的單頁摘要</span><h2>${escH(source.title)}｜${escH(run.d || '')}</h2></div><b class="teacher-summary-score">${run.score}<small>/100</small></b></header>
+    <div class="teacher-summary-grid"><div><span>三級分布</span><b>${levels.l1}／${levels.l2}／${levels.l3}</b><small>直接會／只看答案會／需詳解</small></div><div><span>待完成</span><b>${levels.open}</b><small>尚未完成隔日訂正</small></div><div><span>考試剩餘</span><b>${Math.max(0, Math.round(Number(run.remainingMs || 0) / 60000))} 分</b><small>不拿單題速度作主要診斷</small></div><div><span>相較前一回</span><b>${delta == null ? '尚無前一回' : `${delta > 0 ? '+' : ''}${delta} 分`}</b><small>只比較完整正式卷</small></div></div>
+    <div class="teacher-summary-findings"><p><b>較常失分單元：</b>${escH(top(topicCounts, (key) => TOPICS[key] || key))}</p><p><b>反覆卡點：</b>${escH(top(errorCounts, (key) => key))}</p><p><b>建議優先討論：</b>${discuss.length ? `第 ${discuss.slice(0, 8).join('、')} 題${discuss.length > 8 ? '等' : ''}` : '本回沒有第三級或尚未完成題'}</p></div>
+    <p class="teacher-summary-note">判讀原則：第一級是考場直接會寫；第二級是隔日只看答案即可重建；第三級是努力重想後仍需詳解。AI 的第一錯步只有在卷面證據可逐字核對時才列入。</p>
+  </section>`;
+}
 function renderPaperTeacherReport(runId) {
   const run = (S.paperRuns || []).find((item) => item && item.id === runId);
   const source = run && paperSourceById(run.sourceId);
@@ -7844,8 +7880,9 @@ function renderPaperTeacherReport(runId) {
     ? '本卷原始結構為 19 題，只作練習與訂正分析，不列入正式級分校準。'
     : '本卷為完整 20 題，可列入正式級分校準。';
   app().innerHTML = `<div class="report-head"><div><span class="eyebrow">老師檢視版｜原版模考</span><h1>${escH(source.title)}｜${escH(run.d || '')}</h1><p>${run.score}/100｜第一級 ${levels.l1}｜第二級 ${levels.l2}｜第三級 ${levels.l3}｜尚未完成 ${levels.open}</p><small>${calibration}</small></div>
-    <div class="actr"><button class="btn" onclick="window.print()">列印／存成 PDF</button><button class="btn" onclick="openPaperGradeResult('${jsA(run.id)}')">查看紅筆卷</button><button class="btn primary" onclick="renderCorrections()">回隔日訂正</button></div></div>
-    <div class="teacher-report">${items}</div>`;
+    <div class="actr"><button class="btn" onclick="teacherReportPrint(true)">輸出單頁摘要</button><button class="btn" onclick="teacherReportPrint(false)">輸出完整逐題紀錄</button><button class="btn" onclick="openPaperGradeResult('${jsA(run.id)}')">查看紅筆卷</button><button class="btn primary" onclick="renderCorrections()">回隔日訂正</button></div></div>
+    ${paperTeacherSummaryHTML(run, source, grade, levels)}
+    <details class="teacher-detail-block" open><summary>展開完整逐題訂正紀錄</summary><div class="teacher-report">${items}</div></details>`;
   typesetIn(app()); scrollQuestionTop();
 }
 
@@ -8509,6 +8546,11 @@ function correctionEffort() {
   syncInk(entry.qid, t0, Object.assign({ mode: 'correction', correctionId: correction.batch.id }, proc || {}));
   return { note, alternate: alternate.slice(0, 500), topic, concept: concept.slice(0, 160), proc, ms: Date.now() - t0 };
 }
+function correctionStageHTML(entry) {
+  const current = entry && entry.done ? 4 : entry && entry.solutionUnlockedAt ? 3 : entry && Number(entry.attempts) > 0 ? 2 : 1;
+  const labels = ['只看答案重想', '保存一次真實嘗試', '仍不會才看詳解', '完成並排入保留重測'];
+  return `<div class="correction-stage-card"><b>目前步驟 ${current} / 4</b><div>${labels.map((label, index) => `<span class="${index + 1 === current ? 'current' : index + 1 < current ? 'done' : ''}">${index + 1}. ${label}</span>`).join('')}</div></div>`;
+}
 function renderCorrectionWork() {
   const entry = correction.batch.entries[correction.indexes[correction.i]];
   const q = correctionQuestion(entry);
@@ -8529,6 +8571,7 @@ function renderCorrectionWork() {
     ${!unlocked && entry.attempts > 0 ? '<div class="actr"><button class="btn" onclick="correctionUnlock()">努力後仍無收穫，解鎖詳解並重算</button></div>' : ''}`;
   app().innerHTML = `<div class="session-head"><span>隔日盲訂正｜第 ${entry.examNo} 題｜${correction.i + 1} / ${correction.indexes.length}</span>
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></div>
+    ${correctionStageHTML(entry)}
     ${unlocked ? `<div class="card redo-sol"><p><b>已完成至少一次獨立重想，現在才開放詳解。</b></p>${rtTxt(q.sol)}${q.solFig ? `<div class="qfig">${sanitizeSVG(q.solFig)}</div>` : ''}</div>` : ''}
     ${bkCard(q, `第 ${entry.examNo} 題`, 'correctionNoop', actions)}`;
   sessionChrome(true); scrollQuestionTop();

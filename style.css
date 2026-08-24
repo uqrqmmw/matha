@@ -1608,6 +1608,17 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 }
 .paper-review-session > .paper-finish-bar .paper-result-actions { flex-wrap: wrap; }
 .paper-review-session > .paper-finish-bar .paper-result-actions .btn { min-height: 46px; }
+.paper-review-stagebar { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
+.paper-review-stagebar span {
+  display: flex !important; align-items: center; gap: 5px; max-width: 150px; padding: 5px 8px;
+  border: 1px solid #d1c8bd; border-radius: 7px; background: rgba(246,243,237,.94); color: #756d64;
+  font-size: 10px; line-height: 1.2;
+}
+.paper-review-stagebar span b { display: grid; place-items: center; flex: none; width: 19px; height: 19px; border-radius: 50%; background: #dfd9cf; color: #5e574f; }
+.paper-review-stagebar span.current { border-color: #887a69; background: #eee9df; color: #3f3a35; font-weight: 700; }
+.paper-review-stagebar span.current b { background: #675b50; color: #fff; }
+.paper-review-stagebar span.done { color: #66715f; }
+.paper-review-stagebar span.done b { background: #75816e; color: #fff; }
 .paper-review-effort {
   min-width: min(330px, 100%); border: 1px solid #c8bdb0; border-radius: 8px; background: rgba(246, 243, 237, .96);
 }
@@ -1667,6 +1678,41 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .paper-detail-correction textarea { width: 100%; resize: vertical; min-height: 66px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); font: inherit; font-size: 14px; }
 .paper-ui-hidden .paper-review-toast, .paper-ui-hidden .paper-detail-drawer { opacity: 0; pointer-events: none; }
 
+.question-fit-controls { max-width: 980px; margin: 8px auto 10px; border: 1px solid #d4ccc2; border-radius: 8px; background: #f7f4ee; }
+.question-fit-controls > summary { min-height: 40px; display: flex; align-items: center; padding: 6px 12px; color: var(--dim); font-size: 12px; cursor: pointer; }
+.question-fit-controls > div { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 0 10px 10px; }
+.question-fit-controls small { flex: 1 1 280px; color: var(--dim); }
+.correction-stage-card { max-width: 1100px; margin: 8px auto 12px; padding: 10px 12px; border: 1px solid #d1c8bd; border-radius: 9px; background: #f7f4ee; }
+.correction-stage-card > b { display: block; margin-bottom: 7px; color: #5a524a; font-size: 13px; }
+.correction-stage-card > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.correction-stage-card span { padding: 7px 8px; border-radius: 6px; background: #ebe6dd; color: #81786e; font-size: 11px; }
+.correction-stage-card span.current { background: #675b50; color: #fff; font-weight: 700; }
+.correction-stage-card span.done { background: #e5ebe1; color: #61705d; }
+.learning-win-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.learning-win-grid div { min-height: 94px; display: grid; align-content: center; gap: 5px; padding: 13px; border: 1px solid var(--border); border-radius: 9px; background: #f6f3ed; }
+.learning-win-grid b { font: 700 clamp(25px, 3vw, 38px)/1 var(--serif); color: #596653; }
+.learning-win-grid span { color: var(--dim); font-size: 12px; line-height: 1.4; }
+.learning-score-change { margin: 12px 0 0; padding: 10px 12px; border-left: 3px solid #778271; background: #f0f3ed; }
+.learning-score-change[data-direction="down"] { border-color: #a88962; background: #f5f0e8; }
+.question-feedback-card > div { display: grid; gap: 6px; }
+.question-feedback-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); }
+.question-feedback-row > div { display: grid; gap: 2px; }
+.question-feedback-row span { color: var(--dim); font-size: 12px; }
+.paper-grade-audit .paper-audit-read { min-width: 180px; width: 100%; }
+.teacher-one-page { margin: 14px 0 18px; padding: clamp(16px, 2.5vw, 28px); border: 1px solid #bdb3a6; border-radius: 10px; background: #fbfaf7; }
+.teacher-one-page > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border-bottom: 2px solid #72675b; padding-bottom: 12px; }
+.teacher-one-page h2 { margin: 4px 0 0; }
+.teacher-summary-score { font: 700 clamp(36px, 5vw, 58px)/1 var(--serif); color: #554d45; }
+.teacher-summary-score small { font: 500 16px/1 var(--sans); color: var(--dim); }
+.teacher-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.teacher-summary-grid > div { display: grid; gap: 4px; padding: 11px; border: 1px solid var(--border); background: #f4f1eb; }
+.teacher-summary-grid span, .teacher-summary-grid small { color: var(--dim); font-size: 11px; }
+.teacher-summary-grid b { font-size: 19px; }
+.teacher-summary-findings { display: grid; gap: 7px; margin-top: 12px; }
+.teacher-summary-findings p, .teacher-summary-note { margin: 0; }
+.teacher-summary-note { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--dim); font-size: 11px; line-height: 1.5; }
+.teacher-detail-block > summary { margin-bottom: 12px; font-weight: 700; cursor: pointer; }
+
 @media (max-width: 1100px), (orientation: portrait) {
   .paper-session-shell > .paper-workbar {
     grid-template-columns: auto minmax(0, 1fr);
@@ -1698,6 +1744,8 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 }
 
 @media (max-width: 700px) {
+  .learning-win-grid, .teacher-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .correction-stage-card > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .paper-level-summary, .paper-analysis-grid { grid-template-columns: 1fr; }
   .paper-learning-summary .report-row { grid-template-columns: 1fr auto; }
   .paper-learning-summary .report-row span { grid-column: 1 / -1; }
@@ -1721,4 +1769,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
   body, main { background: #fff !important; }
   main { max-width: none !important; padding: 0 !important; }
   .teacher-q { break-inside: avoid; box-shadow: none; }
+  .teacher-one-page { margin: 0; border: 0; padding: 0; }
+  body.teacher-summary-print .teacher-detail-block { display: none !important; }
+  body.teacher-summary-print .teacher-one-page { break-inside: avoid; }
 }

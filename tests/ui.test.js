@@ -156,3 +156,30 @@ test('OpenAI 金鑰只存在 Edge Function secret，不進瀏覽器程式', () =
   assert.doesNotMatch(proxy, /Deno\.env\.get\("OPENAI_MODEL"\)/);
   assert.doesNotMatch(proxy, /gpt-5\.6(?:-sol|-terra|-luna)?/);
 });
+
+test('原卷 AI 誤讀可只修正目前頁，並保留辨識答案與人工覆核歷史', () => {
+  const source = read('app.js');
+  assert.match(source, /paperGradeAuditOpen\(\$\{page\}\)/);
+  assert.match(source, /class="paper-audit-read"/);
+  assert.match(source, /保存這頁修正/);
+  assert.match(source, /paperGradeAuditPush\(run, '人工覆核前'\)/);
+});
+
+test('老師檢視版提供單頁摘要與完整逐題兩種輸出', () => {
+  const source = read('app.js');
+  const css = read('style.css');
+  assert.match(source, /給王老師的單頁摘要/);
+  assert.match(source, /teacherReportPrint\(true\)/);
+  assert.match(source, /teacherReportPrint\(false\)/);
+  assert.match(css, /body\.teacher-summary-print \.teacher-detail-block/);
+});
+
+test('推薦題可零成本換題或回報品質，介面明示不列入能力證據', () => {
+  const source = read('app.js');
+  assert.match(source, /questionFeedbackAction\('obvious'\)/);
+  assert.match(source, /questionFeedbackAction\('issue'\)/);
+  assert.match(source, /不會算成答錯、未答或能力證據/);
+  assert.match(source, /mode:'question-feedback'.*excluded:true/);
+  assert.match(source, /prac\.queue\[prac\.i\] = candidate/);
+  assert.doesNotMatch(source, /prac\.queue\.push\(candidate\)/, '替題必須取代目前位置，不能把十題練習加長成十一題');
+});

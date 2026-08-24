@@ -1441,6 +1441,49 @@ test('原版模考隔日訂正會累積單元、卡點與老師逐題報告', ()
   assert.match(result.card, /條件翻譯不完整|推理缺口/);
 });
 
+test('推薦題換題與品質回報不會污染作答證據，疑問題會停止出題且可恢復', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    S = freshState();
+    const q = BANK[0];
+    questionFeedbackRecord(q, 'obvious');
+    const obvious = questionIsTemporarilyObvious(q, learningSignalIndex());
+    questionFeedbackRecord(q, 'issue');
+    const blocked = questionFeedbackBlocked(q);
+    const evidenceAfterReports = learningEvidenceLedger().length;
+    questionFeedbackRecord(q, 'restore');
+    return { obvious, blocked, restored:!questionFeedbackBlocked(q), attempts:S.attempts.length, evidenceAfterReports, rows:S.questionFeedback.length };
+  })()`));
+  assert.deepEqual(result, { obvious:true, blocked:true, restored:true, attempts:0, evidenceAfterReports:0, rows:3 });
+});
+
+test('題目品質回報跨裝置聯集合併，不會被另一台的舊狀態吃掉', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const a = freshState(), b = freshState();
+    a.questionFeedback = [{ id:'feedback-a', qid:BANK[0].id, kind:'issue', ts:1 }];
+    b.questionFeedback = [{ id:'feedback-b', qid:BANK[1].id, kind:'wrongTopic', ts:2 }];
+    return mergeState(a, b).questionFeedback.map((row) => row.id);
+  })()`));
+  assert.deepEqual(result, ['feedback-a', 'feedback-b']);
+});
+
+test('原版隔日訂正用四步狀態明確顯示目前允許的動作', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => ({
+    initial:paperReviewStage({ attempts:0 }),
+    tried:paperReviewStage({ attempts:1 }),
+    detail:paperReviewStage({ attempts:1, aiDetail:{} }),
+    verified:paperReviewStage({ pendingLevel:2 }),
+    html:paperReviewStageHTML({ attempts:1 }),
+  }))()`));
+  assert.deepEqual([result.initial, result.tried, result.detail, result.verified], [1, 2, 3, 4]);
+  assert.match(result.html, /只看答案重想/);
+  assert.match(result.html, /保存一次真實嘗試/);
+  assert.match(result.html, /需要時看詳解並重算/);
+  assert.match(result.html, /AI 驗證後完成/);
+});
+
 test('未登入時離線開練不再被原生確認框阻擋', () => {
   const { context, run } = loadApp();
   let confirms = 0;
