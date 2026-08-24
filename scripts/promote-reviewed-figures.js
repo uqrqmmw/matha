@@ -55,8 +55,12 @@ function reviewMap(review) {
     || !Array.isArray(review.assets)) throw new Error('Independent review file is invalid');
   const requiredIntegrity = ['pdfSha256MatchesManifest', 'cropSha256MatchesManifest', 'sourcePageSha256MatchesManifest',
     'cropDimensionsMatchManifest', 'sourcePageDimensionsMatchManifest', 'bboxWithinSourcePage',
-    'cropPixelsExactlyMatchSourceAtBbox', 'questionIdsMatchPendingQueue'];
-  const legacyIntegrity = review.integrity && requiredIntegrity.every((key) => review.integrity[key] === true);
+    'cropPixelsExactlyMatchSourceAtBbox'];
+  const legacyQuestionBinding = review.integrity
+    && (review.integrity.questionIdsMatchPendingQueue === true
+      || review.integrity.questionIdsMatchCandidateGroupsAndPendingQueue === true);
+  const legacyIntegrity = review.integrity && legacyQuestionBinding
+    && requiredIntegrity.every((key) => review.integrity[key] === true);
   const modernIntegrity = review.decision === 'pass' && review.inputIntegrity
     && ['candidateManifestSha256Matches', 'reviewManifestSha256Matches', 'manifestAssetCountMatches',
       'manifestQuestionCountMatches'].every((key) => review.inputIntegrity[key] === true)

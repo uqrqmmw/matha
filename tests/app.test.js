@@ -706,6 +706,13 @@ test('眼睛刷題建立完整 20 題學測結構，並能從同一整回續寫'
   ]);
   assert.equal(entries.reduce((sum, entry) => sum + entry.points, 0), 100);
   assert.equal(new Set(entries.slice(17).map((entry) => entry.mixedGroupId)).size, 1);
+  const diversity = plain(run(`(() => {
+    const regular = S.visionQueue.slice(0, 17).map((entry) => bankById(entry.qid).topic);
+    const counts = {}; regular.forEach((topic) => { counts[topic] = (counts[topic] || 0) + 1; });
+    return { distinct:new Set(regular).size, max:Math.max(...Object.values(counts)) };
+  })()`));
+  assert.ok(diversity.distinct >= 9, '眼睛刷題的 17 題獨立題至少橫跨 9 個單元');
+  assert.ok(diversity.max <= 3, '受正式題型比例限制時，眼睛刷題的獨立題每單元仍不得超過 3 題');
   assert.deepEqual(plain(run('__openedVision')), { id: entries[0].id, index: 0, count: 20, paperRun: true });
 
   run(`S.visionQueue[0].paperSeen = true; S.visionQueue[1].paperSeen = true; startVisionScan();`);

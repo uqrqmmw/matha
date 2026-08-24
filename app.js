@@ -2711,13 +2711,19 @@ const CONCEPT_CARDS = [
   { id: 'concept-function', unit: 'num', title: '函數', prompt: '不用背課本句子：什麼情況才叫函數？請用自己的話說，並舉一個「不是函數」的例子。', reference: '函數是從定義域每一個輸入，恰好指定到一個輸出的對應。不同輸入可以有相同輸出，但同一輸入不能同時對到兩個不同輸出。' },
   { id: 'concept-necessary-sufficient', unit: 'num', title: '充分條件與必要條件', prompt: '用自己的話解釋「P 是 Q 的充分條件」和「P 是 Q 的必要條件」，最好各給一例。', reference: 'P 充分於 Q 表示 P 發生就保證 Q 發生，即 P 推出 Q；P 必要於 Q 表示 Q 要成立不能缺 P，即 Q 推出 P。兩個方向不可混用。' },
   { id: 'concept-absolute', unit: 'num', title: '絕對值', prompt: '絕對值真正代表什麼？為什麼 |x-a| 可以拿來描述一段區間？', reference: '絕對值代表數線上的距離，所以永遠非負。|x-a| 是 x 與 a 的距離；限制它小於某數是在限制 x 落在以 a 為中心的一段範圍。' },
+  { id: 'concept-circle', unit: 'line', title: '圓與圓的方程式', prompt: '圓真正是哪些點的集合？為什麼方程式 (x-h)²+(y-k)²=r² 能表示圓？', reference: '圓是平面上到固定點距離都等於固定正數的點所成的集合。固定點是圓心 (h,k)，兩點距離平方等於 r²，便得到 (x-h)²+(y-k)²=r²。' },
+  { id: 'concept-polynomial-root', unit: 'poly', title: '多項式的根、零點與因式', prompt: '用自己的話說明 f(a)=0、圖形的零點、以及 x-a 是因式三件事為什麼等價。', reference: 'f(a)=0 表示輸入 a 時輸出為零，所以圖形通過 (a,0)，a 是零點。由因式定理，這也等價於多項式可被 x-a 整除，也就是 x-a 是因式。' },
   { id: 'concept-log', unit: 'exp', title: '對數', prompt: '不要只寫公式：log_a b 到底在問什麼？底數與真數為什麼有限制？', reference: 'log_a b 是「a 的幾次方等於 b」的指數。實數範圍要有 a>0、a≠1、b>0，因為正底數的實數次方為正，底數 1 又無法用指數區分結果。' },
   { id: 'concept-sequence', unit: 'seq', title: '數列與遞迴', prompt: '數列是什麼？遞迴式提供了什麼資訊，又還缺什麼才真正決定整個數列？', reference: '數列可視為以正整數索引的函數。遞迴式描述相鄰或先前各項如何產生下一項，通常還需要足夠的初始值才能唯一決定整個數列。' },
+  { id: 'concept-permutation-combination', unit: 'comb', title: '排列與組合', prompt: '什麼時候順序會讓兩種選法算成不同結果？用這個觀點解釋排列和組合的差別。', reference: '排列把順序不同視為不同結果，組合只在乎選到哪些元素、不在乎先後。同一組 k 個相異元素可排成 k! 種順序，所以排列數等於組合數再乘 k!。' },
   { id: 'concept-conditional', unit: 'prob', title: '條件機率', prompt: '用自己的話說明 P(A|B) 的分母為什麼變成 P(B)，它和 P(A∩B) 差在哪裡。', reference: '已知 B 發生後，樣本空間縮小為 B；其中同時屬於 A 的部分是 A∩B，所以 P(A|B)=P(A∩B)/P(B)，前提是 P(B)>0。' },
   { id: 'concept-independent', unit: 'prob', title: '獨立事件', prompt: '兩事件「獨立」真正表示什麼？它和「互斥」為什麼不是同一件事？', reference: '獨立表示知道其中一事件是否發生，不改變另一事件的機率，等價於 P(A∩B)=P(A)P(B)。互斥表示不能同時發生；兩個機率皆正的互斥事件反而不獨立。' },
   { id: 'concept-expectation', unit: 'prob', title: '期望值', prompt: '期望值為什麼不是「最可能出現的值」？請用長期重複試驗的角度解釋。', reference: '期望值是各可能值以其機率加權的平均，代表大量重複試驗時平均結果趨近的中心，不必是任何一次能取到的值，也不一定是機率最大的值。' },
   { id: 'concept-sd', unit: 'data', title: '標準差', prompt: '標準差在量什麼？全部資料同加一個常數、或同乘一個常數時會怎麼變？為什麼？', reference: '標準差量資料相對平均數的典型散布程度。全部同加常數只平移所以不變；同乘 c，距平均數的差也乘 c，因此標準差乘 |c|。' },
+  { id: 'concept-radian', unit: 'trig1', title: '弧度', prompt: '弧度不是另一套要硬背的單位。請用弧長、半徑說明一弧度和角度大小真正代表什麼。', reference: '圓心角的弧度數等於所對弧長除以半徑，即 θ=l/r。一弧度是弧長剛好等於半徑時的圓心角，因此弧度直接把角與圓弧的比例連起來。' },
+  { id: 'concept-sinusoid', unit: 'trig2', title: '振幅、週期與相位', prompt: '對 y=a sin(ωx+φ)+b，用圖形語言說明 a、ω、φ、b 各自改變了什麼。', reference: '|a| 是相對中線的最大上下距離，b 把中線移到 y=b；週期是 2π/|ω|，|ω| 越大圖形水平越壓縮；φ 與 ω 一起決定水平位移 -φ/ω。a 的正負還會造成上下翻轉。' },
   { id: 'concept-dot', unit: 'vec', title: '向量內積', prompt: '內積的幾何意義是什麼？為什麼能用它判斷夾角、垂直與投影？', reference: '內積 a·b=|a||b|cosθ，衡量兩向量同方向成分的程度。內積為零（且向量非零）代表垂直；除以一向量長度可得到另一向量在該方向的純量投影。' },
+  { id: 'concept-space-vector', unit: 'svec', title: '空間向量與兩點距離', prompt: '在三維空間中，從 A 到 B 的向量和兩點距離有什麼關係？為什麼三個座標差要各自平方後相加再開根號？', reference: '向量 AB 的三個分量是對應座標差。三個互相垂直的座標方向可連續使用畢氏定理，所以 |AB|²=(x₂-x₁)²+(y₂-y₁)²+(z₂-z₁)²，距離是其非負平方根。' },
   { id: 'concept-normal', unit: 'splane', title: '法向量', prompt: '法向量和直線／平面是什麼關係？為什麼方程式的係數會直接給法向量？', reference: '法向量是與直線（平面中）或平面（空間中）垂直的非零向量。方程式中變數係數形成的向量，與同一圖形上任兩點的方向向量內積為零，因此是法向量。' },
   { id: 'concept-matrix', unit: 'mat', title: '矩陣與線性變換', prompt: '矩陣除了「一排數字」之外代表什麼？矩陣乘法的先後順序為什麼通常不能交換？', reference: '矩陣可表示把向量送到另一向量的線性變換；每一欄可看成基底向量變換後的位置。矩陣相乘代表依序做變換，先後順序改變通常會得到不同結果，所以通常不可交換。' },
 ];
@@ -3182,6 +3188,47 @@ function hasRecentConceptWork(days) {
 function visionDueEntries() {
   return (S.visionQueue || []).filter((x) => !x.done && x.stage === 'waiting' && String(x.due || '') <= today());
 }
+function diagnosticTopicSignals() {
+  const topics = Object.create(null);
+  const row = (topic) => (topics[topic] = topics[topic] || { n:0, ok:0, noDirection:0, l2:0, l3:0, open:0 });
+  for (const attempt of S.attempts || []) {
+    if (!['mixed', 'mock', 'adaptive-textbook'].includes(attempt && attempt.mode)) continue;
+    const q = bankById(attempt.qid); if (!q) continue;
+    const topic = row(q.topic), guessed = attempt.confidence === 'guess' || attempt.err === '用猜的';
+    topic.n++; topic.ok += attempt.ok ? (guessed ? .15 : 1) : 0;
+  }
+  for (const entry of S.visionHistory || []) {
+    const q = bankById(entry && entry.qid); if (!q || ['works', 'different', 'obvious'].includes(entry.outcome)) continue;
+    row(q.topic).noDirection++;
+  }
+  for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
+    const q = bankById(entry && entry.qid); if (!q) continue;
+    const topic = row(q.topic), level = correctionLevel(entry);
+    if (!entry.done) topic.open++;
+    else if (level === 2) topic.l2++;
+    else if (level === 3) topic.l3++;
+  }
+  for (const run of S.paperRuns || []) {
+    const source = run && paperSourceById(run.sourceId); if (!source) continue;
+    const graded = run.aiGrade && Array.isArray(run.aiGrade.questions) ? run.aiGrade.questions : [];
+    for (const item of graded) {
+      const no = Number(item && item.no), review = run.review && run.review[no];
+      const topicKey = item && item.topic || review && review.topic;
+      if (!topicKey || !TOPICS[topicKey]) continue;
+      const topic = row(topicKey); topic.n++; topic.ok += item.status === 'correct' ? 1 : 0;
+    }
+    for (const [noText, review] of Object.entries(run.review || {})) {
+      const item = graded.find((gradedItem) => Number(gradedItem && gradedItem.no) === Number(noText));
+      const topicKey = review && review.topic || item && item.topic;
+      if (!topicKey || !TOPICS[topicKey]) continue;
+      const topic = row(topicKey), level = Number(review && review.level) || 0;
+      if (!review || !review.done) topic.open++;
+      else if (level === 2) topic.l2++;
+      else if (level === 3) topic.l3++;
+    }
+  }
+  return topics;
+}
 function severeWeakTopics() {
   const recent = (S.attempts || []).filter((a) => ['mixed', 'mock', 'adaptive-textbook'].includes(a.mode)).slice(-80);
   const by = {};
@@ -3190,15 +3237,16 @@ function severeWeakTopics() {
     const t = (by[q.topic] = by[q.topic] || { n: 0, ok: 0, tail: [] });
     t.n++; t.ok += a.ok ? 1 : 0; t.tail.push(!!a.ok); t.tail = t.tail.slice(-4);
   }
-  const signals = learningSignalIndex();
+  /* 分章介入只能由混合／模考／眼刷與其訂正證據觸發；分章練習本身不能把門檻越練越高或稀釋掉。 */
+  const signals = diagnosticTopicSignals();
   return Object.keys(TOPICS).filter((k) => {
-    const evidence = signals.topics[k] || { n:0, ok:0, noDirection:0, l3:0, open:0 };
+    const evidence = signals[k] || { n:0, ok:0, noDirection:0, l3:0, open:0 };
     const t = by[k];
     return (evidence.n >= 6 && evidence.ok / evidence.n <= 0.35)
       || (t && t.tail.length === 4 && t.tail.every((ok) => !ok))
       || evidence.l3 >= 3 || evidence.noDirection + evidence.open >= 4;
   }).map((k) => {
-    const evidence = signals.topics[k] || { n:0, ok:0 };
+    const evidence = signals[k] || { n:0, ok:0 };
     return { k, n:evidence.n, ok:evidence.ok, acc:evidence.n ? evidence.ok / evidence.n : 0 };
   });
 }
@@ -3267,6 +3315,15 @@ function learningSignalIndex() {
 function dayDistance(date) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return Infinity;
   return Math.max(0, Math.round((new Date(today() + 'T00:00:00Z') - new Date(date + 'T00:00:00Z')) / 86400000));
+}
+function questionIsTemporarilyObvious(q, signals, maxDays = 30) {
+  if (!q) return false;
+  signals ||= learningSignalIndex();
+  const row = signals.questions.get(q.id);
+  if (!row || !row.obvious || dayDistance(row.lastObviousD) > maxDays) return false;
+  const wrong = S.wrong && S.wrong[q.id];
+  /* 已到保留重測或錯題重測的題仍要出現；除此之外，「一眼就會」30 天內不再占用主訓練。 */
+  return !row.retentionDue && !(wrong && String(wrong.due || '') <= today());
 }
 function questionLearningValue(q, signals, options) {
   signals ||= learningSignalIndex(); options ||= {};
@@ -6886,15 +6943,19 @@ function buildPaper(forVision) {
   const eligible = (q) => {
     const skeleton = qSkeleton(q);
     return !usedIds.has(q.id) && !heldUntilTomorrow.has(q.id)
+      && !(forVision && questionIsTemporarilyObvious(q, signals))
       && !(q.grp && usedGroups.has(q.grp))
       && !(skeleton.length >= 12 && usedSkeletons.has(skeleton))
       && !(q.src && packIsOff(q.src));
   };
   const choose = (type, count, diffPattern) => {
     const out = [];
+    const topicCap = forVision ? 2 : 3;
     for (let i = 0; i < count; i++) {
       const want = diffPattern[i % diffPattern.length];
-      let pool = BANK.filter((q) => q.type === type && q.diff === want && eligible(q));
+      let pool = BANK.filter((q) => q.type === type && q.diff === want && eligible(q) && (topicUse[q.topic] || 0) < topicCap);
+      if (!pool.length) pool = BANK.filter((q) => q.type === type && eligible(q) && (topicUse[q.topic] || 0) < topicCap);
+      if (!pool.length) pool = BANK.filter((q) => q.type === type && q.diff === want && eligible(q));
       if (!pool.length) pool = BANK.filter((q) => q.type === type && eligible(q));
       pool.sort((a, b) => (scores.get(b.id) / (1 + (topicUse[b.topic] || 0) * .55)
           - scores.get(a.id) / (1 + (topicUse[a.topic] || 0) * .55))
@@ -7999,10 +8060,12 @@ function adaptiveTextbookQueue(cnt) {
   const readyIds = new Set(ready.map((book) => book.id));
   const readySources = new Set(ready.flatMap((book) => book.sourceNames || []));
   const held = new Set((S.visionQueue || []).filter((entry) => entry && !entry.done && entry.stage === 'waiting').map((entry) => entry.qid));
-  let pool = BANK.filter((q) => !held.has(q.id) && !(q.src && packIsOff(q.src))
-    && (readyIds.has(q.bookId) || readySources.has(q.src)));
-  if (!pool.length) pool = BANK.filter((q) => !held.has(q.id) && q.src && !packIsOff(q.src));
   const signals = learningSignalIndex();
+  let pool = BANK.filter((q) => !held.has(q.id) && !(q.src && packIsOff(q.src))
+    && !questionIsTemporarilyObvious(q, signals)
+    && (readyIds.has(q.bookId) || readySources.has(q.src)));
+  if (!pool.length) pool = BANK.filter((q) => !held.has(q.id) && q.src && !packIsOff(q.src)
+    && !questionIsTemporarilyObvious(q, signals));
   const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals)]));
   const ranked = pool.slice().sort((a, b) => scores.get(b.id) - scores.get(a.id) || String(a.id).localeCompare(String(b.id)));
   const queue = [], groups = new Set(), skeletons = new Set(), topicUse = Object.create(null);

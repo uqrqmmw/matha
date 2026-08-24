@@ -57,6 +57,24 @@ test('下一步優先處理原卷與系統隔日訂正，再排未完成大綱�
   assert.equal(states.adaptive, 'adaptive-textbook');
 });
 
+test('分章補洞只由混合證據觸發，分章練習本身不製造或稀釋診斷', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const q = BANK.find((row) => row.topic === 'num');
+    S.visionHistory = []; S.corrections = []; S.paperRuns = [];
+    S.attempts = Array.from({length:8}, (_, i) => ({ qid:q.id, ok:false, mode:'practice', d:today(), ts:i + 1 }));
+    const chapterOnly = severeWeakTopics().some((row) => row.k === 'num');
+    S.attempts = [
+      ...Array.from({length:6}, (_, i) => ({ qid:q.id, ok:false, mode:'adaptive-textbook', d:today(), ts:i + 1 })),
+      ...Array.from({length:30}, (_, i) => ({ qid:q.id, ok:true, mode:'practice', d:today(), ts:100 + i })),
+    ];
+    const mixedWeak = severeWeakTopics().find((row) => row.k === 'num');
+    return { chapterOnly, mixedWeak };
+  })()`));
+  assert.equal(result.chapterOnly, false);
+  assert.deepEqual(result.mixedWeak, { k:'num', n:6, ok:0, acc:0 });
+});
+
 test('個人化選題會把到期錯題、沒有方向與第三級單元排在剛答對的題目前面', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
@@ -75,7 +93,7 @@ test('個人化選題會把到期錯題、沒有方向與第三級單元排在�
   assert.match(result.reason, /間隔重測|破題方向/);
 });
 
-test('教材混合精選不被正式卷題型比例限制，並排除眼刷留到明天的題', () => {
+test('教材混合精選不被正式卷題型比例限制，並排除眼刷留到明天與一眼就會的題', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
     const source = '114班·實數與數線';
@@ -86,13 +104,19 @@ test('教材混合精選不被正式卷題型比例限制，並排除眼刷留�
     }));
     BANK.push(...added); BANK_MAP = null;
     S.visionQueue = [{ qid:added[0].id, stage:'waiting', done:false, due:addDays(today(), 1) }];
+    S.visionHistory = [{ qid:added[1].id, outcome:'obvious', d:today(), ts:1 }];
     const queue = adaptiveTextbookQueue(10);
     const use = {}; queue.forEach((q) => { use[q.topic] = (use[q.topic] || 0) + 1; });
-    return { n:queue.length, types:[...new Set(queue.map((q) => q.type))], held:queue.some((q) => q.id === added[0].id), maxTopic:Math.max(...Object.values(use)) };
+    return {
+      n:queue.length, types:[...new Set(queue.map((q) => q.type))],
+      held:queue.some((q) => q.id === added[0].id), obvious:queue.some((q) => q.id === added[1].id),
+      maxTopic:Math.max(...Object.values(use))
+    };
   })()`));
   assert.equal(result.n, 10);
   assert.deepEqual(result.types, ['fill']);
   assert.equal(result.held, false);
+  assert.equal(result.obvious, false);
   assert.ok(result.maxTopic <= 2);
 });
 
@@ -168,6 +192,18 @@ test('十一單元大綱來源已完整建立語意核對基準', () => {
   assert.equal(result.every((x, i) => x.id === `outline-${i + 1}` && x.n >= 150), true);
   assert.equal(run("OUTLINE_DEFAULTS[9].reference.includes('高斯消去')"), true);
   assert.equal(run("OUTLINE_DEFAULTS[10].reference.includes('線性變換')"), true);
+});
+
+test('重要定義卡覆蓋數 A 十四單元，要求以自己的話解釋而非背字句', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => ({
+    topics:Object.keys(TOPICS),
+    covered:[...new Set(CONCEPT_CARDS.map((card) => card.unit))],
+    cards:CONCEPT_CARDS.map((card) => ({ prompt:card.prompt, reference:card.reference }))
+  }))()`));
+  assert.deepEqual(result.topics.filter((topic) => !result.covered.includes(topic)), []);
+  assert.ok(result.cards.length >= 18);
+  assert.equal(result.cards.every((card) => card.prompt.length >= 20 && card.reference.length >= 35), true);
 });
 
 test('三回私有原版模考依正式題數拆成清晰單頁，且左右頁共用私有高解析跨頁', () => {

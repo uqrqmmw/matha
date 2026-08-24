@@ -103,6 +103,19 @@ test('逐資產新版獨立審核格式也必須每項安全與完整性全數�
   assert.throws(() => promoteReviewedFigures(unsafe), /integrity gate/);
 });
 
+test('獨立審核可用較明確的題號綁定欄位名稱，但其他完整性門檻不放寬', () => {
+  const fx = fixture();
+  delete fx.review.integrity.questionIdsMatchPendingQueue;
+  fx.review.integrity.questionIdsMatchCandidateGroupsAndPendingQueue = true;
+  fs.writeFileSync(fx.reviewFile, JSON.stringify(fx.review));
+  assert.deepEqual(promoteReviewedFigures(fx).promotion.summary, { assets:1, questions:1 });
+
+  const missing = fixture();
+  delete missing.review.integrity.questionIdsMatchPendingQueue;
+  fs.writeFileSync(missing.reviewFile, JSON.stringify(missing.review));
+  assert.throws(() => promoteReviewedFigures(missing), /integrity gate/);
+});
+
 test('同一人自產自審、審核不完整或 crop 被改動時一律 fail closed', () => {
   const same = fixture();
   same.review.reviewer = 'crop-agent';
