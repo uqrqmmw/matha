@@ -32,7 +32,7 @@ import cv2
 import fitz
 import numpy as np
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REVIEW_DPI = 150
 BOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
@@ -159,6 +159,46 @@ def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResul
 # per-page pipeline
 # --------------------------------------------------------------------------
 
+def banner_strip_ocr(engine: Any, image: np.ndarray) -> list[dict[str, Any]]:
+    """Re-read the top-left banner on a grey highlight.
+
+    The publisher prints the difficulty tier (基礎實力養成 / 進階試題演練 /
+    解題思維挑戰) reversed out of a grey block.  A straight page OCR loses that
+    text on roughly half the pages, and the tier is the only printed evidence
+    of difficulty there is — guessing it is exactly what must not happen.  So
+    when a grey band is present the strip is normalised, binarised, upscaled
+    and read again.
+    """
+    height, width = image.shape[:2]
+    band_h = max(1, int(0.11 * height))
+    band_w = max(1, int(0.50 * width))
+    gray = cv2.cvtColor(image[0:band_h, 0:band_w], cv2.COLOR_BGR2GRAY)
+
+    grey_fill = ((gray > 90) & (gray < 205)).sum(axis=1)
+    if int(grey_fill.max(initial=0)) < 0.20 * band_w:
+        return []
+
+    scale = 2.4
+    normalised = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+    _, binary = cv2.threshold(normalised, 150, 255, cv2.THRESH_BINARY)
+    enlarged = cv2.cvtColor(
+        cv2.resize(binary, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC), cv2.COLOR_GRAY2BGR
+    )
+    result, _ = engine(enlarged)
+    lines = []
+    for item in result or []:
+        box, text, score = item[0], item[1], item[2]
+        xs = [float(point[0]) / scale for point in box]
+        ys = [float(point[1]) / scale for point in box]
+        lines.append({
+            "bbox": [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))],
+            "text": str(text),
+            "score": round(float(score), 4),
+        })
+    lines.sort(key=lambda line: (line["bbox"][1], line["bbox"][0]))
+    return lines
+
+
 def ocr_page(engine: Any, image_path: Path) -> list[dict[str, Any]]:
     result, _ = engine(str(image_path))
     lines: list[dict[str, Any]] = []
@@ -220,6 +260,7 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
         if image is None:
             raise IngestError(f"Cannot decode rendered page: {image_path}")
         lines = ocr_page(engine, image_path)
+        banner = banner_strip_ocr(engine, image)
         layout = detect_layout(image, [line["bbox"] for line in lines])
 
         record = {
@@ -235,6 +276,7 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
             "displayTruth": "original-pdf-crop",
             "ocrIsIndexOnly": True,
             "ocr": lines,
+            "bannerOcr": banner,
             "layout": {
                 "frameBoxes": layout.frame_boxes,
                 "labelBoxes": layout.label_boxes,
