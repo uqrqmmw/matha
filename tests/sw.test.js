@@ -35,6 +35,27 @@ test('service worker 只刪除本 app prefix 的舊快取', async () => {
   assert.deepEqual(deleted, ['matha-v25', 'matha-v26', 'matha-v27', 'matha-v28']);
 });
 
+test('service worker 回覆實際 APP_STAMP，讓同版首次 claim 不誤報更新', () => {
+  const handlers = {};
+  const messages = [];
+  const context = {
+    console, setTimeout, clearTimeout,
+    self: {
+      addEventListener(type, fn) { handlers[type] = fn; },
+      skipWaiting() { return Promise.resolve(); },
+      clients: { claim() { return Promise.resolve(); } },
+      location: { origin: 'https://example.test' },
+    },
+    caches: { keys: async () => [], delete: async () => true, open: async () => ({ addAll:async()=>{}, put:async()=>{}, match:async()=>undefined }) },
+  };
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8'), context, { filename: 'sw.js' });
+  handlers.message({ data:{ type:'GET_MATHA_APP_VERSION' }, source:{ postMessage(message){ messages.push(message); } } });
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'MATHA_APP_VERSION');
+  assert.match(messages[0].version, /^\d{4}[a-z]$/);
+});
+
 test('首次安裝即預先快取全部 KaTeX woff2 字型，單檔失敗不破壞安裝', async () => {
   const handlers = {};
   const fetched = [];

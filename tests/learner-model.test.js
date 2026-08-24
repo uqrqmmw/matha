@@ -70,18 +70,28 @@ test('學習者模型會進入個人化提示與進度頁，並明示不可取�
 });
 
 test('重建基準只排除舊分析，原始作答與原卷仍保留且舊裝置不能把切點倒退', () => {
-  const { run } = loadApp();
+  const { context, run } = loadApp();
+  context.__app = { innerHTML: '' };
+  context.document.querySelector = (selector) => selector === '#app' ? context.__app : null;
   const result = plain(run(`(() => {
     const q = BANK.find((item) => item.topic === 'num');
     const source = PAPER_SOURCES[0];
     S.attempts = [{ qid:q.id, ok:true, mode:'mixed', d:today(), ts:50 }];
     S.mocks = [{ d:today(), ts:50, score:75, total:100, ok:75, n:100, acc:.75 }];
+    S.corrections = [{ id:'old-batch', name:'舊制系統模考', d:today(), due:today(), mockTs:50, mt:200,
+      entries:[{ qid:q.id, done:false, attempts:0, logs:[] }] }];
     S.paperRuns = [{ id:'old-paper', sourceId:source.id, name:source.title, status:'awaiting-correction', due:today(),
-      createdAt:30, submittedAt:50, score:75, wrongNos:[2], aiGrade:{ gradedAt:50, score:75, wrongNos:[2], questions:[] }, review:{} }];
+      createdAt:30, submittedAt:50, score:75, wrongNos:[2], aiGrade:{ gradedAt:50, adjustedAt:200, score:75, wrongNos:[2], questions:[] }, review:{} }];
     S.learningBaselineResetAt = 100;
     const merged = mergeState({ learningBaselineResetAt:100, attempts:S.attempts }, { learningBaselineResetAt:80, attempts:[] });
+    __app.innerHTML = '';
+    renderCorrections();
+    const correctionHtml = __app.innerHTML;
+    startPaperAnswerReview('old-paper');
     return { evidence:learningEvidenceLedger().length, cal:mockCalibration().count, action:nextBestAction().kind,
-      attempts:S.attempts.length, papers:S.paperRuns.length, history:paperRunHistoryHTML(), mergedCut:merged.learningBaselineResetAt };
+      attempts:S.attempts.length, papers:S.paperRuns.length, history:paperRunHistoryHTML(), corrections:correctionHtml,
+      pending:pendingCorrections().length, signals:Object.keys(diagnosticTopicSignals()).length,
+      blockedDirectStart:!paperReview, mergedCut:merged.learningBaselineResetAt };
   })()`));
   assert.equal(result.evidence, 0);
   assert.equal(result.cal, 0);
@@ -90,6 +100,10 @@ test('重建基準只排除舊分析，原始作答與原卷仍保留且舊裝�
   assert.equal(result.papers, 1);
   assert.match(result.history, /基準重置前，僅保留卷面/);
   assert.doesNotMatch(result.history, /75\/100/);
+  assert.doesNotMatch(result.corrections, /75\/100|第一次模考|舊制系統模考/);
+  assert.equal(result.pending, 0, '舊批次後續同步時間變新，也不能復活成待訂正');
+  assert.equal(result.signals, 0, '舊批次後續同步時間變新，也不能污染弱項模型');
+  assert.equal(result.blockedDirectStart, true);
   assert.equal(result.mergedCut, 100);
 });
 

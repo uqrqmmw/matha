@@ -1091,7 +1091,23 @@ test('低信心詳批可顯示不確定說明，但不得寫入錯因或在卷�
   assert.equal(result.confidence, 'low');
   assert.equal(result.errorKind, null);
   assert.deepEqual(result.marks, []);
-  assert.equal(result.firstError, '可能移項錯誤');
+  assert.equal(result.firstError, null);
+  assert.equal(result.firstErrorEvidence, null);
+});
+
+test('模型自稱高信心但沒有卷面逐字證據時，一律降級且不得建立第一錯步標籤', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => paperNormalizeAiDetail(PAPER_SOURCES[0], 2, {
+    readable:true, confidence:'high', read:'看得到若干算式', goodWork:['第一行代入可能正確'],
+    firstErrorEvidence:null, firstError:'模型推測第二行符號錯誤', errorKind:'符號', whyWrong:'推測說明',
+    repair:'改符號', explanation:'完整解法仍可提供', solution:['重新計算'], nextTime:'檢查正負號',
+    marks:[{ box:[.1,.2,.3,.4], label:'第一個錯誤' }],
+  }, 'gpt-5.5'))()`));
+  assert.equal(result.confidence, 'low');
+  assert.equal(result.firstErrorEvidence, null);
+  assert.equal(result.firstError, null);
+  assert.equal(result.errorKind, null);
+  assert.deepEqual(result.marks, []);
 });
 
 test('隔日訂正入口明確說明在紅筆卷上作答，不再沿用唯讀盲訂正文案', () => {

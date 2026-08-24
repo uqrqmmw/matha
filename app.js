@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825j'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825k'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3121,11 +3121,18 @@ function learningRecordCurrent(...timestamps) {
   return !baseline || maxLearningTs(timestamps) >= baseline;
 }
 function paperRunMetricTs(run) {
-  const grade = run && run.aiGrade;
-  return maxLearningTs(grade && grade.adjustedAt, grade && grade.gradedAt, run && run.submittedAt, run && run.createdAt);
+  /* 是否屬於新基準看實際交卷／開卷時間；後續重批、人工覆核與同步不能讓舊卷復活。 */
+  return Number(run && (run.submittedAt || run.createdAt)) || 0;
 }
 function paperRunInCurrentBaseline(run) {
   return !!run && learningRecordCurrent(paperRunMetricTs(run));
+}
+function correctionBatchMetricTs(batch) {
+  /* mockTs 是這批題真正產生的時間；mt 只是後續訂正／跨裝置合併時間，不能讓重置前批次復活。 */
+  return Number(batch && (batch.mockTs || batch.createdAt || batch.ts || batch.mt)) || 0;
+}
+function correctionBatchInCurrentBaseline(batch) {
+  return !!batch && learningRecordCurrent(correctionBatchMetricTs(batch));
 }
 function learningBaselineDate() {
   const ts = learningBaselineStart();
@@ -3191,7 +3198,7 @@ function extMockCalibrationEligible(record) {
   return record.questions == null || Number(record.questions) === 20;
 }
 function pendingCorrections() {
-  return (S.corrections || []).filter((batch) => batch && learningRecordCurrent(batch.mt, batch.mockTs) && Array.isArray(batch.entries) && batch.entries.some((x) => !x.done));
+  return (S.corrections || []).filter((batch) => correctionBatchInCurrentBaseline(batch) && Array.isArray(batch.entries) && batch.entries.some((x) => !x.done));
 }
 function dueCorrections() {
   return pendingCorrections().filter((batch) => String(batch.due || '') <= today());
@@ -3273,8 +3280,8 @@ function diagnosticTopicSignals() {
     const q = bankById(entry && entry.qid); if (!learningRecordCurrent(entry && entry.ts) || !q || ['works', 'different', 'obvious'].includes(entry.outcome)) continue;
     row(q.topic).noDirection++;
   }
-  for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
-    const q = bankById(entry && entry.qid); if (!learningRecordCurrent(entry && entry.mt, batch && batch.mt, batch && batch.mockTs) || !q) continue;
+  for (const batch of S.corrections || []) for (const entry of correctionBatchInCurrentBaseline(batch) && batch.entries || []) {
+    const q = bankById(entry && entry.qid); if (!q) continue;
     const topic = row(q.topic), level = correctionLevel(entry);
     if (!entry.done) topic.open++;
     else if (level === 2) topic.l2++;
@@ -3351,8 +3358,7 @@ function learningSignalIndex() {
       if (!row.lastObviousD || String(entry.d || '') > row.lastObviousD) row.lastObviousD = entry.d || '';
     } else if (!['works', 'different'].includes(entry.outcome)) { row.noDirection++; topic.noDirection++; }
   }
-  for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
-    if (!learningRecordCurrent(entry && entry.mt, batch && batch.mt, batch && batch.mockTs)) continue;
+  for (const batch of S.corrections || []) for (const entry of correctionBatchInCurrentBaseline(batch) && batch.entries || []) {
     const q = bankById(entry.qid); if (!q) continue;
     const row = qrow(q.id), topic = trow(q.topic), level = correctionLevel(entry);
     if (!entry.done) { row.open++; topic.open++; }
@@ -3444,7 +3450,7 @@ function learningEvidenceLedger() {
       errorKind:learningErrorClass(row.ok ? '' : row.originErr), supportLevel:guided ? 3 : null,
     });
   }
-  for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
+  for (const batch of S.corrections || []) for (const entry of correctionBatchInCurrentBaseline(batch) && batch.entries || []) {
     if (!entry) continue;
     const q = bankById(entry.qid); if (!q) continue;
     /* 未作答題不會進 attempts，仍必須成為一次真實的考場證據。 */
@@ -3855,7 +3861,7 @@ function advFrom(v) {
 function updateRetentionCheckpoint(q, ok, mode) {
   if (!q || mode === 'correction') return;
   const candidates = [];
-  for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
+  for (const batch of S.corrections || []) for (const entry of correctionBatchInCurrentBaseline(batch) && batch.entries || []) {
     const level = correctionLevel(entry);
     if (entry && entry.qid === q.id && entry.done && level >= 2 && !entry.retentionPassed && entry.retentionDue) {
       candidates.push({ batch, entry });
@@ -7668,7 +7674,9 @@ function correctionCounts(batch) {
   return out;
 }
 function renderCorrections() {
-  const all = (S.corrections || []).slice().sort((a, b) => Number(b.mockTs || 0) - Number(a.mockTs || 0));
+  /* 重建學習基準後，舊批次只保留在原始歷史，不再佔據「今天要做」或三級統計。 */
+  const all = (S.corrections || []).filter(correctionBatchInCurrentBaseline)
+    .slice().sort((a, b) => Number(b.mockTs || 0) - Number(a.mockTs || 0));
   const pending = all.filter((batch) => (batch.entries || []).some((x) => !x.done));
   const due = pending.filter((b) => String(b.due || '') <= today()).sort((a, b) => String(a.due).localeCompare(String(b.due)));
   const waiting = pending.filter((b) => String(b.due || '') > today());
@@ -7682,7 +7690,7 @@ function renderCorrections() {
     <p>第一級 ${c.l1} 題；其餘 ${c.open} 題的<b>答案與詳解鎖到 ${batch.due}</b>，今天不訂正。</p><div class="actr"><button class="btn" onclick="renderTeacherReport('${jsA(batch.id)}')">查看目前紀錄</button></div></div>`; }).join('');
   const completed = all.filter((batch) => (batch.entries || []).length && (batch.entries || []).every((x) => x.done)).slice(0, 6);
   const completedCards = completed.map((batch) => { const c = correctionCounts(batch); return `<div class="report-row"><span>${batch.d}${c.retentionDue ? `｜保留重測到期 ${c.retentionDue}` : c.retentionPending ? `｜等待保留重測 ${c.retentionPending}` : ''}</span><b>第一級 ${c.l1}｜第二級 ${c.l2}｜第三級 ${c.l3}</b><button class="btn sm" onclick="renderTeacherReport('${jsA(batch.id)}')">老師檢視</button></div>`; }).join('');
-  const sourceWaiting = (S.paperRuns || []).filter((run) => run && ['awaiting-key', 'awaiting-correction'].includes(run.status))
+  const sourceWaiting = (S.paperRuns || []).filter((run) => run && paperRunInCurrentBaseline(run) && ['awaiting-key', 'awaiting-correction'].includes(run.status))
     .sort((a, b) => Number(b.submittedAt || 0) - Number(a.submittedAt || 0));
   const sourceWaitingCards = sourceWaiting.map((run) => {
     const dueNow = String(run.due || '') <= today();
@@ -7692,7 +7700,7 @@ function renderCorrections() {
       <div class="actr"><button class="btn" onclick="openPaperGradeResult('${jsA(run.id)}')">查看第一次紅筆卷／輸出 PDF</button><button class="btn" onclick="renderPaperTeacherReport('${jsA(run.id)}')">給老師看逐題紀錄</button>${dueNow ? `<button class="btn primary" onclick="startPaperAnswerReview('${jsA(run.id)}')">在紅筆卷上開始訂正</button>` : ''}</div>
     </div>`;
   }).join('');
-  const sourceCompleted = (S.paperRuns || []).filter((run) => run && run.status === 'completed' && run.aiGrade)
+  const sourceCompleted = (S.paperRuns || []).filter((run) => run && paperRunInCurrentBaseline(run) && run.status === 'completed' && run.aiGrade)
     .sort((a, b) => Number(b.submittedAt || 0) - Number(a.submittedAt || 0)).slice(0, 8);
   const sourceCompletedCards = sourceCompleted.map((run) => {
     const levels = paperRunLevelCounts(run);
@@ -7890,11 +7898,14 @@ ${learnerContextForAi(learnerTopic)}
 }
 function paperNormalizeAiDetail(source, no, raw, model) {
   const text = (value, max) => String(value == null ? '' : value).trim().slice(0, max);
-  const confidence = ['high', 'medium', 'low'].includes(raw && raw.confidence) ? raw.confidence : 'low';
+  const rawConfidence = ['high', 'medium', 'low'].includes(raw && raw.confidence) ? raw.confidence : 'low';
   const readable = !!raw && raw.readable !== false;
+  const firstErrorEvidence = !raw || raw.firstErrorEvidence == null ? null : text(raw.firstErrorEvidence, 260);
   const firstError = !raw || raw.firstError == null ? null : text(raw.firstError, 360);
-  const trustedDiagnosis = readable && confidence !== 'low' && !!firstError;
-  const marks = (confidence === 'high' && trustedDiagnosis && Array.isArray(raw && raw.marks) ? raw.marks : []).slice(0, 2).map((mark) => {
+  /* 沒有逐字卷面證據，就算模型自稱高信心，也不得把推測當成「第一錯步」寫入學生模型。 */
+  const trustedDiagnosis = readable && rawConfidence !== 'low' && !!firstErrorEvidence && !!firstError;
+  const confidence = trustedDiagnosis ? rawConfidence : 'low';
+  const marks = (confidence === 'high' && Array.isArray(raw && raw.marks) ? raw.marks : []).slice(0, 2).map((mark) => {
     const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
     if (box.length !== 4 || box.some((n) => !Number.isFinite(n))) return null;
     return { box: box.map((n) => Math.max(0, Math.min(1, n))), label: '第一個錯誤' };
@@ -7907,8 +7918,8 @@ function paperNormalizeAiDetail(source, no, raw, model) {
     confidence,
     read: text(raw && raw.read, 800),
     goodWork: readable && Array.isArray(raw && raw.goodWork) ? raw.goodWork.slice(0, 5).map((row) => text(row, 220)).filter(Boolean) : [],
-    firstErrorEvidence: !raw || raw.firstErrorEvidence == null ? null : text(raw.firstErrorEvidence, 260),
-    firstError,
+    firstErrorEvidence: trustedDiagnosis ? firstErrorEvidence : null,
+    firstError: trustedDiagnosis ? firstError : null,
     errorKind: trustedDiagnosis && raw.errorKind != null ? text(raw.errorKind, 80) : null,
     whyWrong: text(raw && raw.whyWrong, 700),
     repair: text(raw && raw.repair, 360),
@@ -7922,7 +7933,7 @@ function paperNormalizeAiDetail(source, no, raw, model) {
 async function startPaperAnswerReview(runId) {
   const run = (S.paperRuns || []).find((row) => row && row.id === runId);
   const source = run && paperSourceById(run.sourceId);
-  if (!run || !source || String(run.due || '') > today()) return;
+  if (!run || !source || !paperRunInCurrentBaseline(run) || String(run.due || '') > today()) return;
   const wrongNos = (run.wrongNos || []).filter((no) => Number.isInteger(no) && no >= 1 && no <= source.questions);
   if (!wrongNos.length) { run.status = 'completed'; run.mt = Date.now(); save(); renderCorrections(); return; }
   run.review = run.review || {};
@@ -8648,7 +8659,7 @@ function learnerModelCard() {
   </section>`;
 }
 function renderStats() {
-  const entries = (S.corrections || []).filter((batch) => learningRecordCurrent(batch && batch.mt, batch && batch.mockTs)).flatMap((b) => b.entries || []);
+  const entries = (S.corrections || []).filter(correctionBatchInCurrentBaseline).flatMap((b) => b.entries || []);
   const done = entries.filter((x) => x.done);
   const levels = { l1: done.filter((x) => correctionLevel(x) === 1).length, l2: done.filter((x) => correctionLevel(x) === 2).length, l3: done.filter((x) => correctionLevel(x) === 3).length };
   for (const run of (S.paperRuns || []).filter((item) => item && paperRunInCurrentBaseline(item) && item.aiGrade && item.status !== 'discarded')) {
@@ -8711,10 +8722,12 @@ function packCard() {
     return `<tr><td>${escH(src)}${off ? ' <span class="badc">（停用中）</span>' : ''}</td><td>${p.usable} 題可用${p.pendingVisual ? `<br><span class="warnc">${p.pendingVisual} 題待補圖</span>` : ''}</td><td>${p.units.size} 單元</td><td class="dim">易${p.d[1] || 0}/中${p.d[2] || 0}/難${p.d[3] || 0}</td>
       <td>${p.real ? `<button class="btn sm" onclick="togglePack('${jsA(src)}')">${off ? '啟用' : '停用'}</button>` : ''}</td></tr>`;
   }).join('');
-  return `<div class="card"><h2>外部題庫 <span class="dim">收錄 ${extBankArr().length} 題｜目前可用 ${activeExtIds.size} 題${missingVisualSkipped ? `｜待補圖 ${missingVisualSkipped} 題` : ''}${splitOn() ? '（已與作答狀態分家）' : ''}</span></h2>
+  const sourceLedger = `已下載來源清冊 ${extBankArr().length} 題｜目前可用 ${activeExtIds.size} 題（來源清冊口徑）${missingVisualSkipped ? `｜待補圖 ${missingVisualSkipped} 題（暫停）` : ''}`;
+  return `<div class="card"><h2>題庫健康</h2>
     ${curatedLine}
-    ${contentTableMissing ? '<p class="dim fs13">💡 到 Supabase Dashboard 跑一次 schema.sql 的 content_packs 段後，題庫將與作答狀態分家：每次作答不再整包上傳、20+ 本講義也放得下。</p>' : ''}
-    <div class="tblwrap"><table class="tbl"><tr><th>來源</th><th>題數</th><th>覆蓋</th><th>難度分布</th><th></th></tr>${rows}</table></div></div>`;
+    ${contentTableMissing ? '<p class="dim fs13">內容表尚未完成分離；系統目前仍可使用，但大量題包同步會較重。</p>' : ''}
+    <details><summary>進階：來源題包與停用設定</summary><p class="dim fs13">${sourceLedger}。這是相容舊匯入格式的來源清冊；上方「內建／私有／目前可用／有圖題待補」才是正式出題口徑。</p>
+    <div class="tblwrap"><table class="tbl"><tr><th>來源</th><th>題數</th><th>覆蓋</th><th>難度分布</th><th></th></tr>${rows}</table></div></details></div>`;
 }
 function togglePack(src) {
   S.packOff = Object.assign(Object.create(null), S.packOff); // src 是匯入欄位：null-proto 讓 "__proto__" 只是普通 key（同 packCard）

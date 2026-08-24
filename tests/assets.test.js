@@ -43,6 +43,16 @@ test('KaTeX 的 woff2 離線字型完整，PWA theme color 一致', () => {
   assert.equal(manifest.theme_color, meta[1]);
 });
 
+test('GitHub Pages 以 meta CSP 與 no-referrer 補足可控的瀏覽器安全邊界', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  assert.match(html, /<meta name="referrer" content="no-referrer">/);
+  assert.match(html, /http-equiv="Content-Security-Policy"/);
+  assert.match(html, /object-src 'none'/);
+  assert.match(html, /frame-src 'none'/);
+  assert.match(html, /connect-src 'self' https:\/\/rrihysbxhsbxjteqmtdu\.supabase\.co wss:\/\/rrihysbxhsbxjteqmtdu\.supabase\.co/);
+  assert.doesNotMatch(html, /script-src[^;]*https?:\/\/(?!rrihysbxhsbxjteqmtdu\.supabase\.co)/);
+});
+
 test('原版模考掃描不進公開站資產或離線快取', () => {
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
@@ -81,6 +91,9 @@ test('版本戳單一來源：APP_VER、index.html ?v=、sw.js APP_STAMP 完全�
   assert.ok(swStamp, '找不到 sw.js APP_STAMP');
   assert.equal(swStamp[1], appVer[1], 'sw.js APP_STAMP 必須等於 app.js APP_VER（否則快取名不會換、離線裝置拿到半新半舊）');
   assert.match(sw, /const CACHE = CACHE_PREFIX \+ APP_STAMP/, '快取名必須由 APP_STAMP 推導，不得手寫死');
+  assert.match(html, /event\.data\.type !== 'MATHA_APP_VERSION'/, '頁面只能在 SW 回報不同版本時顯示更新提示');
+  assert.match(html, /event\.data\.version[\s\S]*pageVersion[\s\S]*showUpdateBar/, '同版首次 claim 不得誤顯示更新提示');
+  assert.match(sw, /GET_MATHA_APP_VERSION[\s\S]*MATHA_APP_VERSION[\s\S]*APP_STAMP/, 'SW 必須可回覆自己實際控制的版本');
   // index.html 引用的每個本機 js/css 都要檢查——不能只驗「已經有 ?v= 的那幾個」，
   // 否則新增一個沒帶戳的資產會無聲通過（GitHub Pages max-age=600 → 半新半舊 10 分鐘）
   const localAssets = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]

@@ -364,7 +364,7 @@ export function taipeiDate() {
 }
 
 /* 逐題詳解開放判定（純函式）：data＝該使用者 app_state.data。
-   規則：run 與該題訂正狀態存在，且已到隔天（due ≤ 台北今天）。前端另記查看時間；不再強迫先保存失敗紀錄。 */
+   規則：run 與該題訂正狀態存在、已到隔天，且雲端已保存至少一次真實重想。 */
 export function paperDetailGateAllows(
   data: Record<string, unknown> | undefined,
   runId: string,
@@ -390,7 +390,14 @@ export function paperDetailGateAllows(
   const state = review[String(questionNo)] as
     | Record<string, unknown>
     | undefined;
-  return !!state;
+  if (!state) return false;
+  const attempts = Number(state.attempts) || 0;
+  const logs = Array.isArray(state.logs) ? state.logs : [];
+  const hasRetryLog = logs.some((log) =>
+    !!log && typeof log === "object" &&
+    String((log as Record<string, unknown>).kind || "") === "retry"
+  );
+  return attempts >= 1 && hasRetryLog;
 }
 
 export function outputText(response: Record<string, unknown>) {

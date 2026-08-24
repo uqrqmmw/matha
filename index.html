@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- 移除 maximum-scale/user-scalable：讓 Android 能雙指放大密集數學/小灰字；畫線區各自 touch-action:none 防寫字時縮放衝突 -->
-
+  <meta name="referrer" content="no-referrer">
+  <!-- GitHub Pages 不能自訂回應標頭；以 meta CSP 限制外部程式、框架與連線來源。inline 僅保留給既有事件屬性／樣式。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://rrihysbxhsbxjteqmtdu.supabase.co; font-src 'self' data:; connect-src 'self' https://rrihysbxhsbxjteqmtdu.supabase.co wss://rrihysbxhsbxjteqmtdu.supabase.co; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; upgrade-insecure-requests">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#75675c">
   <title>數A 特訓</title>
@@ -12,7 +14,7 @@
   <link rel="icon" href="icon-192.png?v=4">
   <link rel="apple-touch-icon" href="icon-192.png?v=4">
   <link rel="stylesheet" href="vendor/katex/katex.min.css"><!-- KaTeX 0.16.11 自架同源：離線可用（斷網也能排版數學）＋免 CDN 供應鏈風險。字型在 vendor/katex/fonts/ -->
-  <link rel="stylesheet" href="style.css?v=0825j">
+  <link rel="stylesheet" href="style.css?v=0825k">
 </head>
 <body>
   <!-- 自製單色 SVG 圖示系統：全站只使用這組線性圖示，不載圖庫、不顯示 emoji。 -->
@@ -75,10 +77,10 @@
   <script src="vendor/supabase.js"></script><!-- 自架同源（原 CDN @2）：認證庫不再依賴 CDN，杜絕供應鏈竄改讀走密碼，且離線可用。版本 2.110.2 UMD，更新時重新下載 dist/umd/supabase.js -->
   <script defer src="vendor/katex/katex.min.js"></script>
   <script defer src="vendor/katex/auto-render.min.js"></script>
-  <script src="bank.js?v=0825j"></script>
-  <script src="practice-bank.js?v=0825j"></script>
-  <script src="textbook-catalog.js?v=0825j"></script>
-  <script src="app.js?v=0825j"></script>
+  <script src="bank.js?v=0825k"></script>
+  <script src="practice-bank.js?v=0825k"></script>
+  <script src="textbook-catalog.js?v=0825k"></script>
+  <script src="app.js?v=0825k"></script>
   <script>
     // PWA：正式站註冊 service worker（artifact/file 環境會靜默跳過）
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
@@ -87,9 +89,8 @@
         // 長駐 PWA 不會自己拿到新 app.js：回前景時主動檢查更新
         document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') reg.update().catch(function () {}); });
       }).catch(function () {});
-      // sw.js 安裝時已 skipWaiting＋claim→新版啟用即觸發 controllerchange。非首裝時提示重載，不強制打斷作答
-      navigator.serviceWorker.addEventListener('controllerchange', function () {
-        if (!hadController || document.getElementById('sw-update')) return;
+      function showUpdateBar() {
+        if (document.getElementById('sw-update')) return;
         var bar = document.createElement('div');
         bar.id = 'sw-update';
         bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#51483f;color:#fff;padding:11px 18px;display:flex;gap:14px;align-items:center;justify-content:center;font:14px/1.4 system-ui,sans-serif;box-shadow:0 -2px 18px rgba(50,45,40,.16)';
@@ -100,6 +101,16 @@
         btn.onclick = function () { btn.textContent = '更新中…'; location.reload(); };
         bar.appendChild(btn);
         document.body.appendChild(bar);
+      }
+      // 只在控制本頁的 SW 真的比目前 app.js 新時提示；同版首次 claim 不再誤報。
+      navigator.serviceWorker.addEventListener('message', function (event) {
+        if (!hadController || !event.data || event.data.type !== 'MATHA_APP_VERSION') return;
+        var pageVersion = typeof APP_VER === 'undefined' ? '' : String(APP_VER);
+        if (String(event.data.version || '') !== pageVersion) showUpdateBar();
+      });
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        var controller = navigator.serviceWorker.controller;
+        if (controller) controller.postMessage({ type: 'GET_MATHA_APP_VERSION' });
       });
     }
   </script>

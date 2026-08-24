@@ -143,8 +143,8 @@ test('逐題詳解由後端驗證已到隔日且題目屬於該次訂正，不�
   assert.match(proxy, /paperDetailGateAllows\(data, runId, questionNo, taipeiDate\(\)\)/, '隔日判定必須以台北時區為準（改成 UTC 會讓解鎖時刻偏移最多 8 小時）');
   assert.match(proxy, /String\(run\.due \|\| ""\) > today/);
   assert.match(proxy, /const state = review\[String\(questionNo\)\]/);
-  assert.match(proxy, /return !!state/);
-  assert.doesNotMatch(proxy, /Number\(state\.attempts\) > 0 \|\| logs\.length > 0/);
+  assert.match(proxy, /attempts >= 1 && hasRetryLog/);
+  assert.match(proxy, /String\(\(log as Record<string, unknown>\)\.kind \|\| ""\) === "retry"/);
   assert.match(app, /context:\s*\{[\s\S]*paperRunId:[\s\S]*questionNo: no/);
   const detailed = app.match(/async function paperReviewDetailed[\s\S]*?\n\}/)?.[0] || '';
   const compat = app.match(/async function paperReviewDetailCallCompat[\s\S]*?\n\}/)?.[0] || '';

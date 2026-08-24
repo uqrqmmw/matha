@@ -131,29 +131,39 @@ const gateData = (due: string, state: Record<string, unknown> | undefined) => ({
   paperRuns: [{ id: "run-1", due, review: state ? { "3": state } : {} }],
 });
 
-Deno.test("paper_detail 解鎖：隔日訂正狀態存在就可逐題查看", () => {
+Deno.test("paper_detail 解鎖：隔日且至少一次真實重想已保存", () => {
   assert(
     paperDetailGateAllows(
-      gateData("2026-07-17", { attempts: 1 }),
+      gateData("2026-07-17", { attempts: 1, logs: [{ kind: "retry" }] }),
       "run-1",
       3,
       "2026-07-18",
     ),
   );
   assert(
-    paperDetailGateAllows(
+    !paperDetailGateAllows(
       gateData("2026-07-18", { attempts: 0, logs: [] }),
       "run-1",
       3,
       "2026-07-18",
     ),
+    "空白訂正狀態不能解鎖",
+  );
+  assert(
+    !paperDetailGateAllows(
+      gateData("2026-07-18", { attempts: 1, logs: [] }),
+      "run-1",
+      3,
+      "2026-07-18",
+    ),
+    "只有計數、沒有 retry log 不能解鎖",
   );
 });
 
 Deno.test("paper_detail 解鎖：未到期、題目狀態或 run 不存在、題號超界都擋", () => {
   assert(
     !paperDetailGateAllows(
-      gateData("2026-07-19", { attempts: 1 }),
+      gateData("2026-07-19", { attempts: 1, logs: [{ kind: "retry" }] }),
       "run-1",
       3,
       "2026-07-18",
@@ -171,7 +181,7 @@ Deno.test("paper_detail 解鎖：未到期、題目狀態或 run 不存在、題
   );
   assert(
     !paperDetailGateAllows(
-      gateData("2026-07-17", { attempts: 1 }),
+      gateData("2026-07-17", { attempts: 1, logs: [{ kind: "retry" }] }),
       "run-2",
       3,
       "2026-07-18",
@@ -180,7 +190,7 @@ Deno.test("paper_detail 解鎖：未到期、題目狀態或 run 不存在、題
   );
   assert(
     !paperDetailGateAllows(
-      gateData("2026-07-17", { attempts: 1 }),
+      gateData("2026-07-17", { attempts: 1, logs: [{ kind: "retry" }] }),
       "run-1",
       21,
       "2026-07-18",
