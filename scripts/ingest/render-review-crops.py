@@ -28,7 +28,7 @@ from typing import Any
 
 import fitz
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CROP_DPI = 300
 PAD = 8          # review-dpi pixels of breathing room around a region

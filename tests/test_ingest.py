@@ -7,6 +7,7 @@ printed evidence, and a printed page number being silently wrong.
 """
 
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -16,12 +17,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, REPO_ROOT / "scripts" / "ingest" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
+    # @dataclass resolves annotations through sys.modules, so register first.
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
 bookmap = _load("build-book-map")
 crops = _load("render-review-crops")
+indexer = _load("index-pages")
 
 WIDTH, HEIGHT = 1038, 1500
 
@@ -33,7 +37,7 @@ def line(text, x0, y0, x1=None, y1=None, score=0.9):
 
 def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=()):
     return {
-        "schema": 2, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
+        "schema": 4, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
         "dpi": 150, "width": WIDTH, "height": HEIGHT, "pdfSha256": "0" * 64,
         "imageSha256": "1" * 64, "ocr": list(ocr), "bannerOcr": list(banner_ocr),
         "layout": {"frameBoxes": [list(b) for b in frame_boxes],
@@ -48,7 +52,7 @@ def context(section="body", tier=None, tier_evidence=None, type_headers=(), prin
     return {"slug": "line-inequality", "bookId": "matha-114-line-inequality",
             "printedPage": printed, "chapter": chapter, "section": section,
             "tier": tier, "tierEvidence": tier_evidence, "typeHeaders": list(type_headers),
-            "blockIndex": block_index}
+            "blockIndex": block_index, "carriedType": ("unclassified", "none")}
 
 
 def segment(sample, in_drill=False, **kwargs):
@@ -129,6 +133,46 @@ class AnswerSeparation(unittest.TestCase):
         self.assertEqual(questions[0]["solutionPdfPage"], 61)
 
 
+class RuledAnswerTags(unittest.TestCase):
+    """OCR loses the word inside a 解答 box often enough that the box itself
+    has to count — but only when it really is a box."""
+
+    def test_a_ruled_tag_ocr_missed_still_cuts_the_question(self):
+        sample = page(60, [
+            line("Ex75. 考慮坐標平面上的直線 L", 82, 126),
+            line("(1)(3)(5)", 207, 865, 289, 892),
+            line("解析", 127, 895, 181, 924),
+        ], label_boxes=[[127, 863, 190, 893], [127, 895, 190, 925]])
+        records, _ = segment(sample)
+        self.assertEqual(records[0]["regions"]["answerBoundaryY"], 863)
+        self.assertEqual(records[0]["regions"]["answerBoundarySource"], "ruled-label-box")
+        self.assertNotIn("(1)(3)(5)", records[0]["ocrIndex"]["stem"])
+        region, refusal = crops.question_region(records[0], WIDTH, HEIGHT)
+        self.assertIsNone(refusal)
+        self.assertLess(region[3], 863)
+
+    def test_a_box_near_an_ocr_tag_is_not_counted_twice(self):
+        sample = page(61, [
+            line("Ex76. 求斜率", 82, 126),
+            line("解析", 127, 895, 181, 924),
+        ], label_boxes=[[127, 893, 190, 925]])
+        events = bookmap.page_events(sample, False)
+        tags = [event for event in events if event["kind"] == "answer-tag"]
+        self.assertEqual(len(tags), 1)
+
+    def test_only_a_four_sided_box_counts_as_a_ruled_tag(self):
+        import numpy as np
+        ink = np.zeros((120, 240), np.uint8)
+        ink[20:50, 30:100] = 0
+        for y in (20, 49):
+            ink[y, 30:100] = 255
+        for x in (30, 99):
+            ink[20:50, x] = 255
+        ink[80, 30:100] = 255  # a bare fraction bar
+        self.assertTrue(indexer.is_closed_box(ink, [30, 20, 100, 50]))
+        self.assertFalse(indexer.is_closed_box(ink, [30, 66, 100, 96]))
+
+
 class FigureQuestions(unittest.TestCase):
     def test_figure_inside_the_question_span_is_kept(self):
         sample = page(63, [
@@ -157,6 +201,21 @@ class FigureQuestions(unittest.TestCase):
         records, _ = segment(sample)
         self.assertEqual(records[0]["regions"]["figures"], [])
         self.assertIn("figure-referenced-but-missing", records[0]["flags"])
+
+    def test_axis_labels_are_pulled_back_into_the_figure(self):
+        """Axis names are OCR text, so the raw ink region clips the arrows off."""
+        sample = page(67, [
+            line("1. （ ）如圖所示，試選出正確配置", 60, 80),
+            line("y", 440, 140, 452, 160),
+            line("x", 575, 260, 588, 280),
+            line("O", 455, 285, 470, 305),
+            line("（A）L1: x+5y-7=0", 290, 430, 700, 458),
+        ], non_text=[[330, 165, 560, 400]])
+        records, _ = segment(sample, in_drill=True, section="drill")
+        figure = records[0]["regions"]["figures"][0]
+        self.assertLessEqual(figure[1], 140, "the y label must be inside the crop")
+        self.assertGreaterEqual(figure[2], 588, "the x axis arrow must be inside the crop")
+        self.assertLess(figure[3], 430, "the option row must stay out of the figure")
 
     def test_figure_candidates_record_unknown_handwriting_safety(self):
         sample = page(66, [line("Ex9. 如圖", 82, 126), line("解析", 127, 900, 181, 928)],
@@ -288,6 +347,12 @@ class PageClassification(unittest.TestCase):
         ])
         self.assertEqual(bookmap.classify_page(sample, [], False), "divider")
 
+    def test_a_sparse_page_after_a_drill_banner_is_not_a_drill_page(self):
+        """The back cover falls inside the last drill block's tier state."""
+        cover = page(206, [line("VICTOR+", 430, 1160), line("得勝者文教", 450, 1210),
+                           line("02-2314-5818", 440, 1300), line("台北市中山南路二巷5號", 380, 1345)])
+        self.assertEqual(bookmap.classify_page(cover, [], True), "divider")
+
     def test_numbered_items_outside_a_drill_block_are_not_questions(self):
         """Solution steps are numbered too; only a drill block makes them
         questions, otherwise every 解析 line would become a fake question."""
@@ -332,6 +397,40 @@ class CropSeparation(unittest.TestCase):
     def test_crop_output_inside_the_repository_is_refused(self):
         with self.assertRaises(crops.CropError):
             crops.ensure_outside_repo(REPO_ROOT / "crops")
+
+
+class ChapterTitles(unittest.TestCase):
+    def test_a_chapter_title_opens_its_page(self):
+        opener = page(3, [
+            line("斜率與直線方程式", 346, 139, 690, 176),
+            line("斜率的概念", 76, 191, 206, 221),
+        ])
+        self.assertEqual(bookmap.collect_headings(opener)[0], "斜率與直線方程式")
+
+    def test_a_centred_formula_mid_page_is_not_a_chapter_title(self):
+        """Display formulas in a 解析 are large and centred too; treating them
+        as titles renamed the chapter to a fragment of algebra."""
+        middle = page(43, [
+            line("由上式整理可得下列結果", 76, 90),
+            line("創直線會通過點司要保持可表示", 330, 600, 700, 640),
+        ])
+        self.assertIsNone(bookmap.collect_headings(middle)[0])
+
+    def test_a_title_with_digits_or_operators_is_rejected(self):
+        sample = page(44, [line("2x+3y-4=0 的圖形", 330, 100, 700, 140)])
+        self.assertIsNone(bookmap.collect_headings(sample)[0])
+
+
+class TierBannerGeometry(unittest.TestCase):
+    def test_grey_ink_lower_down_the_page_is_not_a_banner(self):
+        """Body pages carry grey-highlighted boxes; accepting any grey ink in
+        the top strip opened phantom drill blocks in mid-chapter."""
+        body = page(10, [], banner_ocr=[line("Enlightenment example", 75, 234, 327, 264)])
+        self.assertFalse(bookmap.has_banner_box(body))
+
+    def test_a_tag_in_the_top_left_corner_counts_as_a_banner(self):
+        drill = page(69, [], banner_ocr=[line("基實力成", 67, 70, 300, 103)])
+        self.assertTrue(bookmap.has_banner_box(drill))
 
 
 class RepoSafety(unittest.TestCase):

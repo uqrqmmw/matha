@@ -32,7 +32,7 @@ import cv2
 import fitz
 import numpy as np
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REVIEW_DPI = 150
 BOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
@@ -95,6 +95,31 @@ def _rect_list(contours: Any) -> list[tuple[int, int, int, int]]:
     return out
 
 
+def is_closed_box(ink: np.ndarray, rect: list[int], coverage: float = 0.55) -> bool:
+    """True when all four edges of ``rect`` are ruled.
+
+    The 解答 / 解析 tags are closed rectangles, and they are the only reliable
+    signal when OCR loses the word inside one.  A fraction bar in the left
+    margin has the same bounding box but only one ruled edge, and trusting it
+    would cut a question short — so every edge has to be there.
+    """
+    x0, y0, x1, y1 = rect
+    if x1 - x0 < 6 or y1 - y0 < 6:
+        return False
+    band = 3
+    top = ink[y0:y0 + band, x0:x1]
+    bottom = ink[max(y0, y1 - band):y1, x0:x1]
+    left = ink[y0:y1, x0:x0 + band]
+    right = ink[y0:y1, max(x0, x1 - band):x1]
+    edges = (
+        (top > 0).any(axis=0).mean() if top.size else 0.0,
+        (bottom > 0).any(axis=0).mean() if bottom.size else 0.0,
+        (left > 0).any(axis=1).mean() if left.size else 0.0,
+        (right > 0).any(axis=1).mean() if right.size else 0.0,
+    )
+    return all(edge >= coverage for edge in edges)
+
+
 def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResult:
     """Find ruled rectangles and ink that no OCR line claims.
 
@@ -121,23 +146,39 @@ def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResul
             frame_boxes.append([x0, y0, x1, y1])
 
     # Small ruled tags live in the left margin and are much smaller than a frame.
-    small_rules = cv2.morphologyEx(
+    # They need their own kernels: the frame-sized vertical kernel is 50 px tall
+    # and simply erases the 30 px sides of a 解答 tag, which is how the tag went
+    # undetected and its answer ended up inside a rendered question.  The height
+    # ceiling is generous because 解答 and 解析 stack into one merged contour —
+    # its top is still the boundary we want.
+    tag_horiz = cv2.morphologyEx(
         ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, width // 90), 1))
     )
-    small_rules = cv2.dilate(cv2.bitwise_or(small_rules, vert), np.ones((3, 3), np.uint8), iterations=1)
-    contours, _ = cv2.findContours(small_rules, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    tag_vert = cv2.morphologyEx(
+        ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, height // 100)))
+    )
+    tag_rules = cv2.dilate(cv2.bitwise_or(tag_horiz, tag_vert), np.ones((3, 3), np.uint8), iterations=1)
+    contours, _ = cv2.findContours(tag_rules, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     label_boxes: list[list[int]] = []
     for x0, y0, x1, y1 in _rect_list(contours):
         w, h = x1 - x0, y1 - y0
-        if x0 <= 0.30 * width and 0.02 * width <= w <= 0.16 * width and 16 <= h <= 52:
-            label_boxes.append([x0, y0, x1, y1])
+        if x0 <= 0.30 * width and 0.035 * width <= w <= 0.20 * width and 16 <= h <= 130:
+            if is_closed_box(ink, [x0, y0, x1, y1]):
+                label_boxes.append([x0, y0, x1, y1])
 
     text_mask = np.zeros((height, width), np.uint8)
     for x0, y0, x1, y1 in text_boxes:
         cv2.rectangle(text_mask, (max(0, x0 - 6), max(0, y0 - 6)), (min(width, x1 + 6), min(height, y1 + 6)), 255, -1)
 
+    # Subtract only the question-frame borders, not every long line.  A graph's
+    # x-axis is also a long horizontal rule, and removing it left figure crops
+    # with the axis sliced off — exactly the detail a figure question needs.
+    frame_mask = np.zeros((height, width), np.uint8)
+    for x0, y0, x1, y1 in frame_boxes:
+        cv2.rectangle(frame_mask, (x0, y0), (x1 - 1, y1 - 1), 255, 7)
+
     nontext = cv2.bitwise_and(ink, cv2.bitwise_not(text_mask))
-    nontext = cv2.bitwise_and(nontext, cv2.bitwise_not(cv2.dilate(rules, np.ones((5, 5), np.uint8), 1)))
+    nontext = cv2.bitwise_and(nontext, cv2.bitwise_not(frame_mask))
     glued = cv2.dilate(nontext, np.ones((11, 11), np.uint8), iterations=2)
     contours, _ = cv2.findContours(glued, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     nontext_regions: list[list[int]] = []

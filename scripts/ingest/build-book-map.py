@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
@@ -85,6 +85,42 @@ VISUAL_REFERENCE_RE = re.compile(
 
 def _looks_like_choice(text: str) -> bool:
     return any(mark in text for mark in CHOICE_GARBLE)
+
+
+AXIS_LABEL_MAX_CHARS = 8
+AXIS_LABEL_REACH = 25
+
+
+def expand_figure_box(box: list[int], lines: list[dict[str, Any]], limit: list[int]) -> list[int]:
+    """Pull a diagram's own labels back into its bounding box.
+
+    A figure candidate is ink that no OCR line claims, so the axis names, the
+    origin O and the curve labels are cut out of it — which clips the axis
+    arrows off the drawing.  Short OCR lines touching the region are part of
+    the picture and are absorbed; option rows never are, or the crop would
+    swallow the answers to a multiple-choice question.
+    """
+    out = list(box)
+    for _ in range(2):
+        reach = [out[0] - AXIS_LABEL_REACH, out[1] - AXIS_LABEL_REACH,
+                 out[2] + AXIS_LABEL_REACH, out[3] + AXIS_LABEL_REACH]
+        for line in lines:
+            text = norm(line["text"]).strip()
+            if len(text) > AXIS_LABEL_MAX_CHARS or OPTION_RE.match(text) or ANSWER_TAG_RE.match(text):
+                continue
+            bbox = line["bbox"]
+            if bbox[2] <= reach[0] or reach[2] <= bbox[0] or bbox[3] <= reach[1] or reach[3] <= bbox[1]:
+                continue
+            out = [min(out[0], bbox[0]), min(out[1], bbox[1]),
+                   max(out[2], bbox[2]), max(out[3], bbox[3])]
+    for line in lines:
+        if not OPTION_RE.match(norm(line["text"]).strip()):
+            continue
+        top = line["bbox"][1]
+        if out[1] < top < out[3]:
+            out[3] = top - 4
+    return [max(out[0], limit[0]), max(out[1], limit[1]),
+            min(out[2], limit[2]), min(out[3], limit[3])]
 
 
 class MapError(RuntimeError):
@@ -155,8 +191,16 @@ def read_tier_banner(page: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 def has_banner_box(page: dict[str, Any]) -> bool:
-    """A tier banner was printed here even if its text did not survive OCR."""
-    return bool(page.get("bannerOcr"))
+    """A tier banner was printed here even if its text did not survive OCR.
+
+    Geometry matters: the banner is a grey tag flush to the top-left corner.
+    Accepting any grey ink in the top strip turned highlighted body text into
+    phantom drill blocks in the middle of a chapter.
+    """
+    return any(line["bbox"][3] < 0.09 * page["height"]
+               and line["bbox"][0] < 0.15 * page["width"]
+               and 2 <= len(line["text"].strip()) <= 10
+               for line in page.get("bannerOcr") or [])
 
 
 def read_type_headers(page: dict[str, Any]) -> list[tuple[int, str, str]]:
@@ -174,9 +218,18 @@ def read_type_headers(page: dict[str, Any]) -> list[tuple[int, str, str]]:
     return out
 
 
+CHAPTER_TITLE_RE = re.compile(r"^[㐀-鿿][㐀-鿿（）()、·　 ]{2,19}$")
+
+
 def collect_headings(page: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Centred large line = chapter title; flush-left large line = sub-heading."""
-    width = page["width"]
+    """Centred large line near the top = chapter title; flush-left = sub-heading.
+
+    A solution's centred display formula is also large and roughly centred, so
+    the title must additionally sit in the top band and read as plain CJK —
+    otherwise every 解析 page renamed the chapter to a fragment of algebra.
+    """
+    width, height = page["width"], page["height"]
+    top_y = min((line["bbox"][1] for line in page["ocr"]), default=0)
     chapter: tuple[int, str] | None = None
     heading: tuple[int, str] | None = None
     for line in page["ocr"]:
@@ -186,7 +239,9 @@ def collect_headings(page: dict[str, Any]) -> tuple[str | None, str | None]:
         if len(text) < 3 or EXAMPLE_RE.search(text) or NUMBERED_ITEM_RE.match(text):
             continue
         centred = abs((x0 + x1) / 2 - width / 2) / width < 0.12
-        if size >= 32 and centred and (chapter is None or size > chapter[0]):
+        if (size >= 32 and centred and y0 < 0.18 * height and y0 <= top_y + 8
+                and CHAPTER_TITLE_RE.match(text)
+                and (chapter is None or size > chapter[0])):
             chapter = (size, text)
         elif 24 <= size < 34 and x0 < 0.14 * width and (heading is None or y0 < heading[0]):
             heading = (y0, text)
@@ -225,6 +280,17 @@ def page_events(page: dict[str, Any], in_drill_block: bool) -> list[dict[str, An
             if match and not OPTION_RE.match(text):
                 events.append({"y": y0, "kind": "question", "marker": f"q{int(match.group(1))}",
                                "number": int(match.group(1)), "origin": "numbered", "text": text})
+
+    # A ruled 解答 / 解析 tag whose word OCR lost is still a hard boundary.
+    # Losing it once left "解答 (1)(3)(5)" sitting inside a rendered question.
+    tag_ys = [event["y"] for event in events if event["kind"] in {"answer-tag", "answer-item"}]
+    for box in page["layout"]["labelBoxes"]:
+        if box[0] > 0.30 * width:
+            continue
+        if any(abs(box[1] - y) <= 14 for y in tag_ys):
+            continue
+        events.append({"y": box[1], "kind": "answer-tag", "text": "", "source": "ruled-label-box"})
+
     events.sort(key=lambda event: event["y"])
     return events
 
@@ -240,10 +306,12 @@ def classify_page(page: dict[str, Any], events: list[dict[str, Any]], in_drill_b
         return "body"
     if in_drill_block and questions:
         return "drill"
-    if len(page["ocr"]) <= 6 and not page["layout"]["frameBoxes"]:
+    if len(page["ocr"]) < 4 or (len(page["ocr"]) <= 6 and not page["layout"]["frameBoxes"]):
         return "divider"
     if in_drill_block:
-        return "drill"
+        # No question, no answer and barely any text: a cover or spacer that
+        # happens to fall after a drill banner is not a drill page.
+        return "drill" if len(page["ocr"]) >= 8 else "divider"
     return "body" if (page["layout"]["frameBoxes"] or len(page["ocr"]) > 6) else "unknown"
 
 
@@ -275,6 +343,8 @@ def segment_questions(
         next_tag = next((event["y"] for event in following
                          if event["kind"] in {"answer-tag", "answer-item"}), None)
 
+        next_tag_event = next((event for event in following
+                               if event["kind"] in {"answer-tag", "answer-item"}), None)
         if next_tag is not None and (next_question is None or next_tag < next_question):
             boundary = next_tag
             span_end = next_tag
@@ -287,14 +357,16 @@ def segment_questions(
         span_lines = [line for line in lines if y_start - 6 <= line["bbox"][1] < span_end]
         option_lines = [line for line in span_lines if OPTION_RE.match(norm(line["text"]).strip())]
         stem_lines = [line for line in span_lines if line not in option_lines]
-        figures = [box for box in page["layout"]["nonTextRegions"]
+        span_limit = [0, max(0, y_start - 8), width, span_end]
+        figures = [expand_figure_box(box, span_lines, span_limit)
+                   for box in page["layout"]["nonTextRegions"]
                    if box[1] >= y_start - 8 and box[3] <= span_end + 8]
 
         stem_text = " ".join(norm(line["text"]) for line in stem_lines)
         option_text = [norm(line["text"]) for line in option_lines]
         exam_tag = PAST_EXAM_RE.search(stem_text)
 
-        question_type, type_evidence = "unclassified", "none"
+        question_type, type_evidence = context["carriedType"]
         for header_y, name, printed in type_headers:
             if header_y <= y_start:
                 question_type, type_evidence = name, printed
@@ -351,6 +423,7 @@ def segment_questions(
                 "options": [line["bbox"] for line in option_lines],
                 "figures": figures,
                 "answerBoundaryY": boundary,
+                "answerBoundarySource": (next_tag_event or {}).get("source", "ocr-tag") if boundary is not None else None,
                 "inlineAnswer": [0, boundary, width, answer_end] if boundary is not None else None,
             },
             "ocrIndex": {"stem": stem_text.strip(), "options": option_text},
@@ -371,7 +444,7 @@ def collect_answer_items(page: dict[str, Any], events: list[dict[str, Any]],
     for index, item in enumerate(items):
         end = items[index + 1]["y"] if index + 1 < len(items) else footer_y
         block = [line for line in page["ocr"] if item["y"] - 4 <= line["bbox"][1] < end]
-        question_type, type_evidence = "unclassified", "none"
+        question_type, type_evidence = context["carriedType"]
         for header_y, name, printed in context["typeHeaders"]:
             if header_y <= item["y"]:
                 question_type, type_evidence = name, printed
@@ -444,6 +517,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
     tier_evidence: str | None = None
     in_drill_block = False
     block_index = 0
+    carried_type: tuple[str, str] = ("unclassified", "none")
 
     for page in pages:
         pdf_page = page["pdfPage"]
@@ -456,9 +530,8 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
         if banner_tier:
             tier, tier_evidence, in_drill_block = banner_tier, banner_evidence, True
             block_index += 1
+            carried_type = ("unclassified", "none")
         elif has_banner_box(page) and not in_drill_block:
-            tier, tier_evidence, in_drill_block = None, None, True
-            block_index += 1
             page_flags.append("tier-banner-unreadable")
         elif page_chapter and not type_headers:
             # A fresh centred chapter title means the drill block is over.
@@ -477,8 +550,11 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
             "slug": slug, "bookId": book_id, "printedPage": printed_page, "chapter": chapter,
             "section": section, "tier": tier, "tierEvidence": tier_evidence,
             "typeHeaders": type_headers, "blockIndex": block_index,
+            "carriedType": carried_type,
         }
         records, lead_in = segment_questions(page, events, context)
+        if type_headers:
+            carried_type = (type_headers[-1][1], type_headers[-1][2])
         questions.extend(records)
         if section == "drill-answers":
             answers.extend(collect_answer_items(page, events, context))
@@ -590,10 +666,11 @@ def pair_drill_answers(questions: list[dict[str, Any]], answers: list[dict[str, 
     the link on exactly the pages that need it.
     """
     answer_blocks: dict[int, int] = {}
+    by_block = lambda pair: (pair[0], pair[1] or "")
     question_blocks = sorted({(q["blockIndex"], q["sourceDifficulty"]) for q in questions
-                              if q["provenance"]["drillNumber"] is not None})
+                              if q["provenance"]["drillNumber"] is not None}, key=by_block)
     taken: set[int] = set()
-    for block, tier in sorted({(a["blockIndex"], a["sourceDifficulty"]) for a in answers}):
+    for block, tier in sorted({(a["blockIndex"], a["sourceDifficulty"]) for a in answers}, key=by_block):
         candidates = [qb for qb, qt in question_blocks if qb < block and qt == tier and qb not in taken]
         if not candidates:
             continue
