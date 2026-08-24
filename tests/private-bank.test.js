@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { cleanText, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank } = require('../scripts/build-private-bank');
+const { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank } = require('../scripts/build-private-bank');
 
 function q(id, text, extra) {
   return { id, topic: 'num', type: 'fill', diff: 1, q: text, ans: ['1'], sol: '解法', src: '測試', ...(extra || {}) };
@@ -94,6 +94,17 @@ test('題目 schema 驗證與正式 app 的必要欄位一致', () => {
   assert.equal(validateQuestion({ ...q('bad id', '題目') }), 'id-invalid');
   assert.equal(validateQuestion({ ...q('valid-2', '題目'), topic: 'unknown' }), 'topic-invalid');
   assert.equal(normalizeQuestion(' 求 3x = 6 ', true), '求 #x = #');
+});
+
+test('舊製作工具的空間單元別名會在匯入邊界轉成 app 的正式 14 單元鍵', () => {
+  assert.equal(canonicalTopic('vec3'), 'svec');
+  assert.equal(canonicalTopic('space'), 'splane');
+  const result = sanitizeBank([
+    q('space-vector-alias', '求空間向量長度', { topic:'vec3' }),
+    q('space-plane-alias', '求平面方程式', { topic:'space' }),
+  ], []);
+  assert.deepEqual(result.items.map((row) => row.topic), ['svec', 'splane']);
+  assert.equal(result.report.skipped.schema, 0);
 });
 
 test('既有十本題號可安全補上書本、頁碼、例題角色與私有來源欄位', () => {

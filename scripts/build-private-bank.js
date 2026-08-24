@@ -6,7 +6,11 @@ const path = require('node:path');
 const vm = require('node:vm');
 const TEXTBOOK_LIBRARY = require('../textbook-catalog');
 
-const TOPICS = new Set(['num', 'line', 'poly', 'seq', 'comb', 'prob', 'data', 'trig1', 'trig2', 'exp', 'vec', 'vec3', 'space', 'mat']);
+const TOPICS = new Set(['num', 'line', 'poly', 'seq', 'comb', 'prob', 'data', 'trig1', 'trig2', 'exp', 'vec', 'svec', 'splane', 'mat']);
+/* 歷史製作工具曾使用 vec3/space；app 與 bank.js 的正式 14 單元鍵是
+   svec/splane。匯入時只在這個邊界轉換，避免未來空間教材 build 成功後
+   卻被前端 validateQ 靜默拒絕。 */
+const TOPIC_ALIASES = Object.freeze({ vec3:'svec', space:'splane' });
 const TYPES = new Set(['single', 'multi', 'fill']);
 const OUT_OF_RANGE_RE = [/\\(?:cot|sec|csc)\b/, /(?:餘切|正割|餘割)\s*函數/, /十分逼近法/];
 const SUSPICIOUS_HTML_RE = /<\s*(?:script|iframe|object|embed|style)\b|\bon\w+\s*=|javascript\s*:/i;
@@ -34,6 +38,11 @@ function cleanText(value) {
     .replace(/[\uFE0E\uFE0F]/g, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+function canonicalTopic(value) {
+  const topic = String(value || '').trim();
+  return TOPIC_ALIASES[topic] || topic;
 }
 
 function normalizeQuestion(value, maskNumbers) {
@@ -149,6 +158,7 @@ function sanitizeQuestion(input) {
 
 function enrichQuestionMetadata(input) {
   const q = { ...input };
+  q.topic = canonicalTopic(q.topic);
   const book = BOOK_BY_SOURCE.get(q.src);
   const page = String(q.id || '').match(/-p0*(\d+)/i);
   const sourceId = String(q.id || '');
@@ -330,4 +340,4 @@ if (require.main === module) {
   console.log(JSON.stringify(manifest, null, 2));
 }
 
-module.exports = { cleanText, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank };
+module.exports = { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank };

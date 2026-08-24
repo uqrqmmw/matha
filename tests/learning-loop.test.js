@@ -137,6 +137,67 @@ test('教材混合精選不被正式卷題型比例限制，並排除眼刷留�
   assert.ok(result.maxTopic <= 2);
 });
 
+test('私人教材尚未匯入的單元仍由核心題補位，不因十本題量大而形成範圍盲區', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const fallback = BANK.find((q) => questionIsCoreFallback(q) && q.topic === 'seq');
+    S.wrong = { [fallback.id]:{ fails:2, wins:0, due:today(), mt:Date.now(), err:'還不熟' } };
+    const queue = adaptiveTextbookQueue(10);
+    return {
+      fallbackId:fallback.id,
+      selected:queue.some((q) => q.id === fallback.id),
+      reason:questionSelectionReason(fallback, adaptiveTextbookQueue.lastSignals),
+      allSafe:queue.every((q) => questionIsCoreFallback(q) || q.bookId || q.src),
+    };
+  })()`));
+  assert.equal(result.selected, true);
+  assert.equal(result.allSafe, true);
+  assert.match(result.reason, /間隔重測|核心題補齊範圍/);
+});
+
+test('教材角色依目前掌握度走打底、銜接、伸展階梯，不會對斷裂單元硬塞難題', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const example = { role:'example', diff:2 };
+    const bridge = { role:'unclassified', diff:2 };
+    const hard = { role:'chapter-end-hard', diff:3 };
+    return {
+      weak:[questionRoleFitWeight(example, .3, { l3:1 }), questionRoleFitWeight(hard, .3, { l3:1 })],
+      middle:[questionRoleFitWeight(bridge, .55, {}), questionRoleFitWeight(example, .55, {})],
+      strong:[questionRoleFitWeight(hard, .85, {}), questionRoleFitWeight(example, .85, {})],
+      bands:[questionTrainingBand(example), questionTrainingBand(bridge), questionTrainingBand(hard)],
+    };
+  })()`));
+  assert.ok(result.weak[0] > result.weak[1], '卡在第三級時應先用例題建立路線');
+  assert.ok(result.middle[0] > result.middle[1], '已有基本方向時應以銜接題為主');
+  assert.ok(result.strong[0] > result.strong[1], '掌握穩定後才提高章末進階題');
+  assert.deepEqual(result.bands, ['foundation', 'bridge', 'stretch']);
+});
+
+test('教材精選冷啟動與能力變化都有明確三帶配額，不再整輪只出同一類題', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const cold = adaptiveBandTargets(10, { topics:{} });
+    const weak = adaptiveBandTargets(10, { topics:{ num:{ n:10, ok:3 } } });
+    const strong = adaptiveBandTargets(10, { topics:{ num:{ n:10, ok:8 } } });
+    const topics = Object.keys(TOPICS).slice(0, 6);
+    BANK.push(...Array.from({length:36}, (_, i) => ({
+      id:'band-quota-' + i, topic:topics[i % topics.length], type:'fill',
+      diff:(i % 3) + 1, q:'訓練帶配額題 ' + i, ans:[String(i)], sol:'解',
+      src:'114班·實數與數線', role:i % 3 === 0 ? 'example' : i % 3 === 2 ? 'chapter-end-hard' : 'unclassified'
+    })));
+    BANK_MAP = null;
+    const queue = adaptiveTextbookQueue(10);
+    const actual = queue.reduce((out, q) => { out[questionTrainingBand(q)]++; return out; }, { foundation:0, bridge:0, stretch:0 });
+    return { cold, weak, strong, actual, target:adaptiveTextbookQueue.lastBandTargets };
+  })()`));
+  assert.deepEqual(result.cold, { foundation:3, bridge:5, stretch:2, evidenceN:0, acc:null });
+  assert.deepEqual(result.weak, { foundation:4, bridge:5, stretch:1, evidenceN:10, acc:.3 });
+  assert.deepEqual(result.strong, { foundation:2, bridge:4, stretch:4, evidenceN:10, acc:.8 });
+  assert.deepEqual(result.actual, { foundation:3, bridge:5, stretch:2 });
+  assert.deepEqual(result.target, result.cold);
+});
+
 test('看過詳解的訂正不冒充獨立答對，猜中與一眼會寫分開處理', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

@@ -3746,6 +3746,29 @@ function questionIsTemporarilyObvious(q, signals, maxDays = 30) {
   /* 已到保留重測或錯題重測的題仍要出現；除此之外，「一眼就會」30 天內不再占用主訓練。 */
   return !row.retentionDue && !(wrong && String(wrong.due || '') <= today());
 }
+function questionIsCoreFallback(q) {
+  return !!q && !q.bookId && (!q.src || q.src === '核心變式題庫');
+}
+/* 這是訓練帶，不冒充教材印刷分類。只有 role 有頁面證據時才能稱為例題／章末題；
+   其餘題只依原始難度放到打底、銜接或伸展帶，用來配合目前掌握度。 */
+function questionTrainingBand(q) {
+  if (!q) return 'bridge';
+  if (q.role === 'example' || q.role === 'chapter-end-easy') return 'foundation';
+  if (q.role === 'chapter-end-hard') return 'stretch';
+  if (q.role === 'chapter-end-medium') return 'bridge';
+  return Number(q.diff) <= 1 ? 'foundation' : Number(q.diff) >= 3 ? 'stretch' : 'bridge';
+}
+function questionRoleFitWeight(q, solveP, topic) {
+  const band = questionTrainingBand(q);
+  let fit = band === 'foundation'
+    ? (solveP < .45 ? 1.38 : solveP < .72 ? 1.05 : .58)
+    : band === 'stretch'
+      ? (solveP < .45 ? .58 : solveP < .72 ? 1.02 : 1.38)
+      : (solveP < .35 ? .82 : solveP < .78 ? 1.3 : 1.02);
+  /* 第三級或持續沒有方向時先回到能建立第一條路的題，不直接用難題再次挫敗。 */
+  if ((topic && (topic.l3 || topic.noDirection >= 2)) && band === 'foundation') fit *= 1.16;
+  return fit;
+}
 function questionLearningValue(q, signals, options) {
   signals ||= learningSignalIndex(); options ||= {};
   const row = signals.questions.get(q.id) || { n:0, ok:0, guess:0, noDirection:0, vision:0, obvious:0, l2:0, l3:0, open:0, retentionDue:0, retentionPending:0, lastD:'', lastObviousD:'' };
@@ -3762,13 +3785,10 @@ function questionLearningValue(q, signals, options) {
   const direction = 1 + Math.min(1.1,
     row.noDirection * .28 + row.l2 * .16 + row.l3 * .34 + row.open * .24
     + topic.noDirection * .05 + topic.l2 * .035 + topic.l3 * .08 + topic.open * .05);
-  let role = 1;
-  if (q.role === 'example') role = solveP < .48 || topic.l3 ? 1.18 : .88;
-  else if (q.role === 'chapter-end-easy') role = !row.n ? 1.05 : solveP >= .78 ? .45 : .92;
-  else if (q.role === 'chapter-end-medium') role = 1.22;
-  else if (q.role === 'chapter-end-hard') role = solveP >= .45 ? 1.18 : .72;
-  else if (q.role === 'comprehensive-review') role = 1.12;
-  const source = q.src || q.bookId ? 1.12 : 1;
+  let role = questionRoleFitWeight(q, solveP, topic);
+  if (q.role === 'comprehensive-review') role *= 1.08;
+  /* 私人教材優先；尚未完成 OCR 的單元仍允許核心庫補位，不能因十本題很多就形成範圍盲區。 */
+  const source = q.bookId ? 1.12 : questionIsCoreFallback(q) ? .94 : 1;
   const days = dayDistance(row.lastD);
   const recency = days === 0 ? .12 : days <= 2 ? .38 : days <= 7 ? .72 : 1;
   const guessPriority = 1 + Math.min(.5, row.guess * .18);
@@ -3796,7 +3816,13 @@ function questionSelectionReason(q, signals) {
   if (topic.l3) return '這個單元曾需要看詳解才完成';
   const learnerTopic = signals.learner && signals.learner.topics && signals.learner.topics[q.topic];
   if (learnerTopic && learnerTopic.confidence.key !== 'low' && learnerTopic.score < 58) return `多種練習都顯示「${TOPICS[q.topic]}」仍是高價值補強區`;
-  if (!row.n) return q.role === 'example' ? '尚未校準的教材例題' : '尚未取得你的作答證據';
+  if (!row.n) {
+    if (q.role === 'example') return '尚未校準的教材例題；先確認能否建立第一條解題路線';
+    if (q.role === 'chapter-end-easy') return '教材章末基礎題；用來確認基本方法能否獨立取回';
+    if (q.role === 'chapter-end-hard') return '教材章末進階題；目前掌握度已適合往上伸展';
+    if (questionIsCoreFallback(q)) return `「${TOPICS[q.topic]}」教材尚未完成安全匯入，先用可重算核心題補齊範圍`;
+    return '尚未取得你的作答證據';
+  }
   if (row.guess) return '曾猜中，不能視為真正掌握';
   return '難度與目前掌握度接近可學會區間';
 }
@@ -3805,6 +3831,25 @@ function rankAdaptiveQuestions(pool, options) {
   const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals, options)]));
   return pool.slice().sort((a, b) => scores.get(b.id) - scores.get(a.id)
     || String(a.id).localeCompare(String(b.id)));
+}
+function adaptiveBandTargets(cnt, signals) {
+  signals ||= learningSignalIndex();
+  const rows = Object.values(signals.topics || {});
+  const n = rows.reduce((sum, row) => sum + Number(row.n || 0), 0);
+  const ok = rows.reduce((sum, row) => sum + Number(row.ok || 0), 0);
+  const acc = n ? ok / n : null;
+  let foundationRatio = .3, stretchRatio = .2;
+  if (n >= 8 && acc < .45) { foundationRatio = .4; stretchRatio = .1; }
+  else if (n >= 8 && acc >= .72) { foundationRatio = .2; stretchRatio = .4; }
+  const foundation = Math.max(1, Math.round(cnt * foundationRatio));
+  const stretch = Math.max(1, Math.round(cnt * stretchRatio));
+  return { foundation, bridge:Math.max(0, cnt - foundation - stretch), stretch, evidenceN:n, acc };
+}
+function questionIsUrgentForAdaptive(q, signals) {
+  const row = signals.questions.get(q.id) || {};
+  const rawWrong = S.wrong && S.wrong[q.id];
+  const wrong = rawWrong && learningRecordCurrent(rawWrong.mt) ? rawWrong : null;
+  return !!row.retentionDue || !!(wrong && String(wrong.due || '') <= today());
 }
 function nextBestAction() {
   const paperDue = duePaperCorrections();
@@ -8669,7 +8714,7 @@ function adaptiveTextbookQueue(cnt) {
   const signals = learningSignalIndex();
   let pool = BANK.filter((q) => !held.has(q.id) && !questionFeedbackBlocked(q) && !(q.src && packIsOff(q.src))
     && !questionIsTemporarilyObvious(q, signals)
-    && (readyIds.has(q.bookId) || readySources.has(q.src)));
+    && (readyIds.has(q.bookId) || readySources.has(q.src) || questionIsCoreFallback(q)));
   if (!pool.length) pool = BANK.filter((q) => !held.has(q.id) && !questionFeedbackBlocked(q) && q.src && !packIsOff(q.src)
     && !questionIsTemporarilyObvious(q, signals));
   const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals)]));
@@ -8683,9 +8728,23 @@ function adaptiveTextbookQueue(cnt) {
     topicUse[q.topic] = (topicUse[q.topic] || 0) + 1;
     return true;
   };
+  /* 先收真正到期的錯題／保留重測，再用三個訓練帶補滿。冷啟動預設約 3:5:2，
+     證據顯示斷裂時增加打底，穩定後才增加伸展；避免數千題的同分排序把整輪變成同一角色。 */
+  for (const q of ranked.filter((item) => questionIsUrgentForAdaptive(item, signals))) {
+    add(q, false); if (queue.length >= cnt) break;
+  }
+  const targets = adaptiveBandTargets(cnt, signals);
+  const bandCount = () => queue.reduce((out, q) => { const band = questionTrainingBand(q); out[band]++; return out; }, { foundation:0, bridge:0, stretch:0 });
+  for (const band of ['foundation', 'bridge', 'stretch']) {
+    for (const q of ranked) {
+      if (questionTrainingBand(q) !== band || bandCount()[band] >= targets[band]) continue;
+      add(q, true); if (queue.length >= cnt) break;
+    }
+  }
   for (const q of ranked) { add(q, true); if (queue.length >= cnt) break; }
   for (const q of ranked) { add(q, false); if (queue.length >= cnt) break; }
   adaptiveTextbookQueue.lastSignals = signals;
+  adaptiveTextbookQueue.lastBandTargets = targets;
   return queue;
 }
 function startAdaptiveTextbook(cnt) {
@@ -8695,8 +8754,9 @@ function startAdaptiveTextbook(cnt) {
   if (!queue.length) { alert('私人教材題庫尚未載入，請先確認登入與題庫同步。'); return; }
   const signals = adaptiveTextbookQueue.lastSignals || learningSignalIndex();
   const reasons = Object.fromEntries(queue.map((q) => [q.id, questionSelectionReason(q, signals)]));
+  const bandPlan = queue.reduce((out, q) => { out[questionTrainingBand(q)]++; return out; }, { foundation:0, bridge:0, stretch:0 });
   afterFigurePreflight(queue, () => {
-    prac = { queue, reasons, i:0, results:[], mode:'adaptive-textbook', cnt:count, noTimer:true, hideTopic:true };
+    prac = { queue, reasons, bandPlan, i:0, results:[], mode:'adaptive-textbook', cnt:count, noTimer:true, hideTopic:true };
     sessionActive = true; sessionMode = 'prac'; snapSession(); pracNext();
   });
 }
