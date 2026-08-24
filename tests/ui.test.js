@@ -41,6 +41,16 @@ test('低彩度設計 token 與 PWA 主題色一致', () => {
   assert.equal(manifest.theme_color, '#75675c');
 });
 
+test('所有學生手寫畫布只提供黑藍綠，紅色保留給 AI 批改', () => {
+  const { run } = loadApp();
+  const html = run('inkToolsHTML()');
+  assert.match(html, />黑<\/button>/);
+  assert.match(html, />藍<\/button>/);
+  assert.match(html, />綠<\/button>/);
+  assert.doesNotMatch(html, /ink-c-r|inkColorSet\('r'\)|>紅<\/button>/);
+  assert.equal(run('INK_COLORS.r'), '#b43b32');
+});
+
 test('Galaxy Tab S10 Ultra 橫直向版面使用大平板斷點與至少 48px 主觸控區', () => {
   const css = read('style.css');
   const source = read('app.js');

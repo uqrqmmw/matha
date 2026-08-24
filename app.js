@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0825e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825f'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -1193,7 +1193,7 @@ function backupCard() {
    st.q/st.a 恆空，所有三面分支一併移除；雲端 strokes 欄位仍相容舊格式讀取。） */
 const HES_GAP = 15000;
 const INK_W = 1.35; // 筆跡粗細（原本 2 的 2/3）
-const INK_COLORS = { k: '#1f2937', r: '#dc2626', g: '#15803d' };
+const INK_COLORS = { k: '#343a36', b: '#315f78', g: '#4f7158', r: '#b43b32' };
 // Pointer Events 標準側鍵是 buttons=2；三星 Chrome 也會把 S Pen 側鍵回報成
 // button=1 / buttons=4，因此筆尖接觸時常見的組合是 buttons=5（筆尖 1＋側鍵 4）。
 const SPEN_ERASE_BUTTONS = 2 | 4 | 32 | 64;
@@ -1209,7 +1209,7 @@ function inkStore(qid) {
 function inkToolsHTML() {
   return `<span class="ink-tools">
       <button class="btn sm inkc" id="ink-c-k" onclick="inkColorSet('k')"><span class="dot" style="background:${INK_COLORS.k}"></span>黑</button>
-      <button class="btn sm inkc" id="ink-c-r" onclick="inkColorSet('r')"><span class="dot" style="background:${INK_COLORS.r}"></span>紅</button>
+      <button class="btn sm inkc" id="ink-c-b" onclick="inkColorSet('b')"><span class="dot" style="background:${INK_COLORS.b}"></span>藍</button>
       <button class="btn sm inkc" id="ink-c-g" onclick="inkColorSet('g')"><span class="dot" style="background:${INK_COLORS.g}"></span>綠</button>
       <button class="btn sm" onclick="inkUndo()">↩ 復原</button>
       <button class="btn sm" onclick="inkExtend(320)">⬇ 加長</button>
@@ -1283,10 +1283,10 @@ function inkExtend(dh) {
   inkSizeSur(ink.sur.calc);
 }
 function inkColorSet(c) {
-  inkColor = c;
-  for (const k of ['k', 'r', 'g']) {
+  inkColor = ['k', 'b', 'g'].includes(c) ? c : 'k';
+  for (const k of ['k', 'b', 'g']) {
     const b = $('#ink-c-' + k);
-    if (b) b.className = 'btn sm inkc' + (k === c ? ' active' : '');
+    if (b) b.className = 'btn sm inkc' + (k === inkColor ? ' active' : '');
   }
 }
 function inkPos(e, sur) {

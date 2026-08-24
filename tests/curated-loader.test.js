@@ -26,7 +26,7 @@ test('私有 manifest 以短效簽署網址且禁用 HTTP 快取下載', async (
 
   assert.equal(await run('pullCuratedContent()'), true);
   assert.equal(directManifestDownloads, 0);
-  assert.match(fetchedUrl, /manifest-0825e\.json\?token=test-60&matha_cb=0825e-/);
+  assert.match(fetchedUrl, /manifest-0825e\.json\?token=test-60&matha_cb=0825f-/);
   assert.equal(fetchOptions.cache, 'no-store');
 });
 
