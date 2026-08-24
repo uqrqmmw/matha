@@ -2,7 +2,7 @@
 
 這個 Edge Function 是數A前端與 OpenAI Responses API 之間的安全代理。`OPENAI_API_KEY` 只存在 Supabase Secret，不會進入 `app.js`、localStorage、`app_state`、備份或公開 GitHub 程式碼。
 
-目前支援六種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）、定義語意理解（`concept`）、原版掃描卷整卷批改（`paper_grade`）與逐題詳批（`paper_detail`，由後端驗證隔日＋至少一次獨立重想才解鎖）。手寫大綱以 Responses API 圖片輸入的 `detail: original` 傳入，密集文字不先縮成低解析度；大綱原文只來自使用者的私人內容層。
+目前支援六種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）、定義語意理解（`concept`）、原版掃描卷整卷批改（`paper_grade`）與逐題詳批（`paper_detail`，由後端驗證隔日＋至少一次獨立重想才解鎖）。逐題詳批固定回傳診斷信心、可驗證的正確前綴、第一錯步原式、錯因、最小修正與完整解法；低信心結果不寫入弱點模型。所有密集卷面都以 Responses API 圖片輸入的 `detail: original` 傳入，不先縮成低解析度；大綱原文只來自使用者的私人內容層。
 
 ## 專案配置
 

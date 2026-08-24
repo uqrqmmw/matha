@@ -243,9 +243,21 @@ export const responseSchemas = {
     additionalProperties: false,
     properties: {
       readable: { type: "boolean" },
-      read: { type: "string", maxLength: 300 },
-      firstError: { type: ["string", "null"], maxLength: 300 },
+      confidence: {
+        type: "string",
+        enum: ["high", "medium", "low"],
+      },
+      read: { type: "string", maxLength: 800 },
+      goodWork: {
+        type: "array",
+        maxItems: 5,
+        items: { type: "string", maxLength: 220 },
+      },
+      firstErrorEvidence: { type: ["string", "null"], maxLength: 260 },
+      firstError: { type: ["string", "null"], maxLength: 360 },
       errorKind: { type: ["string", "null"], maxLength: 80 },
+      whyWrong: { type: "string", maxLength: 700 },
+      repair: { type: "string", maxLength: 360 },
       explanation: { type: "string", maxLength: 1400 },
       solution: {
         type: "array",
@@ -258,9 +270,14 @@ export const responseSchemas = {
     },
     required: [
       "readable",
+      "confidence",
       "read",
+      "goodWork",
+      "firstErrorEvidence",
       "firstError",
       "errorKind",
+      "whyWrong",
+      "repair",
       "explanation",
       "solution",
       "answer",

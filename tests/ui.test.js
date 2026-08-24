@@ -142,10 +142,14 @@ test('OpenAI 金鑰只存在 Edge Function secret，不進瀏覽器程式', () =
   assert.match(proxy, /"strike"/);
   assert.match(proxy, /"add"/);
   assert.match(proxy, /paper_detail:\s*\{/);
+  assert.match(proxy, /goodWork:\s*\{/);
+  assert.match(proxy, /firstErrorEvidence:\s*\{/);
+  assert.match(proxy, /confidence:\s*\{/);
   assert.match(proxy, /"paper_grade"/);
   assert.match(proxy, /"paper_detail"/);
   assert.match(proxy, /responseType === "paper_grade"[\s\S]*?5000/);
   assert.match(proxy, /responseType === "paper_detail"[\s\S]*?4200/);
+  assert.match(proxy, /responseType === "paper_detail"[\s\S]*?\? "high"[\s\S]*?: "medium"/);
   assert.match(proxy, /detail: "original"/);
   assert.match(proxy, /store: false/);
   assert.match(proxy, /const model = "gpt-5\.5"/);

@@ -936,11 +936,13 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
     paperReview = { source, run:row, urls:[], inkPages:{}, nos:[no], i:0, detailLoading:false, detailError:'' };
     let calls = 0;
     paperReviewPageComposite = async () => 'composite';
+    paperReviewQuestionFocusImage = async () => 'focus';
     paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
       calls++;
       return { model:'gpt-5.5', json:{
-        readable:true, read:'先把 x 當成常數', firstError:'把變數 x 當成常數',
-        errorKind:'條件誤讀', explanation:'x 會隨條件改變。',
+        readable:true, confidence:'high', read:'先把 x 當成常數',
+        goodWork:['先正確整理已知條件'], firstErrorEvidence:'令 x 為常數', firstError:'把變數 x 當成常數',
+        errorKind:'條件誤讀', whyWrong:'x 會隨條件改變。', repair:'保留 x 為變數再代入。', explanation:'變數角色判斷錯誤。',
         solution:['先整理條件', '代回並化簡'], answer:'模型亂填答案',
         nextTime:'先標出變數與常數', marks:[{box:[.1,.2,.3,.4],label:'模型洩漏文字'}],
       } };
@@ -990,6 +992,7 @@ test('後端拒絕詳解時不再製造假的 detail-gate 繞過老師流程', a
     const row = { id:'legacy-detail-gate', sourceId:source.id, due:today(), mt:1, review:{ [no]:state } };
     paperReview = { source, run:row, urls:[], inkPages:{}, nos:[no], i:0, detailLoading:false, detailError:'' };
     paperReviewPageComposite = async () => 'composite';
+    paperReviewQuestionFocusImage = async () => 'focus';
     const receivedLogs = []; let calls = 0;
     paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
       calls++; receivedLogs.push(logs.length);
@@ -1026,7 +1029,7 @@ test('原版隔日訂正使用全頁可寫工作台，每題保留詳解入口�
     paperReview = { source, run:row, urls, baseInkPages:{}, inkPages:{}, inkRun, nos:[no], i:0, renderedNo:null, detailLoading:false, detailError:'', detailOpen:true };
     paperSourceSession = { source, run:row, inkRun, urls, baseInkPages:{}, inkPages:{}, page:0, zoom:1, inkMode:'pen', inkWidth:1, inkColor:'blue', reviewMode:true, durability:{pendingClientIds:new Set()} };
     renderPaperAnswerReview(); const locked = __app.innerHTML;
-    state.aiDetail = { firstError:'第二行符號寫反', errorKind:'符號', read:'', explanation:'移項時變號錯誤', solution:['正確移項'], answer:'(2)', nextTime:'先圈負號', marks:[] };
+    state.aiDetail = { confidence:'high', goodWork:['第一行正確代入'], firstErrorEvidence:'2x+3=7', firstError:'第二行符號寫反', errorKind:'符號', whyWrong:'移項後正號應變負號', repair:'改寫為 2x=7−3', read:'', explanation:'移項時變號錯誤', solution:['正確移項'], answer:'(2)', nextTime:'先圈負號', marks:[] };
     renderPaperAnswerReview(); const detailed = __app.innerHTML;
     return { locked, detailed };
   })()`));
@@ -1042,11 +1045,53 @@ test('原版隔日訂正使用全頁可寫工作台，每題保留詳解入口�
   assert.match(result.locked, /id='paper-review-topic'/);
   assert.match(result.locked, /寫完了，AI 再批改/);
   assert.doesNotMatch(result.locked, /paper-review-layout/);
-  assert.match(result.detailed, /完整解法與第一個錯誤/);
+  assert.match(result.detailed, /做到哪裡、從哪裡開始錯/);
+  assert.match(result.detailed, /第一行正確代入/);
+  assert.match(result.detailed, /2x\+3=7/);
   assert.match(result.detailed, /第二行符號寫反/);
-  assert.match(result.detailed, /重新產生詳解/);
-  assert.match(result.detailed, /看完詳解並重算，AI 再批改/);
+  assert.match(result.detailed, /先只修這一步/);
+  assert.match(result.detailed, /AI 看錯我的手寫/);
+  assert.match(result.detailed, /重新分析這一題/);
+  assert.match(result.detailed, /看完並回卷面重算/);
   assert.doesNotMatch(result.detailed, /paper-review-direction/);
+});
+
+test('逐題詳批同時送整頁與本題焦點，並強制列出正確前綴與可驗證第一錯步', async () => {
+  const { run } = loadApp();
+  const result = plain(await run(`(async () => {
+    const source = PAPER_SOURCES[0], no = 3;
+    paperReview = { run:{ id:'quality', aiGrade:{ questions:[{ no, topic:'comb' }] }, review:{ [no]:{ topic:'comb' } } } };
+    let request = null;
+    openAiInvoke = async (payload) => { request = payload; return { json:{}, model:'gpt-5.5' }; };
+    await paperAiDetailCall(source, no, 'full-page', [{ direction:'先分組' }], 'focus-crop', '分母其實寫 3!');
+    const parts = request.messages[0].content;
+    return {
+      images:parts.filter((part) => part.type === 'image').map((part) => part.source.data),
+      text:parts.filter((part) => part.type === 'text').map((part) => part.text).join('\\n'),
+    };
+  })()`));
+  assert.deepEqual(result.images, ['full-page', 'focus-crop']);
+  assert.match(result.text, /最長的正確前綴/);
+  assert.match(result.text, /firstErrorEvidence/);
+  assert.match(result.text, /不可編造/);
+  assert.match(result.text, /分母其實寫 3!/);
+});
+
+test('低信心詳批可顯示不確定說明，但不得寫入錯因或在卷面猜位置', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES[0];
+    return paperNormalizeAiDetail(source, 2, {
+      readable:true, confidence:'low', read:'可能寫了 2x+3', goodWork:['可能有代入'],
+      firstErrorEvidence:'可能是 2x+3', firstError:'可能移項錯誤', errorKind:'符號',
+      whyWrong:'影像不清楚', repair:'重新抄清楚', explanation:'無法確認', solution:['正確解法'],
+      answer:'任意', nextTime:'寫大一點', marks:[{ box:[.1,.2,.3,.4], label:'第一個錯誤' }],
+    }, 'gpt-5.5');
+  })()`));
+  assert.equal(result.confidence, 'low');
+  assert.equal(result.errorKind, null);
+  assert.deepEqual(result.marks, []);
+  assert.equal(result.firstError, '可能移項錯誤');
 });
 
 test('隔日訂正入口明確說明在紅筆卷上作答，不再沿用唯讀盲訂正文案', () => {

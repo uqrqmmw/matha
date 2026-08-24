@@ -267,7 +267,13 @@ Deno.serve(async (req: Request) => {
         : responseType === "paper_detail"
         ? 4200
         : (isStructured ? 3500 : 3000),
-      reasoning: { effort: isTest ? "none" : "medium" },
+      reasoning: {
+        effort: isTest
+          ? "none"
+          : responseType === "paper_detail"
+          ? "high"
+          : "medium",
+      },
       store: false,
       safety_identifier: await safetyIdentifier(userId),
       metadata: { app: "matha", response_type: responseType },

@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825i'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825j'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -7741,10 +7741,13 @@ function renderPaperTeacherReport(runId) {
       ${log.topic || log.concept ? `<p>單元判斷：${escH(TOPICS[log.topic] || '未選單元')}${log.concept ? `／${escH(log.concept)}` : ''}</p>` : ''}
       ${log.errorKind ? `<p>自評卡點：${escH(log.errorKind)}</p>` : ''}</div>`).join('');
     const detail = state.aiDetail;
+    const detailGood = detail && Array.isArray(detail.goodWork) && detail.goodWork.length
+      ? `<p>已做對：${detail.goodWork.map((row) => rtAi(row)).join('；')}</p>` : '';
+    const detailConfidence = detail && (detail.confidence === 'high' ? '高' : detail.confidence === 'medium' ? '中' : '低');
     return `<article class="teacher-q level-${level}"><header><span>第 ${no} 題｜${statusName[item.status] || item.status}｜${Number(item.points) || 0}/${Number(source.key[no - 1] && source.key[no - 1].points) || 0} 分</span><b>${levelName(level)}</b></header>
       <p class="teacher-answer">AI 讀到：${escH(item.read || '（未辨識）')}｜正確答案：${escH(paperFinalAnswerText(source.key[no - 1]))}</p>
       ${logs || (level === 1 ? '<p class="dim">考場直接答對，不需隔日重想。</p>' : '<p class="dim">尚未留下隔日重想紀錄。</p>')}
-      ${detail ? `<div class="teacher-attempt"><b>逐題 AI 詳解</b>${state.detailFirstOpenedAt ? `<p>首次查看：${escH(new Date(Number(state.detailFirstOpenedAt)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}｜開啟 ${Number(state.detailViewCount) || 1} 次</p>` : ''}${detail.errorKind ? `<p>AI 錯因：${escH(detail.errorKind)}</p>` : ''}${detail.firstError ? `<p>第一個錯誤：${rtAi(detail.firstError)}</p>` : ''}${detail.nextTime ? `<p>下次訊號：${rtAi(detail.nextTime)}</p>` : ''}</div>` : ''}</article>`;
+      ${detail ? `<div class="teacher-attempt"><b>逐題 AI 詳解｜診斷信心 ${detailConfidence}</b>${state.detailFirstOpenedAt ? `<p>首次查看：${escH(new Date(Number(state.detailFirstOpenedAt)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}｜開啟 ${Number(state.detailViewCount) || 1} 次</p>` : ''}${detailGood}${detail.errorKind ? `<p>AI 錯因：${escH(detail.errorKind)}</p>` : ''}${detail.firstErrorEvidence ? `<p>錯誤證據：${rtAi(detail.firstErrorEvidence)}</p>` : ''}${detail.firstError ? `<p>第一個錯誤：${rtAi(detail.firstError)}</p>` : ''}${detail.nextTime ? `<p>下次訊號：${rtAi(detail.nextTime)}</p>` : ''}</div>` : ''}</article>`;
   }).join('');
   const calibration = source.calibrationEligible === false
     ? '本卷原始結構為 19 題，只作練習與訂正分析，不列入正式級分校準。'
@@ -7782,7 +7785,54 @@ async function paperReviewPageComposite(page) {
     '#684d85',
   );
 }
-async function paperAiDetailCall(source, no, imageB64, logs) {
+function paperQuestionNosOnPage(source, page) {
+  return source.key.map((_, index) => index + 1)
+    .filter((questionNo) => paperQuestionScanIndex(source, questionNo) === page);
+}
+function paperDetailFocusBounds(source, no) {
+  const page = paperQuestionScanIndex(source, no);
+  const nos = paperQuestionNosOnPage(source, page);
+  const index = Math.max(0, nos.indexOf(no));
+  const band = .9 / Math.max(1, nos.length);
+  let y0 = .05 + index * band - .045;
+  let y1 = .05 + (index + 1) * band + .045;
+  const run = paperReview && paperReview.run;
+  const grade = run && run.aiGrade && (run.aiGrade.questions || []).find((item) => Number(item.no) === Number(no));
+  for (const mark of grade && Array.isArray(grade.marks) ? grade.marks : []) {
+    const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
+    if (box.length === 4 && box.every(Number.isFinite)) {
+      y0 = Math.min(y0, box[1] - .12);
+      y1 = Math.max(y1, box[3] + .12);
+    }
+  }
+  const overlay = paperReview && paperReview.inkPages && paperReview.inkPages[page];
+  for (const stroke of overlay && Array.isArray(overlay.s) ? overlay.s : []) {
+    const bounds = paperInkStrokeBounds(stroke);
+    if (!stroke || stroke.dead || !bounds) continue;
+    y0 = Math.min(y0, bounds[1] - .08);
+    y1 = Math.max(y1, bounds[3] + .08);
+  }
+  y0 = Math.max(.015, y0); y1 = Math.min(.985, y1);
+  if (y1 - y0 < .25) {
+    const center = (y0 + y1) / 2;
+    y0 = Math.max(.015, center - .125); y1 = Math.min(.985, center + .125);
+  }
+  return [y0, y1];
+}
+async function paperReviewQuestionFocusImage(imageB64, source, no) {
+  const image = await paperImageLoad(`data:image/jpeg;base64,${imageB64}`);
+  const [y0, y1] = paperDetailFocusBounds(source, no);
+  const sy = Math.round(image.naturalHeight * y0);
+  const sh = Math.max(1, Math.round(image.naturalHeight * (y1 - y0)));
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = sh;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fffefa'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, 0, sy, image.naturalWidth, sh, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', .94).split(',')[1];
+}
+async function paperAiDetailCall(source, no, imageB64, logs, focusB64, userNote) {
   const q = source.key[no - 1], answer = paperFinalAnswerText(q);
   const run = paperReview && paperReview.run;
   const gradeItem = run && run.aiGrade && (run.aiGrade.questions || []).find((item) => Number(item.no) === Number(no));
@@ -7796,24 +7846,36 @@ async function paperAiDetailCall(source, no, imageB64, logs) {
   }));
   const content = [{
     type: 'text',
-    text: `你是台灣學測數學的訂正老師。使用者主動開啟「${source.title}」第 ${no} 題的逐題詳解。附圖已分層合成：原掃描與考試當天筆跡是底稿、紅筆是第一次簡批；如果卷面已有紫色筆跡，那是考生隔日新增的重算。
+    text: `你是嚴謹但會指出學生優點的台灣學測數學訂正老師。目標不是泛泛講詳解，而是根據卷面證據，準確找出考生推理中第一個不成立的位置。
+
+成功標準：
+1. 先獨立解出印刷題目並核對正式答案，再判讀學生方法；不可拿正式答案倒推一個學生沒寫過的錯誤。
+2. 依卷面順序找出「最長的正確前綴」：goodWork 逐項列出實際做對的式子、判斷或方向，不可只寫「有努力」「觀念不錯」。
+3. firstErrorEvidence 必須逐字轉錄第一個錯誤或缺口附近、確實看得到的學生式子；firstError 說明這一步為何開始不成立；whyWrong 用代入、重算、反例或定義驗證。
+4. repair 只給修好第一個錯誤所需的下一行，不一次跳到結論。solution 才放完整正確解法。
+5. 等價但不同於參考路線的方法仍算對。每個數值、正負號、分母、選項與等號轉換都要自己重算。
+6. 看不清楚或無法唯一判定時，confidence=low、firstErrorEvidence=null、firstError=null、errorKind=null、marks=[]；寧可保留不確定，也不可編造。
+7. confidence=high 只用於手寫式與錯誤位置都清楚、且已完成獨立驗證時；medium 表示方法可讀但某一小段仍有歧義。
+8. marks 只在 confidence=high 時框住第一個錯誤的實際卷面區域，否則留空；label 固定寫「第一個錯誤」。
+
+第一張圖是完整單頁，用來理解上下文與右側留白；第二張是第 ${no} 題附近的高解析焦點圖，用來逐字核對。兩張都可能含其他題，判讀時只處理第 ${no} 題。原掃描與考試當天筆跡是底稿、紅筆是第一次簡批；紫色筆跡是考生隔日新增的重算。
 
 正式最終答案：${answer}
 題型：${q.type}
 考生隔日重想紀錄（可能尚未留下）：${JSON.stringify(attempts)}
+考生對 AI 辨識的補充／更正：${String(userNote || '（無）').slice(0, 500)}
 ${learnerContextForAi(learnerTopic)}
-
-請依序完成：
-1. 先如實轉錄你看見的關鍵作答；看不清楚就明說，不可猜。
-2. 若有紫色隔日訂正，優先從紫色筆跡找出「最早可證明不成立」的一步；沒有紫色筆跡時才對照考試當天底稿。若前面不是算錯，而是方向停在缺口，就精確指出缺少的推論；不可假裝看見圖上沒有的式子。
-3. 不論考生是否已留下隔日重想，都要提供可完整走到正式答案、適合學測程度的詳解步驟。
-4. 給一個下次看到相似條件時可立即辨識的短訊號。
-5. marks 只框住第一個錯誤所在的卷面區域；若無法可靠定位，回傳空陣列。label 只寫「第一個錯誤」。
 
 這是使用者主動要求的本題詳解，現在可以提供錯誤步驟分析與完整解法。`,
   }, {
     type: 'image',
     source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 },
+  }, {
+    type: 'text',
+    text: `【第 ${no} 題高解析焦點圖】`,
+  }, {
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/jpeg', data: focusB64 || imageB64 },
   }];
   const payload = await openAiInvoke({
     responseType: 'paper_detail',
@@ -7828,7 +7890,11 @@ ${learnerContextForAi(learnerTopic)}
 }
 function paperNormalizeAiDetail(source, no, raw, model) {
   const text = (value, max) => String(value == null ? '' : value).trim().slice(0, max);
-  const marks = (Array.isArray(raw && raw.marks) ? raw.marks : []).slice(0, 2).map((mark) => {
+  const confidence = ['high', 'medium', 'low'].includes(raw && raw.confidence) ? raw.confidence : 'low';
+  const readable = !!raw && raw.readable !== false;
+  const firstError = !raw || raw.firstError == null ? null : text(raw.firstError, 360);
+  const trustedDiagnosis = readable && confidence !== 'low' && !!firstError;
+  const marks = (confidence === 'high' && trustedDiagnosis && Array.isArray(raw && raw.marks) ? raw.marks : []).slice(0, 2).map((mark) => {
     const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
     if (box.length !== 4 || box.some((n) => !Number.isFinite(n))) return null;
     return { box: box.map((n) => Math.max(0, Math.min(1, n))), label: '第一個錯誤' };
@@ -7837,10 +7903,15 @@ function paperNormalizeAiDetail(source, no, raw, model) {
     no,
     model: model || 'gpt-5.5',
     generatedAt: Date.now(),
-    readable: !!raw && raw.readable !== false,
-    read: text(raw && raw.read, 300),
-    firstError: !raw || raw.firstError == null ? null : text(raw.firstError, 300),
-    errorKind: !raw || raw.errorKind == null ? null : text(raw.errorKind, 80),
+    readable,
+    confidence,
+    read: text(raw && raw.read, 800),
+    goodWork: readable && Array.isArray(raw && raw.goodWork) ? raw.goodWork.slice(0, 5).map((row) => text(row, 220)).filter(Boolean) : [],
+    firstErrorEvidence: !raw || raw.firstErrorEvidence == null ? null : text(raw.firstErrorEvidence, 260),
+    firstError,
+    errorKind: trustedDiagnosis && raw.errorKind != null ? text(raw.errorKind, 80) : null,
+    whyWrong: text(raw && raw.whyWrong, 700),
+    repair: text(raw && raw.repair, 360),
     explanation: text(raw && raw.explanation, 1400),
     solution: (Array.isArray(raw && raw.solution) ? raw.solution : []).slice(0, 8).map((step) => text(step, 300)).filter(Boolean),
     answer: paperFinalAnswerText(source.key[no - 1]),
@@ -7950,9 +8021,9 @@ function paperReviewDetailLogs(state) {
   return (state && Array.isArray(state.logs) ? state.logs : [])
     .filter((log) => String(log && log.kind || '') !== 'detail-gate');
 }
-async function paperReviewDetailCallCompat(review, no, state, image) {
+async function paperReviewDetailCallCompat(review, no, state, image, focus) {
   // 後端與前端都只接受真實 retry log；絕不再製造空白 detail-gate 來繞過老師流程。
-  return paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state));
+  return paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state), focus, state && state.aiDetailUserNote);
 }
 function paperReviewLiveStrokeIds() {
   const ids = new Set();
@@ -7988,6 +8059,8 @@ async function paperReviewDetailed(force = false) {
   if (!paperReview || paperReview.detailLoading) return;
   const review = paperReview;
   const no = review.nos[review.i], state = review.run.review[no];
+  const noteInput = $('#paper-detail-user-note');
+  if (force && noteInput) state.aiDetailUserNote = String(noteInput.value || '').trim().slice(0, 500);
   if (String(review.run.due || '') > today() || !state) {
     const msg = $('#paper-review-msg');
     if (msg) msg.textContent = '詳解會在隔日訂正開始後開放。';
@@ -8016,8 +8089,9 @@ async function paperReviewDetailed(force = false) {
     await syncPush();
     const page = paperQuestionScanIndex(review.source, no);
     const image = await paperReviewPageComposite(page);
+    const focus = await paperReviewQuestionFocusImage(image, review.source, no);
     if (paperReview !== review) return;
-    const response = await paperReviewDetailCallCompat(review, no, state, image);
+    const response = await paperReviewDetailCallCompat(review, no, state, image, focus);
     if (paperReview !== review) return;
     state.aiDetail = paperNormalizeAiDetail(review.source, no, response.json, response.model);
     state.solutionUnlockedAt = Number(state.solutionUnlockedAt) || Date.now();
@@ -8046,7 +8120,29 @@ function paperReviewDetailDrawerHTML(state) {
   const detail = state && state.aiDetail;
   if (!detail || !paperReview || paperReview.detailOpen === false) return '';
   const no = Number(detail.no) || Number(paperReview.nos[paperReview.i]);
-  return `<aside class='paper-detail-drawer' aria-label='第 ${no} 題 AI 詳解'><div class='paper-detail-drawer-head'><div><span class='eyebrow'>第 ${no} 題詳解｜GPT‑5.5</span><h2>完整解法與第一個錯誤</h2></div><button class='paper-icon-btn' onclick='paperReviewDetailToggle(false)' aria-label='收起詳解'>${uiIcon('x')}</button></div><div class='paper-detail-drawer-body'><p class='paper-detail-view-note'>已記錄你查看過本題詳解；重算後仍可交給 AI 正常批改。</p><p class='${detail.firstError ? 'badc' : 'dim'}'>${detail.firstError ? rtAi(detail.firstError) : '目前無法可靠定位第一個錯誤，以下改說明方向缺口。'}</p>${detail.errorKind ? `<p class='paper-detail-kind'>錯誤類型：${escH(detail.errorKind)}</p>` : ''}${detail.read ? `<details><summary>AI 讀到的作答</summary><p>${rtAi(detail.read)}</p></details>` : ''}<h3>為什麼會卡住</h3><div>${rtAi(detail.explanation || '沒有足夠可讀資訊可分析。')}</div><h3>完整詳解</h3>${detail.solution.length ? `<ol class='paper-detail-steps'>${detail.solution.map((step) => `<li>${rtAi(step)}</li>`).join('')}</ol>` : '<p class="warnc">AI 沒有產生足夠步驟，請重新詳批。</p>'}<p class='blind-answer'>正式答案：<b>${escH(detail.answer)}</b></p>${detail.nextTime ? `<div class='next-step'><b>下次辨識訊號</b>${rtAi(detail.nextTime)}</div>` : ''}<div class='actr'><button class='btn primary' onclick='paperReviewFinishDetailed()'>看完詳解並重算，AI 再批改</button><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新產生中…' : '重新產生詳解'}</button></div></div></aside>`;
+  const confidenceLabel = detail.confidence === 'high' ? '高信心' : detail.confidence === 'medium' ? '中等信心' : '低信心，不列入弱點統計';
+  const goodWork = detail.goodWork && detail.goodWork.length
+    ? `<ul class='paper-detail-good-list'>${detail.goodWork.map((row) => `<li>${rtAi(row)}</li>`).join('')}</ul>`
+    : '<p class="dim">卷面不足以可靠指出具體做對的步驟。</p>';
+  const firstError = detail.firstError
+    ? `<div class='paper-detail-error-card'>${detail.firstErrorEvidence ? `<blockquote>${rtAi(detail.firstErrorEvidence)}</blockquote>` : ''}<p class='badc'>${rtAi(detail.firstError)}</p>${detail.whyWrong ? `<p>${rtAi(detail.whyWrong)}</p>` : ''}${detail.errorKind ? `<span class='paper-detail-kind'>${escH(detail.errorKind)}</span>` : ''}</div>`
+    : `<p class='dim'>AI 目前無法用卷面證據唯一定位第一個錯誤；這次不會把猜測寫進你的弱點模型。</p>`;
+  const userNote = escH(state && state.aiDetailUserNote || '');
+  return `<aside class='paper-detail-drawer' aria-label='第 ${no} 題 AI 詳解'>
+    <div class='paper-detail-drawer-head'><div><span class='eyebrow'>第 ${no} 題逐步診斷｜GPT‑5.5</span><h2>做到哪裡、從哪裡開始錯</h2><span class='paper-detail-confidence' data-level='${escH(detail.confidence || 'low')}'>${confidenceLabel}</span></div><button class='paper-icon-btn' onclick='paperReviewDetailToggle(false)' aria-label='收起詳解'>${uiIcon('x')}</button></div>
+    <div class='paper-detail-drawer-body'>
+      <p class='paper-detail-view-note'>已記錄你查看過本題詳解；重算後仍可交給 AI 正常批改。</p>
+      <section><h3>你已經做對的部分</h3>${goodWork}</section>
+      <section><h3>第一個需要修正的位置</h3>${firstError}</section>
+      ${detail.repair ? `<section class='paper-detail-repair'><h3>先只修這一步</h3><p>${rtAi(detail.repair)}</p></section>` : ''}
+      ${detail.read ? `<details><summary>核對 AI 實際讀到的作答</summary><p>${rtAi(detail.read)}</p></details>` : ''}
+      ${detail.explanation ? `<section><h3>這次真正卡住的機制</h3><div>${rtAi(detail.explanation)}</div></section>` : ''}
+      <details class='paper-detail-full-solution' open><summary>完整正確解法</summary>${detail.solution.length ? `<ol class='paper-detail-steps'>${detail.solution.map((step) => `<li>${rtAi(step)}</li>`).join('')}</ol>` : '<p class="warnc">AI 沒有產生足夠步驟，請補充辨識後重新詳批。</p>'}<p class='blind-answer'>正式答案：<b>${escH(detail.answer)}</b></p></details>
+      ${detail.nextTime ? `<div class='next-step'><b>下次看到什麼要立刻反應</b>${rtAi(detail.nextTime)}</div>` : ''}
+      <details class='paper-detail-correction'><summary>AI 看錯我的手寫</summary><label>補一句正確辨識，重新詳批<textarea id='paper-detail-user-note' rows='2' placeholder='例如：第二行其實寫的是 2x−3，不是 2x+3。'>${userNote}</textarea></label><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新分析中…' : '帶著更正重新分析'}</button></details>
+      <div class='actr'><button class='btn primary' onclick='paperReviewFinishDetailed()'>看完並回卷面重算</button><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新分析中…' : '重新分析這一題'}</button></div>
+    </div>
+  </aside>`;
 }
 function paperReviewStatusHTML(state) {
   if (!paperReview) return '';
