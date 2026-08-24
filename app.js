@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825n'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825o'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3749,6 +3749,13 @@ function questionIsTemporarilyObvious(q, signals, maxDays = 30) {
 function questionIsCoreFallback(q) {
   return !!q && !q.bookId && (!q.src || q.src === '核心變式題庫');
 }
+function questionSourceBucket(q) {
+  if (!q) return 'unknown';
+  /* 核心補位庫本身不是一本教材；依單元拆桶，才不會因同一 src 名稱而讓
+     尚未 OCR 的多個單元只能合計出兩題。 */
+  if (questionIsCoreFallback(q)) return `core:${q.topic || 'unknown'}`;
+  return String(q.bookId || q.src || `unknown:${q.topic || ''}`);
+}
 /* 這是訓練帶，不冒充教材印刷分類。只有 role 有頁面證據時才能稱為例題／章末題；
    其餘題只依原始難度放到打底、銜接或伸展帶，用來配合目前掌握度。 */
 function questionTrainingBand(q) {
@@ -3757,6 +3764,9 @@ function questionTrainingBand(q) {
   if (q.role === 'chapter-end-hard') return 'stretch';
   if (q.role === 'chapter-end-medium') return 'bridge';
   return Number(q.diff) <= 1 ? 'foundation' : Number(q.diff) >= 3 ? 'stretch' : 'bridge';
+}
+function questionTrainingBandLabel(q) {
+  return ({ foundation:'打底', bridge:'銜接', stretch:'伸展' })[questionTrainingBand(q)] || '銜接';
 }
 function questionRoleFitWeight(q, solveP, topic) {
   const band = questionTrainingBand(q);
@@ -3819,8 +3829,13 @@ function questionSelectionReason(q, signals) {
   if (!row.n) {
     if (q.role === 'example') return '尚未校準的教材例題；先確認能否建立第一條解題路線';
     if (q.role === 'chapter-end-easy') return '教材章末基礎題；用來確認基本方法能否獨立取回';
-    if (q.role === 'chapter-end-hard') return '教材章末進階題；目前掌握度已適合往上伸展';
-    if (questionIsCoreFallback(q)) return `「${TOPICS[q.topic]}」教材尚未完成安全匯入，先用可重算核心題補齊範圍`;
+    if (q.role === 'chapter-end-hard') {
+      const evidenceN = Number(topic.n || 0), accuracy = evidenceN ? Number(topic.ok || 0) / evidenceN : null;
+      return evidenceN >= 8 && accuracy >= .72
+        ? '教材章末進階題；目前多次證據顯示可往上伸展'
+        : '尚未校準的教材伸展題；確認基本方法能否換到較複雜情境';
+    }
+    if (questionIsCoreFallback(q)) return `「${TOPICS[q.topic]}」目前沒有載入已驗證教材題，先用可重算核心題補齊範圍`;
     return '尚未取得你的作答證據';
   }
   if (row.guess) return '曾猜中，不能視為真正掌握';
@@ -4469,8 +4484,9 @@ function dedupeStems(list, cnt) {
 let prac = null;
 function pracNext() {
   if (prac.i >= prac.queue.length) return pracDone();
-  renderQuestion(prac.queue[prac.i], {
-    head: `第 ${prac.i + 1} / ${prac.queue.length} 題`,
+  const current = prac.queue[prac.i];
+  renderQuestion(current, {
+    head: `第 ${prac.i + 1} / ${prac.queue.length} 題${prac.mode === 'adaptive-textbook' ? `｜${questionTrainingBandLabel(current)}` : ''}`,
     hideTopic: prac.hideTopic || prac.mode === 'mixed',
     noTimer: prac.noTimer || prac.mode === 'mixed',
     reason: prac.reasons && prac.reasons[prac.queue[prac.i].id],
@@ -4534,6 +4550,9 @@ function pracDone() {
   const showSpeed = !prac.noTimer && prac.mode !== 'mixed' && timerOn();
   const slowOk = showSpeed ? r.filter((x) => x.ok && x.ms > x.target * 1.5).length : 0;
   const hardWins = all.filter((x, i) => !x.excluded && x.ok && prac.queue[i].diff === 3).length;
+  const completedBands = prac.mode === 'adaptive-textbook'
+    ? all.reduce((out, x, i) => { if (!x.excluded && prac.queue[i]) out[questionTrainingBand(prac.queue[i])]++; return out; }, { foundation:0, bridge:0, stretch:0 })
+    : null;
   const rows = all.map((x, i) => {
     const q = prac.queue[i];
     if (x.excluded) return `<tr><td>${TOPICS[q.topic]}</td><td colspan="${showSpeed ? 3 : 2}" class="dim">${x.feedback ? escH(QUESTION_FEEDBACK_LABELS[x.feedback] || '已換題') + '；未列入能力紀錄' : '中途離開，未列入紀錄'}</td></tr>`;
@@ -4572,6 +4591,7 @@ function pracDone() {
   app().innerHTML = `
     <h1>${prac.mode === 'adaptive-textbook' ? '教材混合精選結果' : '刷題結果'}</h1>
     <div class="card">
+      ${completedBands ? `<p class="dim fs13">本輪路徑：打底 ${completedBands.foundation} 題｜銜接 ${completedBands.bridge} 題｜伸展 ${completedBands.stretch} 題</p>` : ''}
       ${prac.picked && prac.picked.length ? `<p class="dim fs13">🔒 本輪鎖定：${prac.picked.map((p) => `${TOPICS[p.k]}（${p.reason}）`).join('、')}</p>` : ''}
       <p class="big">答對 <b>${okN} / ${r.length}</b>${slowOk ? `，其中 <b class="warnc">${slowOk} 題「對但超時」</b>（考場上等於失分，已加入錯題本重練速度）` : ''}</p>
       ${cheer ? `<p class="praise">🎉 ${cheer}</p>` : ''}
@@ -5113,7 +5133,7 @@ function renderMockIntro() {
       <div class="paper-source-grid">${PAPER_SOURCES.map(paperSourceCardHTML).join('')}</div>
       ${paperRunHistoryHTML()}
     </section>
-    <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的教材題排在前面，並避免同卷只換數字的近似題。</p><small>不顯示單題速度，每回最多同單元 2 題；正式 20 題、100 分鐘仍只用來校準。</small></div><button class="btn primary big" onclick="startAdaptiveTextbook(10)">開始今日精選</button></section>
+    <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的題排在前面，再依目前證據混合打底、銜接與伸展題。</p><small>不顯示單題速度；正常情況同單元、同一本教材各最多 2 題，尚未安全匯入的單元由核心題補位。</small></div><button class="btn primary big" onclick="startAdaptiveTextbook(10)">開始今日精選</button></section>
     ${due.length ? `<div class="card next-action"><div><span class="eyebrow">第二天到期</span><h2>${due.length} 題昨天沒有方向</h2><p>今天再看一次題目。仍無方向，才開詳解。</p></div><button class="btn primary" onclick="startVisionScan('${due[0].id}')">再想一次</button></div>` : ''}
     <div class="training-choice">
     <section class="card choice-card"><span class="eyebrow">完整一回</span><h2>全真模考</h2>
@@ -8719,13 +8739,16 @@ function adaptiveTextbookQueue(cnt) {
     && !questionIsTemporarilyObvious(q, signals));
   const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals)]));
   const ranked = pool.slice().sort((a, b) => scores.get(b.id) - scores.get(a.id) || String(a.id).localeCompare(String(b.id)));
-  const queue = [], groups = new Set(), skeletons = new Set(), topicUse = Object.create(null);
+  const queue = [], groups = new Set(), skeletons = new Set(), topicUse = Object.create(null), sourceUse = Object.create(null);
   const add = (q, enforceMix) => {
     const skeleton = qSkeleton(q);
+    const source = questionSourceBucket(q);
     if (queue.includes(q) || (q.grp && groups.has(q.grp)) || (skeleton.length >= 12 && skeletons.has(skeleton))) return false;
     if (enforceMix && (topicUse[q.topic] || 0) >= 2) return false;
+    if (enforceMix && (sourceUse[source] || 0) >= 2) return false;
     queue.push(q); if (q.grp) groups.add(q.grp); if (skeleton.length >= 12) skeletons.add(skeleton);
     topicUse[q.topic] = (topicUse[q.topic] || 0) + 1;
+    sourceUse[source] = (sourceUse[source] || 0) + 1;
     return true;
   };
   /* 先收真正到期的錯題／保留重測，再用三個訓練帶補滿。冷啟動預設約 3:5:2，
@@ -8736,15 +8759,18 @@ function adaptiveTextbookQueue(cnt) {
   const targets = adaptiveBandTargets(cnt, signals);
   const bandCount = () => queue.reduce((out, q) => { const band = questionTrainingBand(q); out[band]++; return out; }, { foundation:0, bridge:0, stretch:0 });
   for (const band of ['foundation', 'bridge', 'stretch']) {
+    if (queue.length >= cnt) break;
     for (const q of ranked) {
+      if (queue.length >= cnt) break;
       if (questionTrainingBand(q) !== band || bandCount()[band] >= targets[band]) continue;
-      add(q, true); if (queue.length >= cnt) break;
+      add(q, true);
     }
   }
-  for (const q of ranked) { add(q, true); if (queue.length >= cnt) break; }
-  for (const q of ranked) { add(q, false); if (queue.length >= cnt) break; }
+  if (queue.length < cnt) for (const q of ranked) { add(q, true); if (queue.length >= cnt) break; }
+  if (queue.length < cnt) for (const q of ranked) { add(q, false); if (queue.length >= cnt) break; }
   adaptiveTextbookQueue.lastSignals = signals;
   adaptiveTextbookQueue.lastBandTargets = targets;
+  adaptiveTextbookQueue.lastSourceCounts = { ...sourceUse };
   return queue;
 }
 function startAdaptiveTextbook(cnt) {

@@ -131,7 +131,7 @@ test('教材混合精選不被正式卷題型比例限制，並排除眼刷留�
     };
   })()`));
   assert.equal(result.n, 10);
-  assert.deepEqual(result.types, ['fill']);
+  assert.ok(result.types.includes('fill'), '教材填答題不會被正式卷題型配額排除');
   assert.equal(result.held, false);
   assert.equal(result.obvious, false);
   assert.ok(result.maxTopic <= 2);
@@ -189,13 +189,19 @@ test('教材精選冷啟動與能力變化都有明確三帶配額，不再整�
     BANK_MAP = null;
     const queue = adaptiveTextbookQueue(10);
     const actual = queue.reduce((out, q) => { out[questionTrainingBand(q)]++; return out; }, { foundation:0, bridge:0, stretch:0 });
-    return { cold, weak, strong, actual, target:adaptiveTextbookQueue.lastBandTargets };
+    const sources = queue.reduce((out, q) => { const key = questionSourceBucket(q); out[key] = (out[key] || 0) + 1; return out; }, {});
+    const hard = queue.find((q) => questionTrainingBand(q) === 'stretch');
+    return { cold, weak, strong, actual, target:adaptiveTextbookQueue.lastBandTargets, sources,
+      hardReason:hard ? questionSelectionReason(hard, adaptiveTextbookQueue.lastSignals) : '' };
   })()`));
   assert.deepEqual(result.cold, { foundation:3, bridge:5, stretch:2, evidenceN:0, acc:null });
   assert.deepEqual(result.weak, { foundation:4, bridge:5, stretch:1, evidenceN:10, acc:.3 });
   assert.deepEqual(result.strong, { foundation:2, bridge:4, stretch:4, evidenceN:10, acc:.8 });
   assert.deepEqual(result.actual, { foundation:3, bridge:5, stretch:2 });
   assert.deepEqual(result.target, result.cold);
+  assert.ok(Object.keys(result.sources).length >= 5, '10 題正常情況至少跨 5 個教材／核心單元來源');
+  assert.ok(Math.max(...Object.values(result.sources)) <= 2, '同一本教材正常情況最多 2 題');
+  assert.doesNotMatch(result.hardReason, /目前掌握度已適合/, '沒有作答證據時不可假稱已適合進階');
 });
 
 test('看過詳解的訂正不冒充獨立答對，猜中與一眼會寫分開處理', () => {
