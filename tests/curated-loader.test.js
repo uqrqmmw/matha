@@ -20,13 +20,13 @@ test('私有 manifest 以短效簽署網址且禁用 HTTP 快取下載', async (
   let directManifestDownloads = 0;
   context.__storage = { from() { return {
     createSignedUrl: async (name, seconds) => ({ data: { signedUrl: `https://example.supabase.co/storage/${name}?token=test-${seconds}` }, error: null }),
-    download: async (name) => { if (name === 'manifest.json') directManifestDownloads++; return { data: null, error: new Error('unexpected direct download') }; },
+    download: async (name) => { if (name === 'manifest-0825c.json') directManifestDownloads++; return { data: null, error: new Error('unexpected direct download') }; },
   }; } };
   run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
 
   assert.equal(await run('pullCuratedContent()'), true);
   assert.equal(directManifestDownloads, 0);
-  assert.match(fetchedUrl, /manifest\.json\?token=test-60&matha_cb=0825c-/);
+  assert.match(fetchedUrl, /manifest-0825c\.json\?token=test-60&matha_cb=0825d-/);
   assert.equal(fetchOptions.cache, 'no-store');
 });
 
@@ -37,7 +37,7 @@ test('登入後私有題包會驗 SHA-256、寫入內容快取並加入題庫', 
   const pack = `${JSON.stringify({ kind: 'qpack', name: '私有測試包', items: [{ id: 'curated-test-1', topic: 'num', type: 'fill', diff: 1, q: '測試題', ans: ['1'], sol: '解法', src: '私有測試包' }] })}\n`;
   const digest = crypto.createHash('sha256').update(pack).digest('hex');
   const manifest = JSON.stringify({ schema: 1, visibility: 'authenticated', generatedAt: '2026-07-16T00:00:00Z', packs: [{ id: 'curated-test', name: '私有測試包', file: 'test.json', count: 1, sha256: digest }] });
-  context.__files = { 'manifest.json': new Blob([manifest]), 'test.json': new Blob([pack]) };
+  context.__files = { 'manifest-0825c.json': new Blob([manifest]), 'test.json': new Blob([pack]) };
   context.__downloads = [];
   context.__storage = { from() { return { download: async (name) => { context.__downloads.push(name); return { data: context.__files[name], error: null }; } }; } };
   run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
@@ -70,7 +70,7 @@ test('私有題包雜湊不符時拒絕加入，不污染既有題庫', async ()
   context.TextDecoder = TextDecoder;
   const pack = `${JSON.stringify({ kind: 'qpack', name: '壞包', items: [] })}\n`;
   const manifest = JSON.stringify({ schema: 1, visibility: 'authenticated', generatedAt: '2026-07-16T00:00:00Z', packs: [{ id: 'curated-bad', name: '壞包', file: 'bad.json', count: 0, sha256: '0'.repeat(64) }] });
-  context.__files = { 'manifest.json': new Blob([manifest]), 'bad.json': new Blob([pack]) };
+  context.__files = { 'manifest-0825c.json': new Blob([manifest]), 'bad.json': new Blob([pack]) };
   context.__storage = { from() { return { download: async (name) => ({ data: context.__files[name], error: null }) }; } };
   run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
   const ok = await run('pullCuratedContent()');
