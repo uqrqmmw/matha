@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0825b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -742,6 +742,24 @@ function exactStoredBytes(value) {
   if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
   return null;
 }
+async function downloadCuratedManifestFresh(bucket) {
+  // Storage 物件的 Cache-Control 可能讓同名 manifest 在平板上停留一小時。
+  // 短效 signed URL 加上版本／時間參數，確保每次啟動都拿到最新清冊；題包本身已有內容雜湊檔名。
+  if (!bucket || typeof bucket.createSignedUrl !== 'function') return bucket.download(CURATED_MANIFEST);
+  const signed = await bucket.createSignedUrl(CURATED_MANIFEST, 60);
+  if (signed.error || !signed.data || !signed.data.signedUrl) {
+    return { data: null, error: signed.error || { message: 'manifest 簽署網址建立失敗' } };
+  }
+  const url = new URL(signed.data.signedUrl, SUPA_URL);
+  url.searchParams.set('matha_cb', `${APP_VER}-${Date.now()}`);
+  try {
+    const response = await fetch(url.toString(), { cache: 'no-store' });
+    if (!response.ok) return { data: null, error: { message: `manifest 下載失敗（HTTP ${response.status}）` } };
+    return { data: await response.blob(), error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
+}
 function rerenderActiveView() {
   if (sessionActive) return;
   const active = document.querySelector('nav button.active');
@@ -758,7 +776,7 @@ async function pullCuratedContent() {
   trustedCuratedQuestions = new WeakSet();
   try {
     const bucket = supa.storage.from(CURATED_BUCKET);
-    const manifestRes = await bucket.download(CURATED_MANIFEST);
+    const manifestRes = await downloadCuratedManifestFresh(bucket);
     if (manifestRes.error || !manifestRes.data) throw new Error((manifestRes.error && manifestRes.error.message) || 'manifest 下載失敗');
     const manifestBytes = await manifestRes.data.arrayBuffer();
     const manifestSha = await sha256Bytes(manifestBytes);

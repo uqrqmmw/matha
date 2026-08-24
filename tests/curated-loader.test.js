@@ -5,6 +5,31 @@ const crypto = require('node:crypto');
 const test = require('node:test');
 const { loadApp } = require('./helpers/load-app');
 
+test('私有 manifest 以短效簽署網址且禁用 HTTP 快取下載', async () => {
+  const { context, run } = loadApp();
+  context.crypto = crypto.webcrypto;
+  context.TextDecoder = TextDecoder;
+  const manifest = JSON.stringify({ schema: 1, visibility: 'authenticated', generatedAt: '2026-08-25T00:00:00Z', packs: [] });
+  let fetchedUrl = '';
+  let fetchOptions = null;
+  context.fetch = async (url, options) => {
+    fetchedUrl = String(url);
+    fetchOptions = options;
+    return { ok: true, blob: async () => new Blob([manifest]) };
+  };
+  let directManifestDownloads = 0;
+  context.__storage = { from() { return {
+    createSignedUrl: async (name, seconds) => ({ data: { signedUrl: `https://example.supabase.co/storage/${name}?token=test-${seconds}` }, error: null }),
+    download: async (name) => { if (name === 'manifest.json') directManifestDownloads++; return { data: null, error: new Error('unexpected direct download') }; },
+  }; } };
+  run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
+
+  assert.equal(await run('pullCuratedContent()'), true);
+  assert.equal(directManifestDownloads, 0);
+  assert.match(fetchedUrl, /manifest\.json\?token=test-60&matha_cb=0825c-/);
+  assert.equal(fetchOptions.cache, 'no-store');
+});
+
 test('登入後私有題包會驗 SHA-256、寫入內容快取並加入題庫', async () => {
   const { context, run } = loadApp();
   context.crypto = crypto.webcrypto;
