@@ -181,6 +181,25 @@ test('十一單元固定保留空白頁，完成後固定兩天再測', () => {
   assert.notEqual(result.dueDate, run('today()'));
 });
 
+test('十一單元未到兩天不能提前重寫並順延原定重測', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    renderOutlineSheet = () => {};
+    let alerts = 0; alert = () => { alerts++; };
+    const unit = OUTLINE_DEFAULTS[0];
+    const due = addDays(today(), 2);
+    S.outlineAttempts = [{ id:'locked-outline', unitId:unit.id, d:today(), ts:1, due, coverage:70 }];
+    outlineSess = null; sessionActive = false;
+    startOutlineRecall(unit.id);
+    const locked = { alerts, started:!!outlineSess, active:sessionActive, due:outlineLast(unit.id).due };
+    S.outlineAttempts[0].due = today();
+    startOutlineRecall(unit.id);
+    return { locked, opened:!!outlineSess, originalDue:due };
+  })()`));
+  assert.deepEqual(result.locked, { alerts:1, started:false, active:false, due:result.originalDue });
+  assert.equal(result.opened, true);
+});
+
 test('十一單元大綱來源已完整建立語意核對基準', () => {
   const { run } = loadApp();
   const result = plain(run(`OUTLINE_DEFAULTS.map((unit) => ({ id:unit.id, title:unit.title, n:unit.reference.length }))`));

@@ -10,7 +10,7 @@ const TOPICS = new Set(['num', 'line', 'poly', 'seq', 'comb', 'prob', 'data', 't
 const TYPES = new Set(['single', 'multi', 'fill']);
 const OUT_OF_RANGE_RE = [/\\(?:cot|sec|csc)\b/, /(?:餘切|正割|餘割)\s*函數/, /十分逼近法/];
 const SUSPICIOUS_HTML_RE = /<\s*(?:script|iframe|object|embed|style)\b|\bon\w+\s*=|javascript\s*:/i;
-const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?圖(?:所示|可知|中)?|(?:下|上|左|右|附)圖(?:所示|中)?|圖中|圖示(?:如下)?|示意圖|依圖作答|(?:根據|依據|參照|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表(?:中|所示|可知)?/;
+const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?圖(?:所示|可知|中)?|(?:下|上|左|右|附)圖(?:所示|中)?|圖中|圖示(?:如下)?|示意圖|依圖作答|(?:左|右|上|下)(?:側|方)(?:的)?(?:函數|座標|坐標|幾何|統計)?(?:圖|圖形|圖像|座標平面|坐標平面)|(?:座標|坐標)平面(?:中|上)?(?:繪有|畫有|標有|標示|如下|如附).{0,12}(?:曲線|圖形|直線|圓|點)|(?:曲線|圖形|座標平面|坐標平面)(?:如下|如附|如右|如左|如上|如下方|如右側)|(?:根據|依據|參照|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表(?:中|所示|可知)?/;
 const QUESTION_ROLES = new Set(['example', 'chapter-end-easy', 'chapter-end-medium', 'chapter-end-hard', 'comprehensive-review', 'unclassified']);
 const BOOK_BY_SOURCE = new Map(TEXTBOOK_LIBRARY.books.flatMap((book) => (book.sourceNames || []).map((name) => [name, book])));
 const BOOK_BY_ID = new Map(TEXTBOOK_LIBRARY.books.map((book) => [book.id, book]));

@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0825a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -842,7 +842,7 @@ const OUT_OF_RANGE_RE = [
 /* 掃描題若文字直接依賴「圖中／右圖／下圖」卻沒有圖資，先放進待補圖佇列，絕不刪題或硬出殘題。
    私有裁圖只有附來源頁、裁切框、雙重內容 QA 與 sha256 時才算可用；整頁掃描不可當 fallback，
    因為例題頁經常同頁印解答或手寫答案。外部題包自報 visualComplete/figureOptional 不具信任力。 */
-const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?圖(?:所示|可知|中)?|(?:下|上|左|右|附)圖(?:所示|中)?|圖中|圖示(?:如下)?|示意圖|依圖作答|(?:根據|依據|參照|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表(?:中|所示|可知)?/;
+const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?圖(?:所示|可知|中)?|(?:下|上|左|右|附)圖(?:所示|中)?|圖中|圖示(?:如下)?|示意圖|依圖作答|(?:左|右|上|下)(?:側|方)(?:的)?(?:函數|座標|坐標|幾何|統計)?(?:圖|圖形|圖像|座標平面|坐標平面)|(?:座標|坐標)平面(?:中|上)?(?:繪有|畫有|標有|標示|如下|如附).{0,12}(?:曲線|圖形|直線|圓|點)|(?:曲線|圖形|座標平面|坐標平面)(?:如下|如附|如右|如左|如上|如下方|如右側)|(?:根據|依據|參照|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表(?:中|所示|可知)?/;
 function trustedVisualQuestion(q) {
   if (!q) return false;
   if (BUILTIN_IDS.has(q.id) || trustedCuratedQuestions.has(q)) return true;
@@ -3859,9 +3859,10 @@ function renderOutlineRecall() {
   const tiles = units.map((unit, i) => {
     const last = outlineLast(unit.id);
     const due = unit.reference && (!last || String(last.due || '') <= today());
+    const locked = unit.reference && last && /^\d{4}-\d{2}-\d{2}$/.test(String(last.due || '')) && String(last.due) > today();
     const state = !unit.reference ? '等待大綱' : !last ? '尚未測' : due ? '今天重測' : `下次 ${last.due}`;
     const score = last && last.coverage != null && Number.isFinite(Number(last.coverage)) ? `${Number(last.coverage)}%` : (last ? '尚未批改' : '空白頁');
-    return `<button class="recall-tile${due ? ' due' : ''}" onclick="startOutlineRecall('${unit.id}')">
+    return `<button class="recall-tile${due ? ' due' : ''}" onclick="startOutlineRecall('${unit.id}')"${locked ? ' disabled aria-disabled="true"' : ''}>
       <span class="recall-no">${String(i + 1).padStart(2, '0')}</span><strong>${escH(unit.title)}</strong>
       <span>${escH(state)}</span><b>${score}</b></button>`;
   }).join('');
@@ -3874,6 +3875,11 @@ function renderOutlineRecall() {
 function startOutlineRecall(unitId) {
   const unit = outlineUnits().find((x) => x.id === unitId);
   if (!unit) return;
+  const last = outlineLast(unit.id);
+  if (unit.reference && last && /^\d{4}-\d{2}-\d{2}$/.test(String(last.due || '')) && String(last.due) > today()) {
+    alert(`這份要到 ${last.due} 再從空白重測；現在先讓記憶真正隔兩天。`);
+    return;
+  }
   outlineSess = { unit, t0: Date.now(), inkId: `outline:${unit.id}:${Date.now()}` };
   sessionActive = true; sessionMode = 'outline';
   renderOutlineSheet();
@@ -4832,7 +4838,12 @@ function visionKnown() {
 }
 function visionAdvancePaper(entries) {
   const next = (entries || []).find((x) => !x.paperSeen);
-  if (next) { visionOpenEntry(next, entries, true); return; }
+  if (next) {
+    const q = visionQuestionFromEntry(next);
+    app().innerHTML = `<div class="card"><h2>正在準備第 ${Number(next.examNo) || Number(next.paperIndex) + 1} 題</h2><p>先確認這題需要的圖形已完整保存在本機，完成前不會把題目算成已看過。</p><div class="actr"><button class="btn" onclick="visionAdvancePaper(vision && vision.paperEntries || [])">重新檢查</button></div></div>`;
+    afterFigurePreflight(q ? [q] : [], () => visionOpenEntry(next, entries, true));
+    return;
+  }
   sessionActive = false; sessionMode = null; sessionChrome(false); vision = null;
   renderVisionPaperResult(entries || []);
 }
@@ -6972,9 +6983,13 @@ function buildPaper(forVision) {
   const previousGroup = forVision
     ? (lastVisionPaper && lastVisionPaper.mixedGroupId)
     : ((S.mocks && S.mocks.length) ? S.mocks[S.mocks.length - 1].mixedGroupId : null);
-  const candidates = MOCK_MIXED_GROUPS.filter((g) => g.id !== previousGroup);
-  const mixedGroup = (candidates.length ? candidates : MOCK_MIXED_GROUPS)[Math.floor(Math.random() * (candidates.length || MOCK_MIXED_GROUPS.length))];
-  const mixedQuestions = mixedGroup.items.map((q, index) => ({
+  const eligibleMixedGroups = MOCK_MIXED_GROUPS.filter((group) => group.items.every((q) =>
+    !heldUntilTomorrow.has(q.id) && !(q.src && packIsOff(q.src))
+    && !(forVision && questionIsTemporarilyObvious(q, signals))));
+  const candidates = eligibleMixedGroups.filter((g) => g.id !== previousGroup);
+  const mixedPool = candidates.length ? candidates : eligibleMixedGroups;
+  const mixedGroup = mixedPool.length ? mixedPool[Math.floor(Math.random() * mixedPool.length)] : null;
+  const mixedQuestions = (mixedGroup ? mixedGroup.items : []).map((q, index) => ({
     ...q,
     grp: mixedGroup.id,
     groupId: mixedGroup.id,
@@ -6992,7 +7007,7 @@ function buildPaper(forVision) {
   for (const section of sections) for (let i = 0; i < section.qs.length; i++) {
     paper.push({ ...section.qs[i], examNo: paper.length + 1, examSection: section.spec.key, points: section.spec.points[i] });
   }
-  buildPaper.lastMixedGroupId = mixedGroup.id;
+  buildPaper.lastMixedGroupId = mixedGroup && mixedGroup.id || null;
   return paper;
 }
 function startMock() {
@@ -8179,10 +8194,13 @@ function renderStats() {
 /* 📦 題庫內容管理：外部題包按來源分組，可停用（紀錄保留、重啟即回） */
 function packCard() {
   const packs = Object.create(null); // src 是匯入欄位：null-proto 讓 "__proto__" 只是普通 key，索引不打原型鏈
+  const activeExtIds = new Set(BANK.slice(BUILTIN_N).map((q) => q.id));
   for (const q of extBankArr()) {
     const src = q.src || '（未標來源）';
-    const p = (packs[src] = packs[src] || { n: 0, units: new Set(), d: { 1: 0, 2: 0, 3: 0 }, real: !!q.src });
+    const p = (packs[src] = packs[src] || { n: 0, usable:0, pendingVisual:0, units: new Set(), d: { 1: 0, 2: 0, 3: 0 }, real: !!q.src });
     p.n++; p.units.add(q.topic); p.d[q.diff] = (p.d[q.diff] || 0) + 1;
+    if (activeExtIds.has(q.id)) p.usable++;
+    else if (questionMissingVisualAsset(q)) p.pendingVisual++;
   }
   const keys = Object.keys(packs);
   const checkedAt = curatedState.lastChecked
@@ -8205,10 +8223,10 @@ function packCard() {
   const rows = keys.map((src) => {
     const p = packs[src];
     const off = packIsOff(src);
-    return `<tr><td>${escH(src)}${off ? ' <span class="badc">（停用中）</span>' : ''}</td><td>${p.n} 題</td><td>${p.units.size} 單元</td><td class="dim">易${p.d[1] || 0}/中${p.d[2] || 0}/難${p.d[3] || 0}</td>
+    return `<tr><td>${escH(src)}${off ? ' <span class="badc">（停用中）</span>' : ''}</td><td>${p.usable} 題可用${p.pendingVisual ? `<br><span class="warnc">${p.pendingVisual} 題待補圖</span>` : ''}</td><td>${p.units.size} 單元</td><td class="dim">易${p.d[1] || 0}/中${p.d[2] || 0}/難${p.d[3] || 0}</td>
       <td>${p.real ? `<button class="btn sm" onclick="togglePack('${jsA(src)}')">${off ? '啟用' : '停用'}</button>` : ''}</td></tr>`;
   }).join('');
-  return `<div class="card"><h2>外部題庫 <span class="dim">共 ${extBankArr().length} 題${splitOn() ? '（已與作答狀態分家）' : ''}</span></h2>
+  return `<div class="card"><h2>外部題庫 <span class="dim">收錄 ${extBankArr().length} 題｜目前可用 ${activeExtIds.size} 題${missingVisualSkipped ? `｜待補圖 ${missingVisualSkipped} 題` : ''}${splitOn() ? '（已與作答狀態分家）' : ''}</span></h2>
     ${curatedLine}
     ${contentTableMissing ? '<p class="dim fs13">💡 到 Supabase Dashboard 跑一次 schema.sql 的 content_packs 段後，題庫將與作答狀態分家：每次作答不再整包上傳、20+ 本講義也放得下。</p>' : ''}
     <div class="tblwrap"><table class="tbl"><tr><th>來源</th><th>題數</th><th>覆蓋</th><th>難度分布</th><th></th></tr>${rows}</table></div></div>`;

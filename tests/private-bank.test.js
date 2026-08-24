@@ -44,6 +44,9 @@ test('圖形引用只有在附帶圖資或人工確認文字完整時才可出�
   assert.equal(questionMissingVisualAsset(q('b', '如右圖，求 x', { fig:'<svg></svg>' })), true);
   assert.equal(questionMissingVisualAsset(q('c', '如右圖，求 x', { visualComplete:true })), true);
   assert.equal(questionMissingVisualAsset(q('d', '如右圖，求 x', { figureAsset:'figures/d.png' })), true);
+  for (const [index, text] of [
+    '觀察右側的函數圖形', '參考右側座標圖形', '下方座標平面繪有曲線', '曲線如下', '座標平面如附',
+  ].entries()) assert.equal(questionMissingVisualAsset(q(`phrase-${index}`, text)), true, text);
   const linked = q('e', '如右圖，求 x', { bookId:'matha-114-cubic-ineq', page:12, figureAsset:{ ...verified, sourcePdfSha256:'e87ad8f0e0b0d26c5bd934770686e10a168fd326a9486e90cac72ee57419b5c1' } });
   assert.equal(questionMissingVisualAsset(linked), false);
   assert.equal(verifiedFigureAsset(linked), linked.figureAsset);

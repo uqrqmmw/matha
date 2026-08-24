@@ -116,6 +116,14 @@ test('獨立審核可用較明確的題號綁定欄位名稱，但其他完整�
   assert.throws(() => promoteReviewedFigures(missing), /integrity gate/);
 });
 
+test('獨立審核可明列 candidate 與 review groups 的題號綁定，但仍須通過其餘門檻', () => {
+  const fx = fixture();
+  delete fx.review.integrity.questionIdsMatchPendingQueue;
+  fx.review.integrity.questionIdsMatchCandidateGroupsReviewGroupsAndPendingQueue = true;
+  fs.writeFileSync(fx.reviewFile, JSON.stringify(fx.review));
+  assert.deepEqual(promoteReviewedFigures(fx).promotion.summary, { assets:1, questions:1 });
+});
+
 test('同一人自產自審、審核不完整或 crop 被改動時一律 fail closed', () => {
   const same = fixture();
   same.review.reviewer = 'crop-agent';

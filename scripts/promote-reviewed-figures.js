@@ -58,7 +58,8 @@ function reviewMap(review) {
     'cropPixelsExactlyMatchSourceAtBbox'];
   const legacyQuestionBinding = review.integrity
     && (review.integrity.questionIdsMatchPendingQueue === true
-      || review.integrity.questionIdsMatchCandidateGroupsAndPendingQueue === true);
+      || review.integrity.questionIdsMatchCandidateGroupsAndPendingQueue === true
+      || review.integrity.questionIdsMatchCandidateGroupsReviewGroupsAndPendingQueue === true);
   const legacyIntegrity = review.integrity && legacyQuestionBinding
     && requiredIntegrity.every((key) => review.integrity[key] === true);
   const modernIntegrity = review.decision === 'pass' && review.inputIntegrity

@@ -71,6 +71,20 @@ test('有圖題只有完整私有裁圖證據通過時才可進題庫，路徑�
   assert.doesNotMatch(result.html, /books\/matha/);
 });
 
+test('常見側邊圖形與座標平面措辭都會 fail closed，題庫數字分開顯示可用與待補圖', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const phrases = ['觀察右側的函數圖形', '參考右側座標圖形', '下方座標平面繪有曲線', '曲線如下', '座標平面如附'];
+    const rows = phrases.map((text, i) => ({ id:'missing-figure-' + i, topic:'line', type:'fill', diff:2, q:text, ans:['1'], src:'缺圖測試' }));
+    S.extbank = rows; applyExtBank();
+    return { missing:rows.map(questionMissingVisualAsset), available:rows.filter((row) => !!bankById(row.id)).length, html:packCard() };
+  })()`));
+  assert.deepEqual(result.missing, [true, true, true, true, true]);
+  assert.equal(result.available, 0);
+  assert.match(result.html, /目前可用 0 題/);
+  assert.match(result.html, /待補圖 5 題/);
+});
+
 test('整回開始前會先驗證所有必要題圖；下載失敗時不執行開始回呼', async () => {
   const { context, run } = loadApp();
   context.__figure = {
@@ -731,6 +745,44 @@ test('眼睛刷題入口不再提供單題模式', () => {
   assert.match(source, /20 題完整學測結構/);
   assert.match(source, /開始一整回（20 題）/);
   assert.doesNotMatch(source, /看一題，只找方向|只用眼睛刷一題|再看一題/);
+});
+
+test('眼睛刷題的共享混合題組也排除留到明天與一眼就會的題', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const blocked = MOCK_MIXED_GROUPS[0];
+    S.visionQueue = [{ qid:blocked.items[0].id, stage:'waiting', done:false, due:addDays(today(), 1) }];
+    S.visionHistory = [{ qid:blocked.items[1].id, outcome:'obvious', d:today(), ts:1 }];
+    const paper = buildPaper(true), ids = paper.map((q) => q.id);
+    return { n:paper.length, chosen:buildPaper.lastMixedGroupId, blocked:blocked.id, leaks:blocked.items.filter((q) => ids.includes(q.id)).map((q) => q.id) };
+  })()`));
+  assert.equal(result.n, 20);
+  assert.notEqual(result.chosen, result.blocked);
+  assert.deepEqual(result.leaks, []);
+});
+
+test('續作眼睛刷題每一題都先做題圖預檢，失敗時不開啟也不算看過', () => {
+  const { context, run } = loadApp();
+  context.__app = { innerHTML:'' };
+  context.document.querySelector = (selector) => selector === '#app' ? context.__app : null;
+  context.__events = [];
+  const result = plain(run(`(() => {
+    const q = BANK.find((row) => row.type === 'fill');
+    const entries = [
+      { id:'seen', qid:q.id, examNo:1, paperSeen:true },
+      { id:'next', qid:q.id, examNo:2, paperSeen:false },
+    ];
+    vision = { paperEntries:entries, paperRun:true };
+    visionOpenEntry = () => { __events.push('opened'); };
+    afterFigurePreflight = (questions, begin) => { __events.push('preflight:' + questions.map((row) => row.id).join(',')); globalThis.__begin = begin; };
+    visionAdvancePaper(entries);
+    const before = __events.slice();
+    __begin();
+    return { before, after:__events.slice(), seen:entries[1].paperSeen };
+  })()`));
+  assert.deepEqual(result.before, [`preflight:${run("BANK.find((row) => row.type === 'fill').id")}`]);
+  assert.deepEqual(result.after.slice(-1), ['opened']);
+  assert.equal(result.seen, false);
 });
 
 test('裝置配對只接受一次性 magic-link token，不再解析帳密或 session 權杖', () => {
