@@ -56,7 +56,17 @@ function reviewMap(review) {
   const requiredIntegrity = ['pdfSha256MatchesManifest', 'cropSha256MatchesManifest', 'sourcePageSha256MatchesManifest',
     'cropDimensionsMatchManifest', 'sourcePageDimensionsMatchManifest', 'bboxWithinSourcePage',
     'cropPixelsExactlyMatchSourceAtBbox', 'questionIdsMatchPendingQueue'];
-  if (requiredIntegrity.some((key) => review.integrity && review.integrity[key] !== true)) {
+  const legacyIntegrity = review.integrity && requiredIntegrity.every((key) => review.integrity[key] === true);
+  const modernIntegrity = review.decision === 'pass' && review.inputIntegrity
+    && ['candidateManifestSha256Matches', 'reviewManifestSha256Matches', 'manifestAssetCountMatches',
+      'manifestQuestionCountMatches'].every((key) => review.inputIntegrity[key] === true)
+    && review.assets.every((row) => row && row.integrity && row.visual
+      && ['pdfSha', 'sourcePageSha', 'cropSha', 'candidateSha', 'dimensions', 'bbox', 'pixelEquality',
+        'bookPageQuestionIds'].every((key) => row.integrity[key] === true)
+      && row.visual.completeFigureAndLabels === true && row.visual.containsAnswer === false
+      && row.visual.containsSolution === false && row.visual.containsHandwriting === false
+      && row.visual.containsAdjacentQuestion === false && row.visual.containsUnnecessaryQuestionText === false);
+  if (!legacyIntegrity && !modernIntegrity) {
     throw new Error('Independent review did not pass every integrity gate');
   }
   const out = new Map();
@@ -90,8 +100,9 @@ function promoteReviewedFigures(options) {
   }
   const independent = readJson(reviewFile);
   const passed = reviewMap(independent);
-  if (passed.size !== batch.assets.length || Number(independent.summary && independent.summary.failed) !== 0
-    || Number(independent.summary && independent.summary.passed) !== batch.assets.length) {
+  const passedCount = Number(independent.summary && (independent.summary.passed ?? independent.summary.passedAssets));
+  const failedCount = Number(independent.summary && (independent.summary.failed ?? independent.summary.failedAssets));
+  if (passed.size !== batch.assets.length || failedCount !== 0 || passedCount !== batch.assets.length) {
     throw new Error('Independent review does not cover the complete crop batch');
   }
 
@@ -109,7 +120,11 @@ function promoteReviewedFigures(options) {
       throw new Error(`Asset ${asset.groupId} lacks a distinct crop producer and reviewer`);
     }
     const safety = asset.safety || {};
-    if (safety.verified !== true || safety.onlyNecessaryFigure !== true || safety.containsAnswer !== false
+    // Producer batches may deliberately remain `verified:false` until the
+    // independent reviewer finishes. `firstPassPassed:true` is the producer's
+    // content gate; the independent review below is what authorizes promotion.
+    const producerSafetyPassed = safety.verified === true || safety.firstPassPassed === true;
+    if (!producerSafetyPassed || safety.onlyNecessaryFigure !== true || safety.containsAnswer !== false
       || safety.containsSolution !== false || safety.containsHandwriting !== false
       || safety.containsAdjacentQuestion !== false || safety.containsQuestionText !== false) {
       throw new Error(`Asset ${asset.groupId} did not pass the content safety gates`);

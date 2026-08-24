@@ -42,7 +42,7 @@ function fixture() {
       sourceRenderedPage:'pages/page-031.png', sourcePageSha256:sha(pageFile),
       bbox:{ x:100, y:200, width:200, height:120, pageWidth:1000, pageHeight:1400, coordinateSpace:'rendered-page-px', renderedPageDpi:180 },
       relativePath:'crops/figure.png', mime:'image/png', dimensions:{ width:200, height:120 }, sha256:sha(cropFile),
-      safety:{ verified:true, onlyNecessaryFigure:true, containsQuestionText:false, containsAnswer:false,
+      safety:{ verified:false, firstPassPassed:true, onlyNecessaryFigure:true, containsQuestionText:false, containsAnswer:false,
         containsSolution:false, containsHandwriting:false, containsAdjacentQuestion:false },
       reviewEvidence:{ sourcePageInspected:true, cropInspected:true, reviewer:'crop-agent' },
     }],
@@ -73,6 +73,36 @@ test('只有雙人審核且雜湊、來源頁、題號全部一致的裁圖可 p
   assert.equal(sha(path.join(result.uploadRoot, asset.path)), asset.sha256);
 });
 
+test('逐資產新版獨立審核格式也必須每項安全與完整性全數通過', () => {
+  const fx = fixture();
+  fx.review.decision = 'pass';
+  fx.review.summary = { passedAssets:1, failedAssets:0 };
+  fx.review.inputIntegrity = {
+    candidateManifestSha256Matches:true, reviewManifestSha256Matches:true,
+    manifestAssetCountMatches:true, manifestQuestionCountMatches:true,
+  };
+  fx.review.assets = [{
+    groupId:'cramer-p031-ex40', passed:true,
+    integrity:{ pdfSha:true, sourcePageSha:true, cropSha:true, candidateSha:true, dimensions:true,
+      bbox:true, pixelEquality:true, bookPageQuestionIds:true },
+    visual:{ completeFigureAndLabels:true, containsAnswer:false, containsSolution:false, containsHandwriting:false,
+      containsAdjacentQuestion:false, containsUnnecessaryQuestionText:false },
+  }];
+  delete fx.review.integrity;
+  fs.writeFileSync(fx.reviewFile, JSON.stringify(fx.review));
+  assert.deepEqual(promoteReviewedFigures(fx).promotion.summary, { assets:1, questions:1 });
+
+  const unsafe = fixture();
+  unsafe.review.decision = 'pass';
+  unsafe.review.summary = { passedAssets:1, failedAssets:0 };
+  unsafe.review.inputIntegrity = fx.review.inputIntegrity;
+  unsafe.review.assets = JSON.parse(JSON.stringify(fx.review.assets));
+  unsafe.review.assets[0].visual.containsAnswer = true;
+  delete unsafe.review.integrity;
+  fs.writeFileSync(unsafe.reviewFile, JSON.stringify(unsafe.review));
+  assert.throws(() => promoteReviewedFigures(unsafe), /integrity gate/);
+});
+
 test('同一人自產自審、審核不完整或 crop 被改動時一律 fail closed', () => {
   const same = fixture();
   same.review.reviewer = 'crop-agent';
@@ -83,6 +113,11 @@ test('同一人自產自審、審核不完整或 crop 被改動時一律 fail cl
   incomplete.review.integrity.cropPixelsExactlyMatchSourceAtBbox = false;
   fs.writeFileSync(incomplete.reviewFile, JSON.stringify(incomplete.review));
   assert.throws(() => promoteReviewedFigures(incomplete), /integrity gate/);
+
+  const noProducerSafety = fixture();
+  noProducerSafety.batch.assets[0].safety.firstPassPassed = false;
+  fs.writeFileSync(noProducerSafety.batchFile, JSON.stringify(noProducerSafety.batch));
+  assert.throws(() => promoteReviewedFigures(noProducerSafety), /content safety gates/);
 
   const changed = fixture();
   fs.appendFileSync(path.join(changed.root, 'crops', 'figure.png'), 'tampered');
