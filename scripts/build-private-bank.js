@@ -293,6 +293,7 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
     visibility: 'authenticated',
     generatedAt,
     sourceFile: path.basename(sourceFile),
+    sourceSha256: sha(fs.readFileSync(sourceFile)),
     report,
     library: {
       schema: TEXTBOOK_LIBRARY.schema,

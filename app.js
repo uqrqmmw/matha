@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825k'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825m'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -7896,14 +7896,30 @@ ${learnerContextForAi(learnerTopic)}
   if (!payload.json || typeof payload.json !== 'object') throw new Error('OpenAI 沒有回傳完整詳批資料');
   return { json: payload.json, model: String(payload.model || '') };
 }
+function normalizePaperDetailEvidence(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+    .replace(/\\(?:left|right|displaystyle|textstyle|scriptstyle|scriptscriptstyle)\b/g, '')
+    .replace(/\\[()[\]]/g, '')
+    .replace(/\${1,2}/g, '')
+    .replace(/\\(?:,|;|:|!|quad|qquad)/g, '')
+    .replace(/\\\s+/g, '')
+    .replace(/[{}~\s]/g, '');
+}
 function paperNormalizeAiDetail(source, no, raw, model) {
   const text = (value, max) => String(value == null ? '' : value).trim().slice(0, max);
   const rawConfidence = ['high', 'medium', 'low'].includes(raw && raw.confidence) ? raw.confidence : 'low';
   const readable = !!raw && raw.readable !== false;
+  const read = text(raw && raw.read, 800);
   const firstErrorEvidence = !raw || raw.firstErrorEvidence == null ? null : text(raw.firstErrorEvidence, 260);
   const firstError = !raw || raw.firstError == null ? null : text(raw.firstError, 360);
-  /* 沒有逐字卷面證據，就算模型自稱高信心，也不得把推測當成「第一錯步」寫入學生模型。 */
-  const trustedDiagnosis = readable && rawConfidence !== 'low' && !!firstErrorEvidence && !!firstError;
+  const normalizedRead = normalizePaperDetailEvidence(read);
+  const normalizedEvidence = normalizePaperDetailEvidence(firstErrorEvidence);
+  const evidenceAppearsInRead = normalizedEvidence.length >= 3 && normalizedRead.includes(normalizedEvidence);
+  /* 證據不只要有值，還必須確實存在於模型自己的卷面轉錄；只容許減號、LaTeX 外框與空白等表示差異。
+     否則就算模型自稱高信心，也不得把推測當成「第一錯步」寫入學生模型。 */
+  const trustedDiagnosis = readable && rawConfidence !== 'low' && evidenceAppearsInRead && !!firstError;
   const confidence = trustedDiagnosis ? rawConfidence : 'low';
   const marks = (confidence === 'high' && Array.isArray(raw && raw.marks) ? raw.marks : []).slice(0, 2).map((mark) => {
     const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
@@ -7916,7 +7932,7 @@ function paperNormalizeAiDetail(source, no, raw, model) {
     generatedAt: Date.now(),
     readable,
     confidence,
-    read: text(raw && raw.read, 800),
+    read,
     goodWork: readable && Array.isArray(raw && raw.goodWork) ? raw.goodWork.slice(0, 5).map((row) => text(row, 220)).filter(Boolean) : [],
     firstErrorEvidence: trustedDiagnosis ? firstErrorEvidence : null,
     firstError: trustedDiagnosis ? firstError : null,

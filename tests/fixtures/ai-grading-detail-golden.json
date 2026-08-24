@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "id": "trusted-verbatim-evidence",
+      "raw": {
+        "readable": true,
+        "confidence": "high",
+        "read": "學生先寫 2x+3=7，下一行開始移項。",
+        "goodWork": ["正確抄下原式"],
+        "firstErrorEvidence": "2x+3=7",
+        "firstError": "下一行移項時沒有改變正負號。",
+        "errorKind": "移項",
+        "whyWrong": "移項後正號應改為負號。",
+        "repair": "改寫為 2x=7-3。",
+        "explanation": "第一個錯誤發生在移項。",
+        "solution": ["2x=7-3", "x=2"],
+        "nextTime": "移項時圈出符號。",
+        "marks": [{ "box": [0.1, 0.2, 0.4, 0.3], "label": "任意模型文字" }]
+      },
+      "expected": {
+        "confidence": "high",
+        "trusted": true,
+        "markCount": 1
+      }
+    },
+    {
+      "id": "downgrade-evidence-not-in-read",
+      "raw": {
+        "readable": true,
+        "confidence": "high",
+        "read": "學生先寫 2x+3=7，接著得到 2x=4。",
+        "goodWork": ["正確抄下原式"],
+        "firstErrorEvidence": "2x=10",
+        "firstError": "模型推測學生把常數算錯。",
+        "errorKind": "代入計算",
+        "whyWrong": "這段式子沒有出現在卷面轉錄。",
+        "repair": "重新計算。",
+        "explanation": "仍可提供一般解法。",
+        "solution": ["2x=4", "x=2"],
+        "nextTime": "逐行核算。",
+        "marks": [{ "box": [0.1, 0.2, 0.4, 0.3], "label": "任意模型文字" }]
+      },
+      "expected": {
+        "confidence": "low",
+        "trusted": false,
+        "markCount": 0
+      }
+    },
+    {
+      "id": "trusted-format-variants",
+      "raw": {
+        "readable": true,
+        "confidence": "high",
+        "read": "可辨識學生寫下：\\( 2x − 3 = 7 \\)。",
+        "goodWork": ["先正確整理 x 項"],
+        "firstErrorEvidence": "$2x-3=7$",
+        "firstError": "下一步除以 2 時漏除常數項。",
+        "errorKind": "化簡約分",
+        "whyWrong": "等號兩側必須同除以 2。",
+        "repair": "改寫為 x=(7+3)/2。",
+        "explanation": "Unicode 減號、LaTeX wrapper 與空白不影響證據核對。",
+        "solution": ["2x=10", "x=5"],
+        "nextTime": "整側一起除。",
+        "marks": [{ "box": [0.2, 0.3, 0.5, 0.4], "label": "任意模型文字" }]
+      },
+      "expected": {
+        "confidence": "high",
+        "trusted": true,
+        "markCount": 1
+      }
+    },
+    {
+      "id": "downgrade-one-character-evidence",
+      "raw": {
+        "readable": true,
+        "confidence": "high",
+        "read": "學生寫了 x=5，之後代入原式。",
+        "goodWork": ["有嘗試求出未知數"],
+        "firstErrorEvidence": "x",
+        "firstError": "模型只引用一個字元，無法定位實際錯步。",
+        "errorKind": "證據不足",
+        "whyWrong": "單一字元可能在卷面出現很多次。",
+        "repair": "應引用完整算式。",
+        "explanation": "不採納過短證據。",
+        "solution": ["重新核對完整算式"],
+        "nextTime": "引用完整等式。",
+        "marks": [{ "box": [0.1, 0.2, 0.4, 0.3], "label": "任意模型文字" }]
+      },
+      "expected": {
+        "confidence": "low",
+        "trusted": false,
+        "markCount": 0
+      }
+    }
+  ]
+}

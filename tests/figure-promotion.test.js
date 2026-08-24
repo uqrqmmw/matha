@@ -64,6 +64,7 @@ test('只有雙人審核且雜湊、來源頁、題號全部一致的裁圖可 p
   const result = promoteReviewedFigures(fx);
   assert.deepEqual(result.promotion.summary, { assets:1, questions:1 });
   assert.equal(result.promotion.uploadPerformed, false);
+  assert.equal(result.promotion.outputSourceSha256, sha(result.sourceOutput));
   const output = JSON.parse(fs.readFileSync(result.sourceOutput, 'utf8'));
   const asset = output[0].figureAsset;
   assert.equal(asset.producer, 'crop-agent');

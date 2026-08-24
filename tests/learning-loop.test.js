@@ -940,7 +940,7 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
     paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
       calls++;
       return { model:'gpt-5.5', json:{
-        readable:true, confidence:'high', read:'先把 x 當成常數',
+        readable:true, confidence:'high', read:'先寫「令 x 為常數」，再繼續代入',
         goodWork:['先正確整理已知條件'], firstErrorEvidence:'令 x 為常數', firstError:'把變數 x 當成常數',
         errorKind:'條件誤讀', whyWrong:'x 會隨條件改變。', repair:'保留 x 為變數再代入。', explanation:'變數角色判斷錯誤。',
         solution:['先整理條件', '代回並化簡'], answer:'模型亂填答案',

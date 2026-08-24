@@ -231,6 +231,7 @@ function promoteReviewedFigures(options) {
     uploadPerformed:false,
     sourceFile:path.basename(sourceFile),
     sourceSha256:shaFile(sourceFile),
+    outputSourceSha256:shaFile(sourceOutput),
     batchFile:path.basename(batchFile),
     batchSha256:shaFile(batchFile),
     independentReviewFile:path.basename(reviewFile),

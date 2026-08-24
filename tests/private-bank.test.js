@@ -24,6 +24,7 @@ test('私有題包檔名包含內容雜湊，更新內容不會被同名 Storage
   fs.writeFileSync(source, JSON.stringify([q('content-address-1', '測試內容位碼 91827364')]), 'utf8');
   const manifest = buildPrivateBank(source, output, root);
   assert.equal(manifest.packs.length, 1);
+  assert.equal(manifest.sourceSha256, require('node:crypto').createHash('sha256').update(fs.readFileSync(source)).digest('hex'));
   assert.match(manifest.packs[0].file, new RegExp(`${manifest.packs[0].sha256.slice(0, 10)}\\.json$`));
 });
 
