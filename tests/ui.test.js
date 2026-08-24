@@ -60,7 +60,8 @@ test('Galaxy Tab S10 Ultra 橫直向版面使用大平板斷點與至少 48px �
   assert.match(css, /\.btn\s*\{[\s\S]*?min-height:\s*48px/);
   assert.match(css, /\.paper-icon-btn,\s*\.paper-ink-tools button\s*\{\s*min-width:\s*48px;\s*min-height:\s*48px/);
   assert.match(css, /\.btn\.sm\s*\{\s*min-height:\s*44px/);
-  assert.match(css, /\.dc-toggle\s*\{\s*min-width:\s*44px;\s*min-height:\s*44px/);
+  assert.doesNotMatch(source, /document\.createElement\('div'\); dc\.id = 'day-counter'/);
+  assert.doesNotMatch(css, /#day-counter|\.dayctr|\.dc-toggle/);
   assert.match(css, /orientation: portrait[\s\S]*?\.recall-grid,\s*\.concept-grid\s*\{\s*grid-template-columns:\s*repeat\(3/);
   assert.match(css, /orientation: portrait[\s\S]*?\.paper-source-grid\s*\{\s*grid-template-columns:\s*repeat\(2/);
   assert.match(source, /document\.body\.dataset\.view = view/);

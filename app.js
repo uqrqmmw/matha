@@ -1,8 +1,8 @@
 /* 數A特訓 — 核心邏輯
-   設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
+   設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -38,7 +38,8 @@ function stripLegacyAiSecrets(state) {
 function freshState() {
   return {
     attempts: [], wrong: {}, drills: {}, mocks: [], corrections: [], daily: {},
-    outlineAttempts: [], visionQueue: [], visionHistory: [], conceptAttempts: [], paperRuns: [], ver: 3,
+    outlineAttempts: [], visionQueue: [], visionHistory: [], conceptAttempts: [], paperRuns: [],
+    learningBaselineResetAt: 0, ver: 3,
   };
 }
 function load(key = KEY) {
@@ -76,7 +77,6 @@ function save() {
     saveQuotaErr = !localOk;
   }
   syncQueue();
-  if (typeof renderDayCounter === 'function') try { renderDayCounter(); } catch (_) {} // 作答/速訓/類題記錄後，右上角今日計數即時更新
   return localOk || idbAvailable; // IndexedDB 是主儲存；localStorage 滿了也不誤報「沒有存下來」
 }
 function exportData() {
@@ -3110,6 +3110,42 @@ function qTarget(q) { return (q.target || DIFF_TARGET[q.diff]) * 1000; }
 function gradeOf(acc) {
   return GRADE_TABLE.find((g) => acc >= g.min).label;
 }
+function learningBaselineStart() {
+  return Math.max(0, Number(S && S.learningBaselineResetAt) || 0);
+}
+function maxLearningTs(...values) {
+  return Math.max(0, ...values.flat(Infinity).map((value) => Number(value) || 0));
+}
+function learningRecordCurrent(...timestamps) {
+  const baseline = learningBaselineStart();
+  return !baseline || maxLearningTs(timestamps) >= baseline;
+}
+function paperRunMetricTs(run) {
+  const grade = run && run.aiGrade;
+  return maxLearningTs(grade && grade.adjustedAt, grade && grade.gradedAt, run && run.submittedAt, run && run.createdAt);
+}
+function paperRunInCurrentBaseline(run) {
+  return !!run && learningRecordCurrent(paperRunMetricTs(run));
+}
+function learningBaselineDate() {
+  const ts = learningBaselineStart();
+  return ts ? new Date(ts + 8 * 3600000).toISOString().slice(0, 10) : '';
+}
+function resetLearningBaseline(confirmed) {
+  if (!confirmed) {
+    modal('<h2>重新建立學習基準</h2><p>舊制分數、弱項與待訂正不再影響現在的安排；原卷、紅筆、筆跡與原始作答仍完整保留，之後可追查。</p>', [
+      ['取消', null],
+      ['保留原稿並歸零', () => resetLearningBaseline(true), 'primary'],
+    ]);
+    return false;
+  }
+  S.learningBaselineResetAt = Math.max(Date.now(), learningBaselineStart());
+  S.learningBaselineResetReason = '舊版測驗與批改基準不夠可靠；保留原稿，自此重新蒐集證據。';
+  save();
+  if (typeof renderStats === 'function') renderStats();
+  if (syncState && syncState.user && typeof syncPush === 'function') syncPush().then(() => { if (document.body.dataset.view === 'stats') renderStats(); });
+  return true;
+}
 /* 小樣本不能只報一個漂亮百分比。Wilson 區間讓 12 題模擬的「不確定」也看得見。 */
 function wilsonBounds(ok, n, z) {
   if (!n) return [0, 1];
@@ -3123,10 +3159,11 @@ function wilsonBounds(ok, n, z) {
 function mockCalibration() {
   const external = (S.extMocks || []).filter((m) =>
     m && m.total > 0 && Number.isFinite(Number(m.score)) &&
+    learningRecordCurrent(m.mt, m.ts) &&
     extMockCalibrationEligible(m))
     .slice().sort((a, b) => String(a.d || '').localeCompare(String(b.d || '')) || Number(a.ts || 0) - Number(b.ts || 0)).slice(-3)
     .map((m) => ({ d: m.d, ok: Number(m.score), n: Number(m.total), acc: Number(m.score) / Number(m.total), name: m.name }));
-  const system = (S.mocks || []).filter((m) => m && m.n > 0 && Number.isFinite(Number(m.acc))).slice(-3);
+  const system = (S.mocks || []).filter((m) => m && m.n > 0 && Number.isFinite(Number(m.acc)) && learningRecordCurrent(m.mt, m.ts)).slice(-3);
   const source = external.length ? 'external' : 'system';
   const recent = external.length ? external : system;
   if (!recent.length) return { count: 0, recent: [], source: null, stable: false, passes: 0, staleDays: Infinity };
@@ -3154,7 +3191,7 @@ function extMockCalibrationEligible(record) {
   return record.questions == null || Number(record.questions) === 20;
 }
 function pendingCorrections() {
-  return (S.corrections || []).filter((batch) => batch && Array.isArray(batch.entries) && batch.entries.some((x) => !x.done));
+  return (S.corrections || []).filter((batch) => batch && learningRecordCurrent(batch.mt, batch.mockTs) && Array.isArray(batch.entries) && batch.entries.some((x) => !x.done));
 }
 function dueCorrections() {
   return pendingCorrections().filter((batch) => String(batch.due || '') <= today());
@@ -3167,7 +3204,7 @@ function paperPendingReviewNos(run) {
 }
 function duePaperCorrections() {
   return (S.paperRuns || []).filter((run) => {
-    if (!run || !['awaiting-key', 'awaiting-correction'].includes(run.status) || !run.aiGrade) return false;
+    if (!run || !paperRunInCurrentBaseline(run) || !['awaiting-key', 'awaiting-correction'].includes(run.status) || !run.aiGrade) return false;
     const due = String(run.due || '');
     return /^\d{4}-\d{2}-\d{2}$/.test(due) && due <= today() && paperPendingReviewNos(run).length > 0;
   }).sort((a, b) => String(a.due).localeCompare(String(b.due)) || Number(a.submittedAt || 0) - Number(b.submittedAt || 0));
@@ -3182,6 +3219,7 @@ function outlineUnits() {
 }
 function outlineLast(unitId) {
   return (S.outlineAttempts || []).filter((x) => x.unitId === unitId)
+    .filter((x) => learningRecordCurrent(x.ts))
     .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))[0] || null;
 }
 function outlineDueUnits() {
@@ -3191,8 +3229,22 @@ function outlineDueUnits() {
     return !last || String(last.due || '') <= today();
   });
 }
+function nextOutlineTask() {
+  const units = outlineUnits().filter((unit) => unit.reference);
+  const retests = units.filter((unit) => {
+    const last = outlineLast(unit.id);
+    return last && String(last.due || '') <= today() && String(last.d || '') !== today();
+  }).sort((a, b) => String(outlineLast(a.id).due || '').localeCompare(String(outlineLast(b.id).due || '')));
+  if (retests.length) return { unit:retests[0], retest:true };
+  const didNewToday = (S.outlineAttempts || []).some((attempt) => learningRecordCurrent(attempt && attempt.ts) && attempt.d === today() &&
+    !(S.outlineAttempts || []).some((older) => older !== attempt && older.unitId === attempt.unitId && learningRecordCurrent(older.ts) && Number(older.ts || 0) < Number(attempt.ts || 0)));
+  if (didNewToday) return null;
+  const unseen = units.find((unit) => !outlineLast(unit.id));
+  return unseen ? { unit:unseen, retest:false } : null;
+}
 function conceptLast(conceptId) {
   return (S.conceptAttempts || []).filter((x) => x.conceptId === conceptId)
+    .filter((x) => learningRecordCurrent(x.ts))
     .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))[0] || null;
 }
 function conceptDueCards() {
@@ -3203,33 +3255,33 @@ function conceptDueCards() {
 }
 function hasRecentConceptWork(days) {
   const cutoff = Number(days) || 7;
-  return (S.conceptAttempts || []).some((attempt) => dayDistance(attempt && attempt.d) < cutoff);
+  return (S.conceptAttempts || []).some((attempt) => learningRecordCurrent(attempt && attempt.ts) && dayDistance(attempt && attempt.d) < cutoff);
 }
 function visionDueEntries() {
-  return (S.visionQueue || []).filter((x) => !x.done && x.stage === 'waiting' && String(x.due || '') <= today());
+  return (S.visionQueue || []).filter((x) => learningRecordCurrent(x.ts, x.mt) && !x.done && x.stage === 'waiting' && String(x.due || '') <= today());
 }
 function diagnosticTopicSignals() {
   const topics = Object.create(null);
   const row = (topic) => (topics[topic] = topics[topic] || { n:0, ok:0, noDirection:0, l2:0, l3:0, open:0 });
   for (const attempt of S.attempts || []) {
-    if (!['mixed', 'mock', 'adaptive-textbook'].includes(attempt && attempt.mode)) continue;
+    if (!learningRecordCurrent(attempt && attempt.ts) || !['mixed', 'mock', 'adaptive-textbook'].includes(attempt && attempt.mode)) continue;
     const q = bankById(attempt.qid); if (!q) continue;
     const topic = row(q.topic), guessed = attempt.confidence === 'guess' || attempt.err === '用猜的';
     topic.n++; topic.ok += attempt.ok ? (guessed ? .15 : 1) : 0;
   }
   for (const entry of S.visionHistory || []) {
-    const q = bankById(entry && entry.qid); if (!q || ['works', 'different', 'obvious'].includes(entry.outcome)) continue;
+    const q = bankById(entry && entry.qid); if (!learningRecordCurrent(entry && entry.ts) || !q || ['works', 'different', 'obvious'].includes(entry.outcome)) continue;
     row(q.topic).noDirection++;
   }
   for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
-    const q = bankById(entry && entry.qid); if (!q) continue;
+    const q = bankById(entry && entry.qid); if (!learningRecordCurrent(entry && entry.mt, batch && batch.mt, batch && batch.mockTs) || !q) continue;
     const topic = row(q.topic), level = correctionLevel(entry);
     if (!entry.done) topic.open++;
     else if (level === 2) topic.l2++;
     else if (level === 3) topic.l3++;
   }
   for (const run of S.paperRuns || []) {
-    const source = run && paperSourceById(run.sourceId); if (!source) continue;
+    const source = run && paperSourceById(run.sourceId); if (!paperRunInCurrentBaseline(run) || !source) continue;
     const graded = run.aiGrade && Array.isArray(run.aiGrade.questions) ? run.aiGrade.questions : [];
     for (const item of graded) {
       const no = Number(item && item.no), review = run.review && run.review[no];
@@ -3250,7 +3302,7 @@ function diagnosticTopicSignals() {
   return topics;
 }
 function severeWeakTopics() {
-  const recent = (S.attempts || []).filter((a) => ['mixed', 'mock', 'adaptive-textbook'].includes(a.mode)).slice(-80);
+  const recent = (S.attempts || []).filter((a) => learningRecordCurrent(a && a.ts) && ['mixed', 'mock', 'adaptive-textbook'].includes(a.mode)).slice(-80);
   const by = {};
   for (const a of recent) {
     const q = bankById(a.qid); if (!q) continue;
@@ -3279,6 +3331,7 @@ function learningSignalIndex() {
   };
   const trow = (topic) => (topics[topic] = topics[topic] || { n:0, ok:0, noDirection:0, l2:0, l3:0, open:0 });
   for (const attempt of S.attempts || []) {
+    if (!learningRecordCurrent(attempt && attempt.ts)) continue;
     const q = bankById(attempt.qid); if (!q) continue;
     /* 訂正完成是「需提示後學會」的證據，不是一次獨立作答；第二／三級由 corrections 另行計入。 */
     if (attempt.mode === 'correction') continue;
@@ -3290,6 +3343,7 @@ function learningSignalIndex() {
     if (Number(attempt.ts) >= row.lastTs) { row.lastTs = Number(attempt.ts) || 0; row.lastD = attempt.d || row.lastD; }
   }
   for (const entry of S.visionHistory || []) {
+    if (!learningRecordCurrent(entry && entry.ts)) continue;
     const q = bankById(entry.qid); if (!q) continue;
     const row = qrow(q.id), topic = trow(q.topic); row.vision++;
     if (entry.outcome === 'obvious') {
@@ -3298,6 +3352,7 @@ function learningSignalIndex() {
     } else if (!['works', 'different'].includes(entry.outcome)) { row.noDirection++; topic.noDirection++; }
   }
   for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
+    if (!learningRecordCurrent(entry && entry.mt, batch && batch.mt, batch && batch.mockTs)) continue;
     const q = bankById(entry.qid); if (!q) continue;
     const row = qrow(q.id), topic = trow(q.topic), level = correctionLevel(entry);
     if (!entry.done) { row.open++; topic.open++; }
@@ -3309,6 +3364,7 @@ function learningSignalIndex() {
     }
   }
   for (const run of S.paperRuns || []) {
+    if (!paperRunInCurrentBaseline(run)) continue;
     const source = run && paperSourceById(run.sourceId); if (!source) continue;
     const graded = run.aiGrade && Array.isArray(run.aiGrade.questions) ? run.aiGrade.questions : [];
     for (const item of graded) {
@@ -3443,6 +3499,12 @@ function learningEvidenceLedger() {
       directionDays:Number(item.days) || 0,
       selfTopic:TOPICS[last.topic] ? last.topic : '',
     });
+    if (last.topic || last.concept) push({
+      id:`vision-recognition:${item.id || `${item.ts || ''}:${item.qid}`}`, ts:Number(last.ts || item.ts) || 0, d:last.d || item.d || '',
+      source:'vision', stage:'recognition', qid:q.id, topic:q.topic,
+      score:TOPICS[last.topic] ? (last.topic === q.topic ? 1 : 0) : .5, weight:.45, independent:true,
+      errorKind:TOPICS[last.topic] && last.topic !== q.topic ? '條件或題意轉譯' : '', selfTopic:TOPICS[last.topic] ? last.topic : '',
+    });
   }
   /* 尚未完成、已圈到明天的眼刷也是重要證據，不能等看到詳解後才「被理解」。 */
   for (const entry of S.visionQueue || []) {
@@ -3454,6 +3516,12 @@ function learningEvidenceLedger() {
       score:attempt.hasDirection ? .65 : .05, weight:.7, independent:true,
       errorKind:learningErrorClass(attempt.hasDirection ? '' : '找不到破題方向'),
       selfTopic:TOPICS[attempt.topic] ? attempt.topic : '',
+    });
+    for (const [index, attempt] of (entry.attempts || []).entries()) if (attempt.topic || attempt.concept) push({
+      id:`vision-open-recognition:${entry.id || entry.qid}:${attempt.ts || index}`, ts:Number(attempt.ts) || 0,
+      d:attempt.d || '', source:'vision', stage:'recognition', qid:q.id, topic:q.topic,
+      score:TOPICS[attempt.topic] ? (attempt.topic === q.topic ? 1 : 0) : .5, weight:.45, independent:true,
+      errorKind:TOPICS[attempt.topic] && attempt.topic !== q.topic ? '條件或題意轉譯' : '', selfTopic:TOPICS[attempt.topic] ? attempt.topic : '',
     });
   }
   for (const attempt of S.conceptAttempts || []) {
@@ -3503,6 +3571,12 @@ function learningEvidenceLedger() {
           score:log.kind === 'complete' ? 1 : log.direction ? .5 : .15, weight:.65, independent:false,
           errorKind:learningErrorClass(log.errorKind || state.aiErrorKind || state.errorKind),
         });
+        if (log.topic) push({
+          id:`paper-review-recognition:${run.id}:${no}:${log.ts || index}`, ts:Number(log.ts) || 0,
+          d:run.due || run.d || '', source:'paper-correction', stage:'recognition', qid:`${run.id}:${no}`,
+          topic, score:log.topic === topic ? 1 : 0, weight:.45, independent:false,
+          errorKind:log.topic === topic ? '' : '條件或題意轉譯', selfTopic:TOPICS[log.topic] ? log.topic : '',
+        });
       }
       const level = item.status === 'correct' ? 1 : Number(state.level) || 0;
       if (item.status !== 'correct' && !state.done) push({
@@ -3520,7 +3594,9 @@ function learningEvidenceLedger() {
       });
     }
   }
-  return out.sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
+  const baseline = learningBaselineStart();
+  return out.filter((item) => !baseline || Number(item.ts || 0) >= baseline)
+    .sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
 }
 function learnerEvidenceConfidence(value) {
   const n = Number(value) || 0;
@@ -3533,10 +3609,11 @@ function learnerModel() {
   const evidence = learningEvidenceLedger();
   const topics = Object.fromEntries(Object.keys(TOPICS).map((topic) => [topic, {
     topic, solveN:0, solveWeight:0, solveEarned:0, directionN:0, directionWeight:0, directionEarned:0,
+    recognitionN:0, recognitionWeight:0, recognitionEarned:0,
     retentionN:0, retentionWeight:0, retentionEarned:0, conceptN:0, conceptWeight:0, conceptEarned:0,
     l2:0, l3:0, open:0, errors:{}, lastTs:0,
   }]));
-  const dimensions = { solve:0, direction:0, correction:0, retention:0, concept:0, recall:0 };
+  const dimensions = { solve:0, recognition:0, direction:0, correction:0, retention:0, concept:0, recall:0 };
   const errors = {}, sources = new Set();
   let recentEvidence = 0;
   for (const item of evidence) {
@@ -3552,6 +3629,8 @@ function learnerModel() {
     } else if (item.stage === 'direction' && item.score != null) {
       row.directionN++; row.directionWeight += item.weight; row.directionEarned += item.score * item.weight;
       if (item.score < .35) row.open++;
+    } else if (item.stage === 'recognition' && item.score != null) {
+      row.recognitionN++; row.recognitionWeight += item.weight; row.recognitionEarned += item.score * item.weight;
     } else if (item.stage === 'retention' && item.score != null) {
       row.retentionN++; row.retentionWeight += item.weight; row.retentionEarned += item.score * item.weight;
     } else if (item.stage === 'concept' && item.score != null) {
@@ -3565,14 +3644,16 @@ function learnerModel() {
   for (const row of Object.values(topics)) {
     const solve = (row.solveEarned + 1.5) / (row.solveWeight + 3);
     const direction = (row.directionEarned + .8) / (row.directionWeight + 1.6);
+    const recognition = row.recognitionWeight ? (row.recognitionEarned + .5) / (row.recognitionWeight + 1) : .5;
     const retention = row.retentionWeight ? (row.retentionEarned + .5) / (row.retentionWeight + 1) : .5;
     const concept = row.conceptWeight ? (row.conceptEarned + .5) / (row.conceptWeight + 1) : .5;
     const supportPenalty = Math.min(.2, row.l2 * .018 + row.l3 * .05 + row.open * .025);
-    row.score = Math.round(100 * Math.max(0, Math.min(1, solve * .65 + direction * .2 + retention * .1 + concept * .05 - supportPenalty)));
-    row.effectiveEvidence = row.solveWeight + row.directionWeight * .65 + row.retentionWeight * .8 + row.conceptWeight * .5;
+    row.score = Math.round(100 * Math.max(0, Math.min(1, solve * .65 + direction * .17 + recognition * .03 + retention * .1 + concept * .05 - supportPenalty)));
+    row.effectiveEvidence = row.solveWeight + row.directionWeight * .65 + row.recognitionWeight * .3 + row.retentionWeight * .8 + row.conceptWeight * .5;
     row.confidence = learnerEvidenceConfidence(row.effectiveEvidence);
     row.accuracy = row.solveWeight ? row.solveEarned / row.solveWeight : null;
     row.directionRate = row.directionWeight ? row.directionEarned / row.directionWeight : null;
+    row.recognitionRate = row.recognitionWeight ? row.recognitionEarned / row.recognitionWeight : null;
     row.topError = Object.entries(row.errors).sort((a, b) => b[1] - a[1])[0] || null;
     const unknownBoost = row.effectiveEvidence < 3 ? .18 : 0;
     row.priority = Math.max(.6, Math.min(1.65,
@@ -3582,7 +3663,8 @@ function learnerModel() {
   const strengths = ranked.filter((row) => row.solveN >= 4 && row.effectiveEvidence >= 5 && row.score >= 68 && row.l3 < 2)
     .sort((a, b) => b.score - a.score || b.effectiveEvidence - a.effectiveEvidence).slice(0, 3);
   const needs = Object.values(topics).filter((row) =>
-    (row.solveN >= 4 && row.score < 58) || row.l3 >= 2 || row.open >= 3 || (row.directionN >= 3 && row.directionRate < .45))
+    (row.solveN >= 4 && row.score < 58) || row.l3 >= 2 || row.open >= 3 ||
+    (row.directionN >= 3 && row.directionRate < .45) || (row.recognitionN >= 3 && row.recognitionRate < .5))
     .sort((a, b) => b.priority - a.priority || a.score - b.score).slice(0, 4);
   const unknown = Object.values(topics).filter((row) => row.effectiveEvidence < 3)
     .sort((a, b) => a.effectiveEvidence - b.effectiveEvidence || String(a.topic).localeCompare(String(b.topic)));
@@ -3595,23 +3677,26 @@ function learnerModel() {
     version:LEARNER_MODEL_VERSION, generatedAt:Date.now(), evidence, evidenceCount:evidence.length,
     recentEvidence, sourceCount:sources.size, topics, strengths, needs, unknown, topErrors, dimensions,
     calibratedTopics:Object.values(topics).filter((row) => row.confidence.key !== 'low').length,
-    calibration, currentGrade, targetGap,
+    calibration, currentGrade, targetGap, baselineResetAt:learningBaselineStart(),
   };
 }
 function learnerContextForAi(topic) {
   const model = learnerModel(), row = model.topics[topic];
   const cal = model.calibration.count ? `最近完整模考粗估 ${model.calibration.grade}（${Math.round(model.calibration.acc * 100)}%，${model.calibration.count} 回證據）` : '尚無足夠完整模考校準';
-  const topicLine = row ? `${TOPICS[topic]}：模型 ${row.score}/100、證據${row.confidence.label}${row.topError ? `、常見卡點 ${row.topError[0]}` : ''}` : '';
+  const process = row && row.recognitionRate != null && row.directionRate != null
+    ? `、單元辨認 ${Math.round(row.recognitionRate * 100)}%、方向成立 ${Math.round(row.directionRate * 100)}%` : '';
+  const topicLine = row ? `${TOPICS[topic]}：模型 ${row.score}/100、證據${row.confidence.label}${process}${row.topError ? `、常見卡點 ${row.topError[0]}` : ''}` : '';
   const needs = model.needs.slice(0, 3).map((item) => TOPICS[item.topic]).join('、') || '尚待更多混合證據';
   const errors = model.topErrors.slice(0, 2).map(([name, count]) => `${name} ${count} 次`).join('、') || '尚未形成重複錯因';
-  return `【累積學習者模型 v${model.version}】${cal}。${topicLine ? topicLine + '。' : ''}目前優先補：${needs}；重複訊號：${errors}。這些只用來調整說明深度與下一步，不可取代本題卷面證據，也不可因既有弱項預設本題答錯。`;
+  return `【累積學習者模型 v${model.version}】${cal}。${topicLine ? topicLine + '。' : ''}目前優先補：${needs}；重複訊號：${errors}。依王老師路徑，目前優先找破題方向，不以單題速度作為主要回饋。這些只用來調整說明深度與下一步，不可取代本題卷面證據，也不可因既有弱項預設本題答錯。`;
 }
 function questionIsTemporarilyObvious(q, signals, maxDays = 30) {
   if (!q) return false;
   signals ||= learningSignalIndex();
   const row = signals.questions.get(q.id);
   if (!row || !row.obvious || dayDistance(row.lastObviousD) > maxDays) return false;
-  const wrong = S.wrong && S.wrong[q.id];
+  const rawWrong = S.wrong && S.wrong[q.id];
+  const wrong = rawWrong && learningRecordCurrent(rawWrong.mt) ? rawWrong : null;
   /* 已到保留重測或錯題重測的題仍要出現；除此之外，「一眼就會」30 天內不再占用主訓練。 */
   return !row.retentionDue && !(wrong && String(wrong.due || '') <= today());
 }
@@ -3624,7 +3709,8 @@ function questionLearningValue(q, signals, options) {
   const weakness = .55 + (1 - solveP);
   const learnable = Math.max(.38, 1 - Math.abs(solveP - .55));
   const coverage = 1 + 1 / Math.sqrt(1 + row.n);
-  const wrong = S.wrong && S.wrong[q.id];
+  const rawWrong = S.wrong && S.wrong[q.id];
+  const wrong = rawWrong && learningRecordCurrent(rawWrong.mt) ? rawWrong : null;
   const retention = row.retentionDue ? 1.95 : row.retentionPending ? 1.28
     : wrong && String(wrong.due || '') <= today() ? 1.65 : wrong ? 1.25 : 1;
   const direction = 1 + Math.min(1.1,
@@ -3654,7 +3740,8 @@ function questionSelectionReason(q, signals) {
   signals ||= learningSignalIndex();
   const row = signals.questions.get(q.id) || {};
   const topic = signals.topics[q.topic] || {};
-  const wrong = S.wrong && S.wrong[q.id];
+  const rawWrong = S.wrong && S.wrong[q.id];
+  const wrong = rawWrong && learningRecordCurrent(rawWrong.mt) ? rawWrong : null;
   if (row.retentionDue) return '第二／三級題已到 2 日或 7 日保留重測';
   if (wrong && String(wrong.due || '') <= today()) return '這題已到間隔重測時間';
   if (row.noDirection) return '你曾在這題找不到破題方向';
@@ -3689,10 +3776,6 @@ function nextBestAction() {
   if (dueN) return {
     kind: 'correction', title: `先完成 ${dueN} 題隔日盲訂正`, why: '今天只看最終答案，重新找方向；先留下自己的嘗試，仍無收穫才解鎖詳解。', time: `約 ${Math.max(10, dueN * 5)} 分鐘`, onclick: "nav('correct')", button: '開始訂正',
   };
-  const outlineDue = outlineDueUnits();
-  if (outlineDue.length) return {
-    kind: 'outline', title: `重測 ${outlineDue[0].title}`, why: `上次默寫已滿兩天。先從空白頁把子標題與內容重新叫回來，再對照大綱。`, time: '約 15 分鐘', onclick: `startOutlineRecall('${outlineDue[0].id}')`, button: '開始空白默寫',
-  };
   const visionDue = visionDueEntries();
   if (visionDue.length) return {
     kind: 'vision', title: `再給 ${visionDue.length} 題一次機會`, why: '昨天想不到方向的題，今天再只看題目找一次切入點；仍沒有方向才看詳解。', time: `約 ${Math.max(5, visionDue.length * 4)} 分鐘`, onclick: `startVisionScan('${visionDue[0].id}')`, button: '第二天再想',
@@ -3706,7 +3789,13 @@ function nextBestAction() {
   };
   const cal = mockCalibration();
   if (!cal.count) return {
-    kind: 'mock', title: '建立一回全真基準', why: '用正式的 20 題、100 分鐘完成一整回；今天只批分，明天才訂正。', time: '100 分鐘', onclick: "nav('mock')", button: '查看模考說明',
+    kind: 'mock', title: '用新制建立第一回全真基準', why: '舊成績已退出能力模型。請用正式 20 題、100 分鐘重新測；今天只批分，明天才訂正。', time: '100 分鐘', onclick: "nav('mock')", button: '選一回原卷',
+  };
+  const outlineTask = nextOutlineTask();
+  if (outlineTask) return {
+    kind: 'outline', title: `${outlineTask.retest ? '兩天後重測' : '第一次默寫'} ${outlineTask.unit.title}`,
+    why: outlineTask.retest ? '先從空白頁把子標題與內容重新叫回來，再對照老師大綱。' : '今天只開一個新單元；看標題把子標題、定義與關係盡量叫出來。',
+    time: '約 15 分鐘', onclick: `startOutlineRecall('${outlineTask.unit.id}')`, button: '開始空白默寫',
   };
   if (cal.staleDays >= 7) return {
     kind: 'mock', title: '更新本週校準', why: `距上次完整模擬已 ${cal.staleDays} 天；用完整一回確認混合情境下能否取回分數。`, time: '100 分鐘', onclick: "nav('mock')", button: '查看模考說明',
@@ -3716,7 +3805,7 @@ function nextBestAction() {
     return { kind: 'topic', title: `「${TOPICS[severe.k]}」需要短期補洞`, why: `混合／模考近 ${severe.n} 題只答對 ${severe.ok} 題，已達到才例外分章介入的門檻。`, time: '約 20 分鐘', onclick: `startTopicIntervention('${severe.k}')`, button: '補洞 6 題' };
   }
   const concept = conceptDueCards()[0];
-  if (concept && !hasRecentConceptWork(7)) return { kind: 'concept', title: `用自己的話說明「${concept.title}」`, why: '不背字句；說清楚真正意思、限制與一個例子，AI 再檢查語意缺口。', time: '約 5 分鐘', onclick: `startConceptCheck('${concept.id}')`, button: '開始說明' };
+  if (concept && !hasRecentConceptWork(1)) return { kind: 'concept', title: `用自己的話說明「${concept.title}」`, why: '每天最多一張，不背字句；說清楚真正意思、限制與一個例子，AI 再檢查語意缺口。', time: '約 5 分鐘', onclick: `startConceptCheck('${concept.id}')`, button: '開始說明' };
   return { kind: 'adaptive-textbook', title: '寫今天最值得的 10 題教材題', why: '跨章混合、不練速度；根據答錯、沒有方向、第二／三級、間隔到期與未校準章節選題，寫到你最需要的部分。', time: '約 35 分鐘', onclick: 'startAdaptiveTextbook(10)', button: '開始教材精選' };
 }
 function nextActionCard() {
@@ -3820,79 +3909,6 @@ function recordAttempt(q, ok, ms, err, mode, proc, ai, opts) {
 
 
 
-/* ═══════════ 📈 每日投入統計（鼓勵機制） ═══════════ */
-function dayAgg() {
-  const days = {};
-  const add = (d, n, ok, ms, pts) => {
-    if (!d) return;
-    const x = (days[d] = days[d] || { n: 0, ok: 0, ms: 0, pts: 0 });
-    x.n += n; x.ok += ok; x.ms += ms; x.pts += pts || 0; // 防呆：pts 沒傳也不要污染成 NaN
-  };
-  const W = { 1: 1, 2: 2, 3: 4 }; // 難度加權：sin30 一秒 vs 難題十分鐘，只算題數不合理
-  for (const a of S.attempts) {
-    const q = bankById(a.qid);
-    add(a.d, 1, a.ok ? 1 : 0, a.ms || 0, W[(q && q.diff) || 2]);
-  }
-  for (const k of Object.keys(S.drills)) {
-    for (const h of S.drills[k]) { const n = h.n || 12; add(h.d, n, Math.round(n * (h.acc || 0) / 100), (h.med || 0) * n, 3); } // 速訓一輪=3點；n＝該輪實際題數（舊資料無 n 當 12，同 dayCounts）
-  }
-  if (S.phone && S.phone.days) {
-    for (const d of Object.keys(S.phone.days)) { const p = S.phone.days[d]; add(d, p.n || 0, p.ok || 0, p.ms || 0, p.n || 0); } // 手機專區每題算 1 點；全欄位 NaN-proof（防外部污染的 localStorage/雲端列）
-  }
-  return days;
-}
-/* ═══════════ 📊 今日計數表（右上角常駐；速度特訓＋易/中/難，含類題） ═══════════
-   標準：速訓 20、易/中/難各 15，不限章節。速訓＝今日各速訓輪題數加總；易中難＝今日
-   主題刷/錯題複習(S.attempts)＋類題(S.sidePractice) 按題目難度分桶（速訓題非 BANK→天然不入難度桶）。 */
-const DAY_STD = { drill: 20, e: 15, m: 15, h: 15 };
-function dayCounts() {
-  const t = today();
-  const c = { drill: 0, e: 0, m: 0, h: 0 };
-  for (const k in S.drills) for (const r of (S.drills[k] || [])) if (r.d === t) c.drill += (r.n || 12); // 速訓：今日各輪題數（舊資料無 n 當 12）
-  const bump = (qid) => { const q = bankById(qid); if (!q) return; if (q.diff === 1) c.e++; else if (q.diff === 2) c.m++; else if (q.diff === 3) c.h++; };
-  for (const a of S.attempts) if (a.d === t) bump(a.qid);            // 主題刷／錯題複習（drill 不入 attempts，不重複計）
-  for (const s of (S.sidePractice || [])) if (s.d === t) bump(s.qid); // 做錯後練的類題也算進去
-  return c;
-}
-function renderDayCounter() {
-  const el = document.getElementById('day-counter');
-  if (!el) return;
-  const c = dayCounts();
-  const rows = [['速訓', c.drill, DAY_STD.drill], ['易', c.e, DAY_STD.e], ['中', c.m, DAY_STD.m], ['難', c.h, DAY_STD.h]];
-  // 首次使用預設收合，避免桌機右上角與手機底部同時出現過多浮動資訊；
-  // 使用者主動展開後才記住展開狀態（'0'）。
-  let collapsedPref = null; // Safari 無痕等儲存被拒的環境不能讓 boot 內的計數表把整個啟動炸掉
-  try { collapsedPref = localStorage.getItem('mathA13_dayctr_collapsed'); } catch (_) {}
-  if (collapsedPref !== '0') {
-    const done = rows.filter((r) => r[1] >= r[2]).length;
-    el.className = 'dayctr collapsed';
-    el.innerHTML = '<button class="dc-toggle" onclick="dayCounterToggle()" title="展開今日計數表">📊 ' + done + '/4</button>';
-    return;
-  }
-  el.className = 'dayctr';
-  el.innerHTML = '<div class="dc-head"><span>📊 今日</span><button class="dc-toggle" onclick="dayCounterToggle()" title="收起">▸</button></div>'
-    + rows.map((r) => '<div class="dc-row' + (r[1] >= r[2] ? ' done' : '') + '"><span class="dc-lab">' + r[0] + '</span><span class="dc-num">' + r[1] + '<i>/' + r[2] + '</i></span></div>').join('');
-}
-function dayCounterToggle() {
-  try {
-    const cur = localStorage.getItem('mathA13_dayctr_collapsed') !== '0';
-    localStorage.setItem('mathA13_dayctr_collapsed', cur ? '0' : '1');
-  } catch (_) {}
-  renderDayCounter();
-}
-const DAY_GOAL = 30; // 每日題數目標（速訓12＋錯題＋刷題8＋手機零碎 ≈ 30）
-/* 跨過每日目標線的那一刻要有事件（一天只觸發一次；goalHit 放 daily 內天然搭雲端合併與回滾） */
-function goalCrossBanner() {
-  const t = today();
-  const d = dayAgg()[t];
-  const tn = d ? Math.round(d.pts) : 0;
-  if (tn < DAY_GOAL) return '';
-  S.daily[t] = S.daily[t] || {};
-  if (S.daily[t].goalHit) return '';
-  S.daily[t].goalHit = true;
-  save();
-  return `<div class="card good">📈 <b>今日 ${DAY_GOAL} 點達標</b>——目標量完成，之後都是加碼。</div>`;
-}
 /* 📚 單元重點 modal：匯入的參考書重點 + 該單元必背卡 + 老師方法庫入口 */
 function typesetIn(el) {
   if (el && window.renderMathInElement) {
@@ -4134,7 +4150,7 @@ function renderHome() {
     <button onclick="nav('concept')"><span>觀念理解</span><b>${conceptDue} 張待說明</b></button>
     <button onclick="nav('stats')"><span>進度與設定</span><b>同步、AI 與備份</b></button>
   </div>
-  <div class="card training-rules"><h2>現在的訓練規則</h2>
+  <div class="card training-rules"><h2>王老師目前的訓練路徑</h2>
     <ol>
       <li>十一單元從空白默寫子標題與內容；對答案後隔兩天再測。</li>
       <li>平時只做混合題。只有數據確認某章嚴重斷裂，才短期分章補洞。</li>
@@ -4421,7 +4437,6 @@ function pracDone() {
     ${roundStuck.slice(0, 4).map((s) => `<p style="margin:3px 0">${s.topic ? TOPICS[s.topic] + '：' : ''}${rtAi(s.what || '')}${s.dur ? `（停 ${s.dur}s）` : ''}${s.fix ? ` <span class="okc">💡 ${rtAi(s.fix)}</span>` : ''}</p>`).join('')}</div>` : '';
   app().innerHTML = `
     <h1>${prac.mode === 'adaptive-textbook' ? '教材混合精選結果' : '刷題結果'}</h1>
-    ${goalCrossBanner()}
     <div class="card">
       ${prac.picked && prac.picked.length ? `<p class="dim fs13">🔒 本輪鎖定：${prac.picked.map((p) => `${TOPICS[p.k]}（${p.reason}）`).join('、')}</p>` : ''}
       <p class="big">答對 <b>${okN} / ${r.length}</b>${slowOk ? `，其中 <b class="warnc">${slowOk} 題「對但超時」</b>（考場上等於失分，已加入錯題本重練速度）` : ''}</p>
@@ -4890,11 +4905,15 @@ function paperLatestRun(sourceId) {
 }
 function paperSourceCardHTML(source) {
   const active = paperActiveRun(source.id), latest = paperLatestRun(source.id);
+  const archivedBaseline = latest && latest.aiGrade && !paperRunInCurrentBaseline(latest);
   let status = '尚未作答';
   let button = '開啟原版整回';
   if (active) {
     if (active.status === 'grading') { status = 'AI 批改尚未完成'; button = '繼續 AI 批改'; }
     else { status = `已保留進度｜剩餘 ${fmtClock(paperRunLeft(active))}`; button = '繼續這一回'; }
+  } else if (archivedBaseline) {
+    status = '重置前卷面已保留｜不納入目前成績或待訂正';
+    button = '用新制再寫一回';
   } else if (latest && ['awaiting-key', 'awaiting-correction'].includes(latest.status)) {
     status = `${latest.score}/100｜錯 ${Array.isArray(latest.wrongNos) ? latest.wrongNos.length : 0} 題｜${String(latest.due || '') <= today() ? '已到隔日訂正' : `鎖到 ${latest.due}`}`;
     button = '再寫一回';
@@ -4925,11 +4944,14 @@ function paperRunHistoryHTML() {
     .sort((a, b) => Number(b.submittedAt || b.createdAt || b.mt || 0) - Number(a.submittedAt || a.createdAt || a.mt || 0));
   const rows = runs.map((run) => {
     const source = paperSourceById(run.sourceId);
+    const currentBaseline = paperRunInCurrentBaseline(run);
     const date = paperRunDisplayDate(run);
     const wrong = Array.isArray(run.wrongNos) ? run.wrongNos.length : Number(run.aiGrade && run.aiGrade.wrongNos && run.aiGrade.wrongNos.length) || 0;
     const due = String(run.due || '');
-    const dueNow = ['awaiting-key', 'awaiting-correction'].includes(run.status) && /^\d{4}-\d{2}-\d{2}$/.test(due) && due <= today();
-    const stage = run.status === 'completed'
+    const dueNow = currentBaseline && ['awaiting-key', 'awaiting-correction'].includes(run.status) && /^\d{4}-\d{2}-\d{2}$/.test(due) && due <= today();
+    const stage = !currentBaseline
+      ? '基準重置前，僅保留卷面'
+      : run.status === 'completed'
       ? '訂正完成'
       : dueNow
         ? '可開始隔日訂正'
@@ -4937,7 +4959,7 @@ function paperRunHistoryHTML() {
           ? due ? `隔日訂正鎖到 ${due}` : '等待隔日訂正'
           : '第一次批改完成';
     return `<article class="paper-history-row"><div class="paper-history-date"><span>作答日期</span><time datetime="${escH(date)}">${escH(date || '日期未記錄')}</time></div>
-      <div class="paper-history-main"><b>${escH(run.name || source && source.title || '原版模考')}</b><span>${Number(run.score ?? run.aiGrade.score) || 0}/100｜錯 ${wrong} 題｜${escH(stage)}</span></div>
+      <div class="paper-history-main"><b>${escH(run.name || source && source.title || '原版模考')}</b><span>${currentBaseline ? `${Number(run.score ?? run.aiGrade.score) || 0}/100｜錯 ${wrong} 題｜` : ''}${escH(stage)}</span></div>
       <div class="paper-history-actions"><button class="btn sm" onclick="openPaperGradeResult('${jsA(run.id)}')">查看紅筆卷</button><button class="btn sm" onclick="renderPaperTeacherReport('${jsA(run.id)}')">逐題紀錄</button>${dueNow ? `<button class="btn sm primary" onclick="startPaperAnswerReview('${jsA(run.id)}')">隔日訂正</button>` : ''}</div></article>`;
   }).join('');
   return `<section class="paper-history" aria-labelledby="paper-history-title"><div class="paper-history-head"><div><span class="eyebrow">自動保存日期、分數與批改結果</span><h3 id="paper-history-title">原卷作答歷史</h3></div><b>${runs.length} 回</b></div>
@@ -8368,7 +8390,7 @@ function startPracTopics(topics, cnt) {
   const queue = dedupeStems(pool, Math.min(cnt || 8, pool.length));
   const reasons = Object.fromEntries(queue.map((q) => [q.id, questionSelectionReason(q, signals)]));
   afterFigurePreflight(queue, () => {
-    prac = { queue, reasons, i: 0, results: [], mode: 'topic-intervention', topics, cnt: cnt || 8 }; // topics/cnt 留給結果頁「再刷一輪」原樣重開
+    prac = { queue, reasons, i: 0, results: [], mode: 'topic-intervention', topics, cnt: cnt || 8, noTimer:true }; // 王老師路徑：分章只為補嚴重斷裂，不用速度製造第二個目標
     sessionActive = true;
     sessionMode = 'prac';
     snapSession();
@@ -8425,9 +8447,9 @@ function startTopicIntervention(k) {
 
 /* ═══════════ 數據 ═══════════ */
 function paperLearningSummaryCard() {
-  const runs = (S.paperRuns || []).filter((run) => run && run.aiGrade && run.status !== 'discarded')
+  const runs = (S.paperRuns || []).filter((run) => run && paperRunInCurrentBaseline(run) && run.aiGrade && run.status !== 'discarded')
     .sort((a, b) => Number(b.submittedAt || 0) - Number(a.submittedAt || 0));
-  if (!runs.length) return `<section class="card paper-learning-summary"><span class="eyebrow">原版模考分析</span><h2>完成第一回後開始累積</h2><p class="dim">系統會分開統計正式 20 題校準卷與 19 題練習卷，並從隔日訂正整理常錯單元、卡點和三級分布。</p></section>`;
+  if (!runs.length) return `<section class="card paper-learning-summary"><span class="eyebrow">原版模考分析</span><h2>完成重置後的第一回才開始累積</h2><p class="dim">${learningBaselineStart() ? `舊制分數已於 ${escH(learningBaselineDate())} 退出目前模型，原卷與筆跡仍保留。` : ''}系統只用新完成的正式 20 題卷校準級分，再從隔日訂正整理單元、卡點和三級分布。</p></section>`;
   const topicCount = {}, errorCount = {};
   let l1 = 0, l2 = 0, l3 = 0, open = 0;
   for (const run of runs) {
@@ -8472,8 +8494,17 @@ function textbookLibraryCard() {
 }
 function learnerModelCard() {
   const model = learnerModel(), cal = model.calibration;
+  const topicRows = Object.values(model.topics);
+  const directionN = topicRows.reduce((sum, row) => sum + row.directionN, 0);
+  const directionWeight = topicRows.reduce((sum, row) => sum + row.directionWeight, 0);
+  const directionEarned = topicRows.reduce((sum, row) => sum + row.directionEarned, 0);
+  const retentionN = topicRows.reduce((sum, row) => sum + row.retentionN, 0);
+  const retentionWeight = topicRows.reduce((sum, row) => sum + row.retentionWeight, 0);
+  const retentionEarned = topicRows.reduce((sum, row) => sum + row.retentionEarned, 0);
+  const directionText = directionN >= 10 ? `${Math.round(directionEarned / Math.max(.001, directionWeight) * 100)}%` : `${directionN}/10 筆`;
+  const retentionText = retentionN >= 6 ? `${Math.round(retentionEarned / Math.max(.001, retentionWeight) * 100)}%` : `${retentionN}/6 次`;
   const goal = !cal.count
-    ? '還缺一回完整 20 題、100 分鐘模考，才能建立目前級分基準。'
+    ? `${model.baselineResetAt ? '舊制成績已歸零。' : ''}還缺一回完整 20 題、100 分鐘模考，才能建立目前級分基準。`
     : cal.acc < SCORE_GOAL.targetAcc
       ? `最近完整模考約 ${Math.round(cal.acc * 100)} 分（${cal.grade}）；距 13 級分的 72 分參考線約差 ${Math.ceil((SCORE_GOAL.targetAcc - cal.acc) * 100)} 分。`
       : cal.stable
@@ -8498,31 +8529,43 @@ function learnerModelCard() {
     ? model.topErrors.slice(0, 4).map(([name, count]) => `<span>${escH(name)} <b>${count}</b></span>`).join('')
     : '<span>尚未出現重複錯因</span>';
   const overallConfidence = learnerEvidenceConfidence(Object.values(model.topics).reduce((sum, row) => sum + row.effectiveEvidence, 0));
+  const diagnosis = !model.evidenceCount
+    ? '目前不是判定你哪章弱，而是缺少重置後的新證據。先完成一回全真模考，再用隔日訂正拆出真正卡點。'
+    : model.calibratedTopics < 8
+      ? `目前只有 ${model.calibratedTopics}/14 單元具備初步證據，先用跨章混合題補齊能力地圖。`
+      : directionN >= 6 && directionEarned / Math.max(.001, directionWeight) < .55
+        ? '目前主要瓶頸較像「看到題目後叫不出第一個可行方向」；選題會優先練破題，不要求加速。'
+        : retentionN >= 4 && retentionEarned / Math.max(.001, retentionWeight) < .65
+          ? '目前主要瓶頸較像「當下會、隔幾天叫不回來」；系統會優先排 2／7 日獨立重測。'
+          : '目前尚未形成單一主瓶頸；系統會繼續分開蒐集題型辨認、破題方向、計算執行與保留證據。';
   return `<section id="learner-model" class="card learner-model-card">
     <header><div><span class="eyebrow">每次作答都會更新</span><h2>AI 對你的理解</h2><p>${escH(goal)}</p></div><div class="learner-confidence"><small>整體證據信心</small><b data-level="${overallConfidence.key}">${overallConfidence.label}</b></div></header>
     <div class="learner-facts"><span><b>${model.evidenceCount}</b> 筆學習證據</span><span><b>${model.recentEvidence}</b> 筆來自近 30 天</span><span><b>${model.calibratedTopics}/14</b> 單元已有初步證據</span><span><b>${model.sourceCount}</b> 種練習來源</span></div>
+    <div class="learner-diagnosis"><span class="eyebrow">目前最需要知道的事</span><p>${escH(diagnosis)}</p></div>
+    <div class="learner-milestones" aria-label="距離穩定十三級分的訓練里程碑"><span>新制完整模考 <b>${cal.count ? `${cal.count} 回` : '待 1 回'}</b></span><span>破題方向證據 <b>${directionText}</b></span><span>二／七日保留 <b>${retentionText}</b></span><span>72 分以上穩定度 <b>${cal.passes || 0}/3 回</b></span></div>
     <div class="learner-model-grid"><div><h3>目前較有把握的強項</h3>${strengths}</div><div><h3>現在最值得補的地方</h3>${priorities}</div></div>
     <div class="learner-errors"><h3>反覆出現的卡點</h3><div>${errorRows}</div></div>
-    <p class="learner-model-note">這不是固定標籤。獨立作答、眼刷方向、隔日三級、詳解後重算、2／7 日保留、大綱與觀念自述會分開計權；一次錯誤不會被宣布成弱項。下一輪教材精選與 AI 詳批會直接讀取這份模型。</p>
-    <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button></div>
+    <p class="learner-model-note">這不是固定標籤。獨立作答、題型辨認、眼刷方向、隔日三級、詳解後重算、2／7 日保留、大綱與觀念自述會分開計權；一次錯誤不會被宣布成弱項。下一輪教材精選與 AI 詳批會直接讀取這份模型。${model.baselineResetAt ? `目前基準自 ${escH(learningBaselineDate())} 起算，較早資料只保留原稿。` : ''}</p>
+    <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button><button class="btn subtle" onclick="resetLearningBaseline()">重新建立學習基準</button></div>
   </section>`;
 }
 function renderStats() {
-  const entries = (S.corrections || []).flatMap((b) => b.entries || []);
+  const entries = (S.corrections || []).filter((batch) => learningRecordCurrent(batch && batch.mt, batch && batch.mockTs)).flatMap((b) => b.entries || []);
   const done = entries.filter((x) => x.done);
   const levels = { l1: done.filter((x) => correctionLevel(x) === 1).length, l2: done.filter((x) => correctionLevel(x) === 2).length, l3: done.filter((x) => correctionLevel(x) === 3).length };
-  for (const run of (S.paperRuns || []).filter((item) => item && item.aiGrade && item.status !== 'discarded')) {
+  for (const run of (S.paperRuns || []).filter((item) => item && paperRunInCurrentBaseline(item) && item.aiGrade && item.status !== 'discarded')) {
     const paperLevels = paperRunLevelCounts(run);
     levels.l1 += paperLevels.l1; levels.l2 += paperLevels.l2; levels.l3 += paperLevels.l3;
   }
-  const visionDone = (S.visionHistory || []).filter((x) => x.outcome !== 'obvious');
+  const visionDone = (S.visionHistory || []).filter((x) => learningRecordCurrent(x && x.ts) && x.outcome !== 'obvious');
   const visionFirst = visionDone.filter((x) => Number(x.days || 0) === 1 && ['works', 'different', 'fails'].includes(x.outcome)).length;
   const visionTwoDay = visionDone.filter((x) => Number(x.days || 0) >= 2).length;
   const conceptsUnderstood = CONCEPT_CARDS.filter((x) => { const last = conceptLast(x.id); return last && last.understood; }).length;
+  const currentOutlineAttempts = (S.outlineAttempts || []).filter((attempt) => learningRecordCurrent(attempt && attempt.ts));
   const outlineReady = outlineUnits().filter((x) => x.reference).length;
   app().innerHTML = `<div class="report-head"><div><span class="eyebrow">新版</span><h1>進度與設定</h1><p>只保留老師三大任務需要的資訊。</p></div><button class="btn" onclick="nav('home')">回今日</button></div>
     <div class="new-progress-grid">
-      <section><span>大綱默寫</span><b>${(S.outlineAttempts || []).length}</b><small>次默寫｜對照大綱 ${outlineReady}/11</small></section>
+      <section><span>大綱默寫</span><b>${currentOutlineAttempts.length}</b><small>次默寫｜對照大綱 ${outlineReady}/11</small></section>
       <section><span>模考三級</span><b>${levels.l1} / ${levels.l2} / ${levels.l3}</b><small>第一級／第二級／第三級</small></section>
       <section><span>破題方向</span><b>${visionFirst}</b><small>題第一天已有方向｜${visionTwoDay} 題用足兩天</small></section>
       <section><span>觀念理解</span><b>${conceptsUnderstood}/${CONCEPT_CARDS.length}</b><small>張能用自己的話說清楚</small></section>
@@ -9057,6 +9100,9 @@ function mergeState(a, b) {
   const paperRuns = [...paperMap.values()].sort((x, y) => Number(x.createdAt || 0) - Number(y.createdAt || 0));
   const merged = { ...b, ...a, attempts, wrong, drills, mocks, corrections, extMocks, daily, extbank, sidePractice,
     outlineAttempts, conceptAttempts, visionHistory, visionQueue, paperRuns };
+  /* 學習基準只能往前推，不能被尚未同步的新舊裝置倒退；原始作答仍完整聯集保留。 */
+  merged.learningBaselineResetAt = Math.max(Number(a.learningBaselineResetAt || 0), Number(b.learningBaselineResetAt || 0));
+  if (merged.learningBaselineResetAt === Number(b.learningBaselineResetAt || 0) && b.learningBaselineResetReason) merged.learningBaselineResetReason = b.learningBaselineResetReason;
   // 內容包（公式卡/重點整理）：兩裝置聯集、rev 大者勝
   if ((a.extflash || []).length || (b.extflash || []).length) merged.extflash = unionById(a.extflash, b.extflash);
   if ((a.extnotes || []).length || (b.extnotes || []).length) merged.extnotes = unionById(a.extnotes, b.extnotes);
@@ -9292,8 +9338,6 @@ async function boot() {
     `<button data-view="${v}" onclick="nav('${v}')">${uiIcon(VIEWS[v].icon)}<span>${VIEWS[v].label}</span></button>`).join('');
   installUiDialogCleaners();
   initUiObserver();
-  if (!document.getElementById('day-counter')) { const dc = document.createElement('div'); dc.id = 'day-counter'; document.body.appendChild(dc); }
-  renderDayCounter(); // 右上角常駐今日計數表
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); // 爭取持久儲存：手寫是高優先資料，別讓瀏覽器在空間壓力下清掉
   await stateInit(); // IndexedDB 是本機權威副本；先救回 localStorage 配額滿或上次崩潰前已提交的狀態
   await refreshInkLocalStatus();

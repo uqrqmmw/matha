@@ -24,7 +24,7 @@ test('級分校準只採完整模擬，三場皆過 72% 才標穩定', () => {
   assert.equal(result.after.grade, '13 級分');
 });
 
-test('下一步優先處理原卷與系統隔日訂正，再排未完成大綱、全真校準、弱點與觀念', () => {
+test('下一步先處理隔日任務；沒有可信成績時先建全真基準，再排大綱、弱點與觀念', () => {
   const { run } = loadApp();
   const states = plain(run(`(() => {
     S.attempts = []; S.mocks = []; S.wrong = {}; S.corrections = []; S.outlineAttempts = []; S.paperRuns = [];
@@ -53,8 +53,25 @@ test('下一步優先處理原卷與系統隔日訂正，再排未完成大綱�
   assert.match(states.paperAction, /startPaperAnswerReview\('paper-due'\)/);
   assert.deepEqual(states.paperPending, [11]);
   assert.deepEqual({ outline:states.outline, noData:states.noData, due:states.due, weak:states.weak, normal:states.normal },
-    { outline:'outline', noData:'mock', due:'correction', weak:'topic', normal:'concept' });
+    { outline:'mock', noData:'mock', due:'correction', weak:'topic', normal:'concept' });
   assert.equal(states.adaptive, 'adaptive-textbook');
+});
+
+test('十一單元先守兩天重測，再允許同日開一個新單元，不會卡死在前幾章', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    S.mocks = [{ d:today(), ts:Date.now(), score:72, total:100, ok:72, n:100, acc:.72 }];
+    S.outlineAttempts = [{ id:'old-1', unitId:OUTLINE_DEFAULTS[0].id, d:addDays(today(), -2), due:today(), ts:1 }];
+    const first = nextBestAction();
+    S.outlineAttempts.push({ id:'retest-1', unitId:OUTLINE_DEFAULTS[0].id, d:today(), due:addDays(today(), 2), ts:Date.now() });
+    const second = nextBestAction();
+    S.outlineAttempts.push({ id:'new-2', unitId:OUTLINE_DEFAULTS[1].id, d:today(), due:addDays(today(), 2), ts:Date.now() + 1 });
+    const third = nextBestAction();
+    return { first:first.title, second:second.title, third:third.kind };
+  })()`));
+  assert.match(result.first, /兩天後重測/);
+  assert.match(result.second, /第一次默寫/);
+  assert.notEqual(result.third, 'outline');
 });
 
 test('分章補洞只由混合證據觸發，分章練習本身不製造或稀釋診斷', () => {
