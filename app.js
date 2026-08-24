@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825i'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -8521,8 +8521,10 @@ function learnerModelCard() {
   const strengths = model.strengths.length
     ? `<ul class="learner-topic-list">${model.strengths.map((row) => topicItem(row, 'strength')).join('')}</ul>`
     : '<p class="dim">還沒有任何單元累積到足以稱為穩定強項的證據；不是代表你沒有強項，而是系統暫不過度推論。</p>';
-  const priorityRows = model.needs.length ? model.needs : model.unknown.slice(0, 4);
-  const priorities = priorityRows.length
+  const priorityRows = model.evidenceCount ? (model.needs.length ? model.needs : model.unknown.slice(0, 4)) : [];
+  const priorities = !model.evidenceCount
+    ? '<p class="dim">目前沒有足夠的新證據，不能判定任何單元是弱項；先用完整模考建立基準。</p>'
+    : priorityRows.length
     ? `<ul class="learner-topic-list">${priorityRows.map((row) => topicItem(row, 'need')).join('')}</ul>`
     : '<p class="dim">目前沒有達到明確弱項門檻；繼續用混合題補足各單元證據。</p>';
   const errorRows = model.topErrors.length

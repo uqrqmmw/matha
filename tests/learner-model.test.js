@@ -109,3 +109,14 @@ test('知道所屬單元與找到破題方向分開累積，不把只會分類�
   assert.equal(result.directionN, 2);
   assert.ok(result.directionRate < 0.1);
 });
+
+test('沒有新證據時不把未知單元冒充成弱項', () => {
+  const { run } = loadApp();
+  const html = run(`(() => {
+    S.learningBaselineResetAt = 100;
+    S.attempts = [{ qid:BANK[0].id, ok:false, d:today(), ts:50 }];
+    return learnerModelCard();
+  })()`);
+  assert.match(html, /不能判定任何單元是弱項/);
+  assert.doesNotMatch(html, /模型 50\/100/);
+});
