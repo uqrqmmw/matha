@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0825d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -712,7 +712,7 @@ async function pullContent() {
 
 const CURATED_BUCKET = 'matha-content';
 const FIGURE_BUCKET = 'matha-figures';
-const CURATED_MANIFEST = 'manifest-0825c.json';
+const CURATED_MANIFEST = 'manifest-0825e.json';
 let trustedCuratedQuestions = new WeakSet();
 const CURATED_HEALTH_LS = 'mathA13_curated_health_v1';
 function loadCuratedHealth() {

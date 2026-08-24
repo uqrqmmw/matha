@@ -194,9 +194,9 @@ function loadBuiltinQuestions(repoRoot) {
   return vm.runInContext('BANK', context);
 }
 
-function sourceFileName(source, index) {
+function sourceFileName(source, index, contentHash) {
   const hint = String(source || 'unknown').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase().slice(0, 28) || 'pack';
-  return `${String(index + 1).padStart(2, '0')}-${hint}-${sha(source || 'unknown').slice(0, 8)}.json`;
+  return `${String(index + 1).padStart(2, '0')}-${hint}-${sha(source || 'unknown').slice(0, 8)}-${String(contentHash || '').slice(0, 10)}.json`;
 }
 
 function sanitizeBank(items, builtinQuestions) {
@@ -276,11 +276,12 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
   }
   fs.mkdirSync(outputDir, { recursive: true });
   const packs = [...bySource.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-Hant')).map(([name, packItems], index) => {
-    const file = sourceFileName(name, index);
     const envelope = { kind: 'qpack', name, version: 2, items: packItems };
     const json = `${JSON.stringify(envelope)}\n`;
+    const digest = sha(json);
+    const file = sourceFileName(name, index, digest);
     fs.writeFileSync(path.join(outputDir, file), json);
-    return { id: `curated-${sha(name).slice(0, 16)}`, name, file, count: packItems.length, sha256: sha(json) };
+    return { id: `curated-${sha(name).slice(0, 16)}`, name, file, count: packItems.length, sha256: digest };
   });
   const generatedAt = new Date().toISOString();
   const pendingVisualEnvelope = {

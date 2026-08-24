@@ -1,8 +1,11 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
-const { cleanText, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata } = require('../scripts/build-private-bank');
+const { cleanText, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank } = require('../scripts/build-private-bank');
 
 function q(id, text, extra) {
   return { id, topic: 'num', type: 'fill', diff: 1, q: text, ans: ['1'], sol: '解法', src: '測試', ...(extra || {}) };
@@ -10,6 +13,18 @@ function q(id, text, extra) {
 
 test('私有題庫清理會移除 emoji，但保留數學符號與圈號步驟', () => {
   assert.equal(cleanText('⚡ ① x²＋√2'), '① x²＋√2');
+});
+
+test('私有題包檔名包含內容雜湊，更新內容不會被同名 Storage 快取攔住', (t) => {
+  const root = path.resolve(__dirname, '..');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'matha-content-address-'));
+  t.after(() => fs.rmSync(temp, { recursive:true, force:true }));
+  const source = path.join(temp, 'source.json');
+  const output = path.join(temp, 'out');
+  fs.writeFileSync(source, JSON.stringify([q('content-address-1', '測試內容位碼 91827364')]), 'utf8');
+  const manifest = buildPrivateBank(source, output, root);
+  assert.equal(manifest.packs.length, 1);
+  assert.match(manifest.packs[0].file, new RegExp(`${manifest.packs[0].sha256.slice(0, 10)}\\.json$`));
 });
 
 test('私有題庫保留缺圖題為可追蹤佇列，並拒絕超範圍、危險與完全重複內容', () => {
