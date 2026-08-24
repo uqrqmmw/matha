@@ -4,11 +4,25 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const TEXTBOOK_LIBRARY = require('../textbook-catalog');
 
 const TOPICS = new Set(['num', 'line', 'poly', 'seq', 'comb', 'prob', 'data', 'trig1', 'trig2', 'exp', 'vec', 'vec3', 'space', 'mat']);
 const TYPES = new Set(['single', 'multi', 'fill']);
 const OUT_OF_RANGE_RE = [/\\(?:cot|sec|csc)\b/, /(?:餘切|正割|餘割)\s*函數/, /十分逼近法/];
 const SUSPICIOUS_HTML_RE = /<\s*(?:script|iframe|object|embed|style)\b|\bon\w+\s*=|javascript\s*:/i;
+const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?圖(?:所示|可知|中)?|(?:下|上|左|右|附)圖(?:所示|中)?|圖中|圖示(?:如下)?|示意圖|依圖作答|(?:根據|依據|參照|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表(?:中|所示|可知)?/;
+const QUESTION_ROLES = new Set(['example', 'chapter-end-easy', 'chapter-end-medium', 'chapter-end-hard', 'comprehensive-review', 'unclassified']);
+const BOOK_BY_SOURCE = new Map(TEXTBOOK_LIBRARY.books.flatMap((book) => (book.sourceNames || []).map((name) => [name, book])));
+const BOOK_BY_ID = new Map(TEXTBOOK_LIBRARY.books.map((book) => [book.id, book]));
+/* 逐頁核對後確認：題文已把印刷表格的全部欄列與數值完整序列化，位置/顏色/合併格不影響解題。
+   這是 build-time 信任清單；外部 qpack 自報 visualComplete 或仿造 evidence 都不會取得 curated trust。 */
+const VERIFIED_TEXT_COMPLETE_IDS = new Set([
+  'v-exp-log1-p055-ex18', 'v-exp-log1-p240-c4a', 'v-exp-log1-p240-c4b', 'v-exp-log1-p254-m1',
+  'v-log2-p065-adv-single-3', 'v-log2-p126-ex39-a', 'v-log2-p126-ex39-b',
+  'v-prob-ev-p124-multi1', 'v-prob-ev-p156-ex32', 'v-prob-ev-p159-ex36-a', 'v-prob-ev-p159-ex36-b',
+  'v-prob-ev-p183-ex-c10-a', 'v-prob-ev-p183-ex-c10-b', 'v-prob-ev-p184-mix1-a', 'v-prob-ev-p184-mix1-b',
+  'v-trig-basic-p067-advsingle3', 'v-trig-basic-p168-ex7',
+]);
 
 function sha(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -32,6 +46,19 @@ function normalizeQuestion(value, maskNumbers) {
   return out;
 }
 
+/* 短句「求 a 之值」不是題目身分；題幹、選項與答案不同就不可刪掉或共用學習記錄。 */
+function questionSignature(q, maskNumbers, includeAnswer = true) {
+  const norm = (value) => normalizeQuestion(value == null ? '' : value, maskNumbers);
+  return JSON.stringify({
+    type: String(q && q.type || ''),
+    stem: norm(q && q.stem),
+    q: norm(q && q.q),
+    opts: Array.isArray(q && q.opts) ? q.opts.map(norm) : [],
+    ans: includeAnswer && Array.isArray(q && q.ans) ? q.ans.map((value) => norm(value)) : [],
+    fig: norm(q && q.fig),
+  });
+}
+
 function validateQuestion(q) {
   if (!q || typeof q.id !== 'string' || !q.id) return 'id-missing';
   if (!/^[\w.:-]+$/.test(q.id)) return 'id-invalid';
@@ -40,20 +67,122 @@ function validateQuestion(q) {
   if (!TYPES.has(q.type)) return 'type-invalid';
   if (![1, 2, 3].includes(q.diff)) return 'difficulty-invalid';
   if (!q.q || typeof q.q !== 'string') return 'question-missing';
+  if (q.q.length > 12000 || String(q.stem || '').length > 12000 || String(q.sol || '').length > 40000) return 'text-too-long';
   if (q.type === 'fill') {
     if (!Array.isArray(q.ans) || !q.ans.length || q.ans.some((a) => typeof a !== 'string' && typeof a !== 'number')) return 'answer-invalid';
+    if (q.ans.some((a) => String(a).length > 1000)) return 'answer-too-long';
   } else {
     if (!Array.isArray(q.opts) || q.opts.length < 2 || q.opts.some((o) => typeof o !== 'string' && typeof o !== 'number')) return 'options-invalid';
+    if (q.opts.some((o) => String(o).length > 6000)) return 'options-too-long';
     if (!Array.isArray(q.ans) || !q.ans.length || q.ans.some((a) => !Number.isInteger(a) || a < 0 || a >= q.opts.length)) return 'answer-invalid';
+  }
+  if (q.bookId != null && (typeof q.bookId !== 'string' || !/^[\w.-]+$/.test(q.bookId))) return 'book-id-invalid';
+  if (q.page != null && (!Number.isInteger(Number(q.page)) || Number(q.page) < 1)) return 'page-invalid';
+  if (q.role != null && !QUESTION_ROLES.has(q.role)) return 'role-invalid';
+  if (q.figureAsset != null && !verifiedFigureAsset(q)) return 'figure-asset-unverified';
+  if (q.visualEvidence != null && !verifiedVisualEvidence(q)) return 'visual-evidence-unverified';
+  for (const key of ['skills', 'methods', 'prerequisites']) {
+    if (q[key] != null && (!Array.isArray(q[key]) || q[key].some((value) => typeof value !== 'string'))) return `${key}-invalid`;
   }
   return null;
 }
 
+function verifiedVisualEvidence(q) {
+  const evidence = q && q.visualEvidence;
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return null;
+  const book = q && BOOK_BY_ID.get(q.bookId);
+  return evidence.status === 'verified-text-complete'
+    && evidence.questionId === q.id && evidence.bookId === q.bookId
+    && Number(evidence.pageIndex) === Number(q.page)
+    && !!book && evidence.sourcePdfSha256 === book.pdfSha256
+    && Number(evidence.reviewVersion) >= 1 && evidence.reviewer === 'independent-visual-audit'
+    && typeof evidence.verifiedAt === 'string' ? evidence : null;
+}
+
+function verifiedFigureAsset(q) {
+  const asset = q && q.figureAsset;
+  if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return null;
+  const book = q && BOOK_BY_ID.get(q.bookId);
+  const safePath = typeof asset.path === 'string' && asset.path.length <= 240
+    && !asset.path.startsWith('/') && !asset.path.includes('..') && /^[\w./-]+\.(?:png|webp|jpe?g)$/i.test(asset.path);
+  const safeHashes = /^[a-f0-9]{64}$/.test(String(asset.sha256 || '')) && /^[a-f0-9]{64}$/.test(String(asset.sourcePdfSha256 || ''));
+  const box = Array.isArray(asset.bbox) ? asset.bbox.map(Number) : [];
+  const safeBox = box.length === 4 && box.every((value) => Number.isFinite(value) && value >= 0 && value <= 1)
+    && box[2] >= .01 && box[3] >= .01 && box[0] + box[2] <= 1.000001 && box[1] + box[3] <= 1.000001;
+  const page = Number(asset.pageIndex);
+  const verifier = asset.verifier;
+  const safeRendition = ['image/webp', 'image/png', 'image/jpeg'].includes(asset.mime)
+    && Number.isInteger(Number(asset.width)) && Number(asset.width) >= 80
+    && Number.isInteger(Number(asset.height)) && Number(asset.height) >= 80;
+  const boundToQuestion = Array.isArray(asset.questionIds) && asset.questionIds.includes(q.id)
+    && asset.bookId === q.bookId && page === Number(q.page)
+    && !!book && book.pdfSha256 === asset.sourcePdfSha256;
+  const independentlyReviewed = typeof asset.producer === 'string' && asset.producer.length >= 3
+    && verifier && Number(verifier.reviewVersion) >= 1
+    && typeof verifier.reviewer === 'string' && verifier.reviewer.length >= 3 && verifier.reviewer !== asset.producer
+    && verifier.questionRoleVerified === true && verifier.safetyVerified === true && verifier.assetHashVerified === true
+    && typeof verifier.verifiedAt === 'string';
+  return asset.assetStatus === 'verified' && asset.role === 'question-figure'
+    && asset.containsAnswer === false && asset.containsSolution === false && asset.containsHandwriting === false
+    && safePath && safeHashes && safeBox && safeRendition && boundToQuestion && independentlyReviewed
+    && Number.isInteger(page) && page >= 1 ? asset : null;
+}
+
+function questionMissingVisualAsset(q) {
+  if (!q) return false;
+  if (verifiedFigureAsset(q) || verifiedVisualEvidence(q)) return false;
+  if (q.needsFigure) return true;
+  const stem = `${String(q.stem || '')}\n${String(q.q || '')}`.replace(/<[^>]+>/g, ' ');
+  return VISUAL_REFERENCE_RE.test(stem);
+}
+
 function sanitizeQuestion(input) {
   const q = { ...input };
-  for (const key of ['q', 'stem', 'sol', 'tip', 'src']) if (typeof q[key] === 'string') q[key] = cleanText(q[key]);
+  for (const key of ['q', 'stem', 'sol', 'tip', 'src', 'bookId', 'bookTitle', 'chapterId', 'sectionId', 'role', 'canonicalProblemId', 'variantGroup']) if (typeof q[key] === 'string') q[key] = cleanText(q[key]);
+  if (q.figureAsset && typeof q.figureAsset === 'object' && !Array.isArray(q.figureAsset)) q.figureAsset = { ...q.figureAsset };
+  if (q.visualEvidence && typeof q.visualEvidence === 'object' && !Array.isArray(q.visualEvidence)) q.visualEvidence = { ...q.visualEvidence };
   if (Array.isArray(q.opts)) q.opts = q.opts.map((v) => typeof v === 'string' ? cleanText(v) : v);
   if (Array.isArray(q.ans)) q.ans = q.ans.map((v) => typeof v === 'string' ? cleanText(v) : v);
+  for (const key of ['skills', 'methods', 'prerequisites']) if (Array.isArray(q[key])) q[key] = q[key].map(cleanText).filter(Boolean);
+  return q;
+}
+
+function enrichQuestionMetadata(input) {
+  const q = { ...input };
+  const book = BOOK_BY_SOURCE.get(q.src);
+  const page = String(q.id || '').match(/-p0*(\d+)/i);
+  const sourceId = String(q.id || '');
+  const isExample = /-ex[a-z]*\d/i.test(sourceId);
+  const isAdvanced = /-adv(?:-|$)/i.test(sourceId);
+  const isFoundation = /-(?:basic|base)(?:-|$)/i.test(sourceId);
+  if (book) {
+    q.bookId ||= book.id;
+    q.bookTitle ||= book.title;
+    q.edition ||= '114';
+  }
+  q.chapterId ||= q.topic;
+  if (q.page == null && page) q.page = Number(page[1]);
+  /* 教材實頁核對：ex 是例題、adv 是「進階試題演練」、basic/base 是明示的
+     基礎區；s/m/f/c 是題型代碼，絕不可猜成難度。沒有頁面證據的題保留
+     unclassified，仍用原始 diff 排序，不讓錯誤 metadata 污染推薦。 */
+  q.role ||= isExample ? 'example'
+    : isAdvanced ? 'chapter-end-hard'
+      : isFoundation ? 'chapter-end-easy' : 'unclassified';
+  q.sectionLevel ||= isExample ? 'example'
+    : isAdvanced ? 'advanced'
+      : isFoundation ? 'foundation' : 'unverified';
+  q.roleProvenance ||= q.role === 'unclassified' ? 'awaiting-page-verification' : 'printed-section-id';
+  q.sourceDifficulty ??= q.diff;
+  q.difficultyProvenance ||= 'legacy-curation';
+  q.canonicalProblemId ||= `problem-${sha(questionSignature(q, false, true)).slice(0, 20)}`;
+  q.estimatedMinutes ??= ({ 1:2, 2:4, 3:7 }[q.diff] || 4);
+  if (VERIFIED_TEXT_COMPLETE_IDS.has(q.id) && book && q.page) {
+    q.visualEvidence = {
+      status:'verified-text-complete', questionId:q.id, bookId:q.bookId, sourcePdfSha256:book.pdfSha256,
+      pageIndex:Number(q.page), reviewVersion:1, reviewer:'independent-visual-audit', verifiedAt:'2026-08-25T00:00:00+08:00',
+    };
+  }
+  q.visibility = 'private';
   return q;
 }
 
@@ -74,55 +203,71 @@ function sanitizeBank(items, builtinQuestions) {
   const report = {
     sourceTotal: items.length,
     accepted: 0,
-    skipped: { schema: 0, missingFigure: 0, outOfRange: 0, suspiciousHtml: 0, duplicateId: 0, duplicateBuiltin: 0, duplicateLegacy: 0 },
+    skipped: { schema: 0, missingFigure: 0, visualReferenceMissing: 0, outOfRange: 0, suspiciousHtml: 0, duplicateId: 0, duplicateBuiltin: 0, duplicateLegacy: 0 },
     emojiCleaned: 0,
     templateGroups: 0,
+    visual: { pending: 0, verified: 0, textComplete: 0 },
   };
   const ids = new Set();
-  const builtinText = new Set((builtinQuestions || []).map((q) => normalizeQuestion(q.q, false)).filter(Boolean));
+  const builtinText = new Set((builtinQuestions || []).map((q) => questionSignature(q, false, true)).filter(Boolean));
   const legacyText = new Set();
   const accepted = [];
+  const pendingVisuals = [];
 
   for (const original of items) {
     // 掃描面涵蓋所有會被前端渲染的欄位：ans（fill 正解會進 innerHTML）、src、fig/solFig（SVG）不能漏
     const joined = [original && original.q, original && original.stem, original && original.sol, original && original.tip, original && original.src, original && original.fig, original && original.solFig, ...((original && original.opts) || []), ...((original && Array.isArray(original.ans) ? original.ans : []))]
       .filter((v) => typeof v === 'string').join('\n');
     if (/\p{Extended_Pictographic}/u.test(joined)) report.emojiCleaned++;
-    const q = sanitizeQuestion(original || {});
-    if (validateQuestion(q)) { report.skipped.schema++; continue; }
+    const q = enrichQuestionMetadata(sanitizeQuestion(original || {}));
+    const visualMissing = questionMissingVisualAsset(q);
+    const schemaError = validateQuestion(q);
+    /* 未附圖的題目仍是完整的待辦資料，不因尚未產生 asset 而算 schema 壞題。 */
+    if (schemaError && !(visualMissing && schemaError === 'figure-asset-unverified')) { report.skipped.schema++; continue; }
     if (ids.has(q.id)) { report.skipped.duplicateId++; continue; }
     ids.add(q.id);
-    if (q.needsFigure && !q.fig) { report.skipped.missingFigure++; continue; }
     if (OUT_OF_RANGE_RE.some((re) => re.test(q.q))) { report.skipped.outOfRange++; continue; }
     if (SUSPICIOUS_HTML_RE.test(joined)) { report.skipped.suspiciousHtml++; continue; }
-    const exact = normalizeQuestion(q.q, false);
+    const exact = questionSignature(q, false, true);
     if (builtinText.has(exact)) { report.skipped.duplicateBuiltin++; continue; }
     if (legacyText.has(exact)) { report.skipped.duplicateLegacy++; continue; }
     legacyText.add(exact);
+    if (visualMissing) {
+      q.visualStatus = 'pending-asset-qa';
+      q.visualPendingReason = q.needsFigure && !q.fig ? 'missing-explicit-figure' : 'visual-reference-without-verified-asset';
+      pendingVisuals.push(q);
+      report.visual.pending++;
+      if (q.needsFigure && !q.fig) report.skipped.missingFigure++;
+      else report.skipped.visualReferenceMissing++;
+      continue;
+    }
+    if (verifiedFigureAsset(q)) report.visual.verified++;
+    if (verifiedVisualEvidence(q)) report.visual.textComplete++;
     accepted.push(q);
   }
 
   const fingerprints = new Map();
   for (const q of accepted) {
-    const fp = normalizeQuestion(q.q, true);
+    const fp = questionSignature(q, true, false);
     if (!fingerprints.has(fp)) fingerprints.set(fp, []);
     fingerprints.get(fp).push(q);
   }
   for (const group of fingerprints.values()) {
     if (group.length < 2) continue;
-    const grp = `legacy-${sha(normalizeQuestion(group[0].q, true)).slice(0, 14)}`;
-    for (const q of group) q.grp = grp;
+    const grp = `legacy-${sha(questionSignature(group[0], true, false)).slice(0, 14)}`;
+    for (const q of group) { q.grp = grp; q.variantGroup ||= grp; }
     report.templateGroups++;
   }
+  for (const q of accepted) if (q.grp && !q.variantGroup) q.variantGroup = q.grp;
   report.accepted = accepted.length;
-  return { items: accepted, report };
+  return { items: accepted, pendingVisuals, report };
 }
 
 function buildPrivateBank(sourceFile, outputDir, repoRoot) {
   const raw = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
   const sourceItems = Array.isArray(raw) ? raw : (raw.items || raw.extbank || []);
   const builtin = loadBuiltinQuestions(repoRoot);
-  const { items, report } = sanitizeBank(sourceItems, builtin);
+  const { items, pendingVisuals, report } = sanitizeBank(sourceItems, builtin);
   const bySource = new Map();
   for (const q of items) {
     const source = q.src || '未標來源';
@@ -132,19 +277,33 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
   fs.mkdirSync(outputDir, { recursive: true });
   const packs = [...bySource.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-Hant')).map(([name, packItems], index) => {
     const file = sourceFileName(name, index);
-    const envelope = { kind: 'qpack', name, version: 1, items: packItems };
+    const envelope = { kind: 'qpack', name, version: 2, items: packItems };
     const json = `${JSON.stringify(envelope)}\n`;
     fs.writeFileSync(path.join(outputDir, file), json);
     return { id: `curated-${sha(name).slice(0, 16)}`, name, file, count: packItems.length, sha256: sha(json) };
   });
+  const generatedAt = new Date().toISOString();
+  const pendingVisualEnvelope = {
+    kind: 'pending-visual-queue', version: 1, generatedAt, count: pendingVisuals.length, items: pendingVisuals,
+  };
+  const pendingVisualJson = `${JSON.stringify(pendingVisualEnvelope, null, 2)}\n`;
   const manifest = {
-    schema: 1,
+    schema: 2,
     visibility: 'authenticated',
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     sourceFile: path.basename(sourceFile),
     report,
+    library: {
+      schema: TEXTBOOK_LIBRARY.schema,
+      verifiedBooks: TEXTBOOK_LIBRARY.verifiedCount,
+      readyBooks: TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion === 'ready').length,
+      pendingBooks: TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion !== 'ready').length,
+    },
+    pendingVisuals: { file: 'pending-visuals.json', count: pendingVisuals.length, sha256: sha(pendingVisualJson) },
     packs,
   };
+  /* 待補圖檔是私有製作佇列，不上 GitHub Pages；缺圖題逐題可追，不再被粗暴省略。 */
+  fs.writeFileSync(path.join(outputDir, 'pending-visuals.json'), pendingVisualJson);
   fs.writeFileSync(path.join(outputDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }
@@ -169,4 +328,4 @@ if (require.main === module) {
   console.log(JSON.stringify(manifest, null, 2));
 }
 
-module.exports = { cleanText, normalizeQuestion, sanitizeBank, validateQuestion, buildPrivateBank };
+module.exports = { cleanText, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank };

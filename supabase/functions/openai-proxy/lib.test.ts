@@ -233,4 +233,5 @@ Deno.test("結構化 schema 每一層物件都關閉額外欄位，整卷必含 
   const paper = responseSchemas.paper_grade.properties.questions.items;
   assert(paper.required.includes("finalAnswer"));
   assert(paper.required.includes("selectedOptions"));
+  assert(paper.required.includes("topic"));
 });

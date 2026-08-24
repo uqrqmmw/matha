@@ -2,7 +2,7 @@
    設計原則：每一題都帶碼表、每一個錯都分類、用數據決定練什麼。 */
 'use strict';
 
-const APP_VER = '0722e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0825a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -80,16 +80,27 @@ function save() {
   return localOk || idbAvailable; // IndexedDB 是主儲存；localStorage 滿了也不誤報「沒有存下來」
 }
 function exportData() {
-  // 分家後備份也要帶內容層（__content 欄位；匯入時會還原並剔除，不會污染 S）
+  // 分家後備份只帶「使用者自己的」內容層。官方 curated pack 的信任來自 Storage manifest +
+  // 原始 envelope SHA，絕不能讓可編輯的備份把 curated:true / sha256 / items 帶回來自行授信。
   // 相容舊資料：匯出永遠剔除歷史 aikey 欄位；OpenAI secret 只存在 Edge Function，不會進前端狀態。
   const { aikey, aikeyTs, ...safe } = S;
-  const payload = splitOn() && Object.keys(CONTENT.packs).length ? { ...safe, __content: CONTENT.packs } : safe;
+  const backupPacks = backupContentPacks(CONTENT.packs);
+  const payload = splitOn() && Object.keys(backupPacks).length ? { ...safe, __content: backupPacks } : safe;
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `mathA13-備份-${today()}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+function backupContentPacks(packs) {
+  const out = {};
+  for (const [pid, pack] of Object.entries(packs || {})) {
+    if (!pack || typeof pack !== 'object' || pack.curated || /^curated-/.test(pid)) continue;
+    const { curated, sha256, verifiedBytes, ...safePack } = pack;
+    out[pid] = safePack;
+  }
+  return out;
 }
 /* 同 id 時取 rev 較大者（rev 預設 0）——修正版題包/內容包能覆蓋舊內容，不再被「舊的贏」擋掉。
    結果統計掛在 unionById.last = {added, updated, skipped} 供匯入回報。 */
@@ -127,6 +138,7 @@ function mergePackStores(primary, fallback) {
   return out;
 }
 /* 題目 schema 驗證：壞一題就可能炸掉整個做題 session，量產內容必混壞題，入庫前逐題過檢 */
+const QUESTION_ROLES = new Set(['example', 'chapter-end-easy', 'chapter-end-medium', 'chapter-end-hard', 'comprehensive-review', 'unclassified']);
 function validateQ(q) {
   if (!q || typeof q.id !== 'string' || !q.id) return 'id 缺漏';
   if (!/^[\w.:-]+$/.test(q.id)) return 'id 含不合法字元'; // id 會進 inline onclick（jsA），限字元集斷絕注入面（現有題 id 全是英數/-/_/:/. ）
@@ -135,17 +147,29 @@ function validateQ(q) {
   if (!['single', 'multi', 'fill'].includes(q.type)) return `type「${q.type}」不合法`;
   if (![1, 2, 3].includes(q.diff)) return `diff「${q.diff}」不合法`;
   if (!q.q || typeof q.q !== 'string') return '題目 q 缺漏';
+  if (q.q.length > 12000 || String(q.stem || '').length > 12000 || String(q.sol || '').length > 40000) return '題目文字過長';
   if (q.type === 'fill') {
     if (!Array.isArray(q.ans) || !q.ans.length || q.ans.some((a) => typeof a !== 'string' && typeof a !== 'number')) return 'fill 題 ans 必須是非空字串陣列';
+    if (q.ans.some((a) => String(a).length > 1000)) return 'fill 題答案過長';
   } else {
     if (!Array.isArray(q.opts) || q.opts.length < 2) return '選擇題 opts 至少 2 項';
+    if (q.opts.some((o) => String(o).length > 6000)) return '選項文字過長';
     if (!Array.isArray(q.ans) || !q.ans.length || q.ans.some((a) => !Number.isInteger(a) || a < 0 || a >= q.opts.length)) return 'ans 索引超界';
+  }
+  if (q.bookId != null && (typeof q.bookId !== 'string' || !/^[\w.-]+$/.test(q.bookId))) return 'bookId 不合法';
+  if (q.page != null && (!Number.isInteger(Number(q.page)) || Number(q.page) < 1)) return 'page 不合法';
+  if (q.role != null && !QUESTION_ROLES.has(q.role)) return 'role 不合法';
+  if (q.figureAsset != null && !verifiedFigureAsset(q, false)) return 'figureAsset 尚未通過完整圖資驗證';
+  if (q.visualEvidence != null && !verifiedVisualEvidence(q, false)) return 'visualEvidence 尚未通過完整文字證據驗證';
+  for (const key of ['skills', 'methods', 'prerequisites']) {
+    if (q[key] != null && (!Array.isArray(q[key]) || q[key].some((value) => typeof value !== 'string'))) return `${key} 不合法`;
   }
   return null;
 }
 let BANK_MAP = null; // id → 題目（extbank 破千後 find 掃描會卡，統一走 Map）
 function rebuildBankMap() { BANK_MAP = new Map(BANK.map((q) => [q.id, q])); }
 const BUILTIN_N = BANK.length; // bank.js 內建題數：applyExtBank 重建時的切點
+const BUILTIN_IDS = new Set(BANK.map((q) => q.id));
 /* packOff 用「墓碑＋時間戳」{off,ts} 而非刪 key：刪 key 在雲端聯集合併下會讓「重新啟用」被舊旗標吃回去。舊格式 true 視同 {off:true,ts:0}。 */
 function packIsOff(src) {
   const v = S.packOff && S.packOff[src];
@@ -193,12 +217,13 @@ function idbOpen() {
     let done = false;
     const to = setTimeout(() => { if (!done) { done = true; rej(new Error('IDB open 逾時')); } }, 4000); // 逾時保底：別讓 boot 因升級被舊分頁擋住而永久白畫面
     if (typeof indexedDB === 'undefined') { clearTimeout(to); rej(new Error('IndexedDB 不可用')); return; }
-    const rq = indexedDB.open('mathA13Content', 5);
+    const rq = indexedDB.open('mathA13Content', 6);
     rq.onupgradeneeded = () => {
       const db = rq.result;
       if (!db.objectStoreNames.contains('packs')) db.createObjectStore('packs');
       if (!db.objectStoreNames.contains('errshots')) db.createObjectStore('errshots');
       if (!db.objectStoreNames.contains('state')) db.createObjectStore('state');
+      if (!db.objectStoreNames.contains('figurecache')) db.createObjectStore('figurecache', { keyPath: 'key' });
       const inkStore = db.objectStoreNames.contains('inkrecords')
         ? rq.transaction.objectStore('inkrecords')
         : db.createObjectStore('inkrecords', { keyPath: 'client_id' });
@@ -261,6 +286,47 @@ async function idbWriteAll(packs) {
     tx.oncomplete = () => res();
     tx.onerror = () => rej(tx.error);
   });
+}
+async function figureCacheGet(sha256, userId) {
+  const uid = userId;
+  if (!uid || !/^[a-f0-9]{64}$/.test(String(sha256 || ''))) return null;
+  try {
+    const db = await idbOpen();
+    return await new Promise((res, rej) => {
+      const rq = db.transaction('figurecache').objectStore('figurecache').get(`${uid}|${sha256}`);
+      rq.onsuccess = () => res(rq.result && rq.result.blob instanceof Blob ? rq.result.blob : null);
+      rq.onerror = () => rej(rq.error);
+    });
+  } catch (_) { return null; }
+}
+async function figureCachePut(sha256, blob, userId) {
+  const uid = userId;
+  if (!uid || !(blob instanceof Blob)) return false;
+  try {
+    const db = await idbOpen();
+    await new Promise((res, rej) => {
+      const tx = db.transaction('figurecache', 'readwrite');
+      tx.objectStore('figurecache').put({ key:`${uid}|${sha256}`, user_id:uid, sha256, blob, verifiedAt:Date.now() });
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error);
+    });
+    return true;
+  } catch (_) { return false; }
+}
+async function figureCacheDelete(sha256, userId) {
+  const uid = userId;
+  if (!uid) return;
+  try { const db = await idbOpen(); await new Promise((res) => { const tx = db.transaction('figurecache', 'readwrite'); tx.objectStore('figurecache').delete(`${uid}|${sha256}`); tx.oncomplete = tx.onerror = tx.onabort = () => res(); }); } catch (_) {}
+}
+async function figureCacheClearUser(userId) {
+  if (!userId) return;
+  try {
+    const db = await idbOpen();
+    await new Promise((res) => {
+      const tx = db.transaction('figurecache', 'readwrite'), store = tx.objectStore('figurecache'), rq = store.openCursor();
+      rq.onsuccess = () => { const cursor = rq.result; if (!cursor) return; if (cursor.value && cursor.value.user_id === userId) cursor.delete(); cursor.continue(); };
+      tx.oncomplete = tx.onerror = tx.onabort = () => res();
+    });
+  } catch (_) {}
 }
 async function stateRead() {
   const db = await idbOpen();
@@ -645,7 +711,9 @@ async function pullContent() {
 }
 
 const CURATED_BUCKET = 'matha-content';
+const FIGURE_BUCKET = 'matha-figures';
 const CURATED_MANIFEST = 'manifest.json';
+let trustedCuratedQuestions = new WeakSet();
 const CURATED_HEALTH_LS = 'mathA13_curated_health_v1';
 function loadCuratedHealth() {
   try {
@@ -658,7 +726,7 @@ function persistCuratedHealth() {
 }
 let curatedState = { status: 'idle', count: 0, error: '', ...(loadCuratedHealth() || {}) };
 function curatedManifestValid(m) {
-  return !!(m && m.schema === 1 && m.visibility === 'authenticated' && Array.isArray(m.packs)
+  return !!(m && [1, 2].includes(Number(m.schema)) && m.visibility === 'authenticated' && Array.isArray(m.packs)
     && m.packs.every((p) => p && typeof p.id === 'string' && /^curated-[\w-]+$/.test(p.id)
       && typeof p.file === 'string' && !p.file.includes('..') && !p.file.startsWith('/')
       && Number.isInteger(Number(p.count)) && Number(p.count) >= 0
@@ -667,6 +735,12 @@ function curatedManifestValid(m) {
 async function sha256Bytes(bytes) {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function exactStoredBytes(value) {
+  // IndexedDB／測試 iframe 可能回傳另一個 realm 的 ArrayBuffer，不能只靠 instanceof。
+  if (Object.prototype.toString.call(value) === '[object ArrayBuffer]' && typeof value.slice === 'function') return value.slice(0);
+  if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  return null;
 }
 function rerenderActiveView() {
   if (sessionActive) return;
@@ -680,6 +754,8 @@ async function pullCuratedContent() {
   if (!supa || !syncState.user || !supa.storage) return false;
   curatedState = { ...curatedState, status: 'loading', count: curatedState.count || 0, error: '' };
   syncState.msg = '正在核對私有題庫'; syncPill();
+  const previousTrustedQuestions = trustedCuratedQuestions;
+  trustedCuratedQuestions = new WeakSet();
   try {
     const bucket = supa.storage.from(CURATED_BUCKET);
     const manifestRes = await bucket.download(CURATED_MANIFEST);
@@ -690,20 +766,30 @@ async function pullCuratedContent() {
     if (!curatedManifestValid(manifest)) throw new Error('manifest 格式或存取層級不正確');
     const keep = new Set(manifest.packs.map((p) => p.id));
     let changed = false;
-    let count = 0;
+    let manifestCount = 0;
     for (const meta of manifest.packs) {
-      count += Number(meta.count) || 0;
+      manifestCount += Number(meta.count) || 0;
       const local = CONTENT.packs[meta.id];
-      if (local && local.curated && local.sha256 === meta.sha256 && Array.isArray(local.items)) continue;
-      const packRes = await bucket.download(meta.file);
-      if (packRes.error || !packRes.data) throw new Error(`${meta.name || meta.file} 下載失敗`);
-      const bytes = await packRes.data.arrayBuffer();
-      if ((await sha256Bytes(bytes)) !== meta.sha256) throw new Error(`${meta.name || meta.file} 完整性驗證失敗`);
+      let bytes = local && local.curated && local.sha256 === meta.sha256
+        ? exactStoredBytes(local.verifiedBytes) : null;
+      if (bytes && (await sha256Bytes(bytes)) !== meta.sha256) bytes = null;
+      if (!bytes) {
+        const packRes = await bucket.download(meta.file);
+        if (packRes.error || !packRes.data) throw new Error(`${meta.name || meta.file} 下載失敗`);
+        bytes = await packRes.data.arrayBuffer();
+        if ((await sha256Bytes(bytes)) !== meta.sha256) throw new Error(`${meta.name || meta.file} 完整性驗證失敗`);
+      }
       const envelope = JSON.parse(new TextDecoder().decode(bytes));
       if (!envelope || envelope.kind !== 'qpack' || !Array.isArray(envelope.items)) throw new Error(`${meta.name || meta.file} 不是題包`);
-      const items = envelope.items.filter((q) => !validateQ(q) && !(q.needsFigure && !q.fig) && !outOfRange(q));
-      CONTENT.packs[meta.id] = { kind: 'qpack', name: meta.name || envelope.name || meta.id, rev: Date.parse(manifest.generatedAt) || 1, sha256: meta.sha256, curated: true, items };
-      changed = true;
+      if (envelope.items.length !== Number(meta.count)) throw new Error(`${meta.name || meta.file} 題數與 manifest 不一致`);
+      for (const q of envelope.items) if (q && typeof q === 'object') trustedCuratedQuestions.add(q);
+      const items = envelope.items.filter((q) => !validateQ(q) && !questionMissingVisualAsset(q) && !outOfRange(q));
+      CONTENT.packs[meta.id] = {
+        kind: 'qpack', name: meta.name || envelope.name || meta.id,
+        rev: Date.parse(manifest.generatedAt) || 1, sha256: meta.sha256,
+        curated: true, verifiedBytes: bytes.slice(0), items,
+      };
+      if (!local || local.sha256 !== meta.sha256 || !exactStoredBytes(local.verifiedBytes)) changed = true;
     }
     for (const pid of Object.keys(CONTENT.packs)) {
       if (CONTENT.packs[pid] && CONTENT.packs[pid].curated && !keep.has(pid)) { delete CONTENT.packs[pid]; changed = true; }
@@ -711,9 +797,15 @@ async function pullCuratedContent() {
     if (!splitOn()) localStorage.setItem(SPLIT_LS, '1');
     if (changed && !(await persistContent())) throw new Error('本機空間不足，私有題庫無法快取');
     applyExtBank(); updateBadge();
+    const count = [...keep].reduce((sum, id) => sum + (Array.isArray(CONTENT.packs[id] && CONTENT.packs[id].items) ? CONTENT.packs[id].items.length : 0), 0);
+    const pendingVisualCount = Math.max(0, Number((manifest.pendingVisuals && manifest.pendingVisuals.count)
+      || (manifest.report && manifest.report.visual && manifest.report.visual.pending) || 0));
     curatedState = {
       status: 'ready',
       count,
+      manifestCount,
+      quarantinedCount: Math.max(0, manifestCount - count),
+      pendingVisualCount,
       total: BUILTIN_N + count,
       packCount: manifest.packs.length,
       generatedAt: manifest.generatedAt || null,
@@ -722,10 +814,11 @@ async function pullCuratedContent() {
       error: '',
     };
     persistCuratedHealth();
-    syncState.msg = `私有題庫已載入 ${count} 題`; syncPill();
+    syncState.msg = `私有題庫已載入 ${count} 題${pendingVisualCount ? `，另有 ${pendingVisualCount} 題正補齊圖資` : ''}${manifestCount > count ? `，${manifestCount - count} 題資料驗證未通過` : ''}`; syncPill();
     rerenderActiveView();
     return true;
   } catch (e) {
+    trustedCuratedQuestions = previousTrustedQuestions;
     curatedState = { ...curatedState, status: 'error', error: (e && e.message) || String(e), lastFailure: new Date().toISOString() };
     persistCuratedHealth();
     syncState.msg = '私有題庫暫時無法載入；內建題庫仍可使用'; syncPill();
@@ -746,19 +839,204 @@ const OUT_OF_RANGE_RE = [
   /(?:餘切|正割|餘割)\s*函數/, // 中文寫法（保守：要接「函數」才算，避免誤傷）
   /十分逼近法/,            // 國中具名法
 ];
+/* 掃描題若文字直接依賴「圖中／右圖／下圖」卻沒有圖資，先放進待補圖佇列，絕不刪題或硬出殘題。
+   私有裁圖只有附來源頁、裁切框、雙重內容 QA 與 sha256 時才算可用；整頁掃描不可當 fallback，
+   因為例題頁經常同頁印解答或手寫答案。外部題包自報 visualComplete/figureOptional 不具信任力。 */
+const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?圖(?:所示|可知|中)?|(?:下|上|左|右|附)圖(?:所示|中)?|圖中|圖示(?:如下)?|示意圖|依圖作答|(?:根據|依據|參照|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表(?:中|所示|可知)?/;
+function trustedVisualQuestion(q) {
+  if (!q) return false;
+  if (BUILTIN_IDS.has(q.id) || trustedCuratedQuestions.has(q)) return true;
+  const canonical = bankById(q.id);
+  if (!canonical || !trustedCuratedQuestions.has(canonical)) return false;
+  if (canonical.q !== q.q || String(canonical.stem || '') !== String(q.stem || '')) return false;
+  if (q.figureAsset) return !!(canonical.figureAsset
+    && canonical.figureAsset.sha256 === q.figureAsset.sha256 && canonical.figureAsset.path === q.figureAsset.path);
+  if (q.visualEvidence) return !!(canonical.visualEvidence
+    && canonical.visualEvidence.status === q.visualEvidence.status
+    && canonical.visualEvidence.sourcePdfSha256 === q.visualEvidence.sourcePdfSha256);
+  return false;
+}
+function verifiedFigureAsset(q, requireTrusted = true) {
+  const asset = q && q.figureAsset;
+  if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return null;
+  if (requireTrusted && !trustedVisualQuestion(q)) return null;
+  const book = q && q.bookId && TEXTBOOK_LIBRARY.books.find((item) => item.id === q.bookId);
+  const safePath = typeof asset.path === 'string' && asset.path.length <= 240
+    && !asset.path.startsWith('/') && !asset.path.includes('..') && /^[\w./-]+\.(?:png|webp|jpe?g)$/i.test(asset.path);
+  const safeHashes = /^[a-f0-9]{64}$/.test(String(asset.sha256 || '')) && /^[a-f0-9]{64}$/.test(String(asset.sourcePdfSha256 || ''));
+  const box = Array.isArray(asset.bbox) ? asset.bbox.map(Number) : [];
+  const safeBox = box.length === 4 && box.every((value) => Number.isFinite(value) && value >= 0 && value <= 1)
+    && box[2] >= .01 && box[3] >= .01 && box[0] + box[2] <= 1.000001 && box[1] + box[3] <= 1.000001;
+  const page = Number(asset.pageIndex);
+  const verifier = asset.verifier;
+  const safeRendition = ['image/webp', 'image/png', 'image/jpeg'].includes(asset.mime)
+    && Number.isInteger(Number(asset.width)) && Number(asset.width) >= 80
+    && Number.isInteger(Number(asset.height)) && Number(asset.height) >= 80;
+  const boundToQuestion = Array.isArray(asset.questionIds) && asset.questionIds.includes(q.id)
+    && asset.bookId === q.bookId && page === Number(q.page)
+    && !!book && book.pdfSha256 === asset.sourcePdfSha256;
+  const independentlyReviewed = typeof asset.producer === 'string' && asset.producer.length >= 3
+    && verifier && Number(verifier.reviewVersion) >= 1
+    && typeof verifier.reviewer === 'string' && verifier.reviewer.length >= 3 && verifier.reviewer !== asset.producer
+    && verifier.questionRoleVerified === true && verifier.safetyVerified === true && verifier.assetHashVerified === true
+    && typeof verifier.verifiedAt === 'string';
+  return asset.assetStatus === 'verified' && asset.role === 'question-figure'
+    && asset.containsAnswer === false && asset.containsSolution === false && asset.containsHandwriting === false
+    && safePath && safeHashes && safeBox && safeRendition && boundToQuestion && independentlyReviewed
+    && Number.isInteger(page) && page >= 1 ? asset : null;
+}
+function verifiedVisualEvidence(q, requireTrusted = true) {
+  const evidence = q && q.visualEvidence;
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return null;
+  if (requireTrusted && !trustedVisualQuestion(q)) return null;
+  const book = q && q.bookId && TEXTBOOK_LIBRARY.books.find((item) => item.id === q.bookId);
+  return evidence.status === 'verified-text-complete'
+    && evidence.questionId === q.id && evidence.bookId === q.bookId
+    && Number(evidence.pageIndex) === Number(q.page)
+    && !!book && evidence.sourcePdfSha256 === book.pdfSha256
+    && Number(evidence.reviewVersion) >= 1 && evidence.reviewer === 'independent-visual-audit'
+    && typeof evidence.verifiedAt === 'string' ? evidence : null;
+}
+function questionMissingVisualAsset(q) {
+  if (!q) return false;
+  if (verifiedFigureAsset(q) || verifiedVisualEvidence(q)) return false;
+  if (q.needsFigure) return true;
+  const stem = `${String(q.stem || '')}\n${String(q.q || '')}`.replace(/<[^>]+>/g, ' ');
+  return VISUAL_REFERENCE_RE.test(stem);
+}
+const privateFigureURLs = new Map();
+const privateFigureLoads = new Map();
+let privateFigureGeneration = 0;
+function revokePrivateFigureURLs() {
+  privateFigureGeneration++;
+  for (const url of privateFigureURLs.values()) {
+    try { URL.revokeObjectURL(url); } catch (_) {}
+  }
+  privateFigureURLs.clear(); privateFigureLoads.clear();
+}
+async function privateFigureURL(q) {
+  const asset = verifiedFigureAsset(q);
+  const userId = syncState && syncState.user && syncState.user.id;
+  if (!asset || !userId) throw new Error('登入後才能載入私有題圖');
+  const generation = privateFigureGeneration;
+  const key = `${userId}|${asset.path}|${asset.sha256}`;
+  const stillSameUser = () => privateFigureGeneration === generation
+    && syncState && syncState.user && syncState.user.id === userId;
+  const requireSameUser = () => {
+    if (!stillSameUser()) throw new Error('帳號已切換，已取消舊帳號的題圖載入');
+  };
+  if (privateFigureURLs.has(key)) return privateFigureURLs.get(key);
+  if (privateFigureLoads.has(key)) return privateFigureLoads.get(key);
+  const task = (async () => {
+    const cached = await figureCacheGet(asset.sha256, userId);
+    requireSameUser();
+    if (cached) {
+      const cachedBytes = await cached.arrayBuffer();
+      requireSameUser();
+      if ((await sha256Bytes(cachedBytes)) === asset.sha256) {
+        requireSameUser();
+        const url = URL.createObjectURL(cached);
+        if (!stillSameUser()) { try { URL.revokeObjectURL(url); } catch (_) {} requireSameUser(); }
+        privateFigureURLs.set(key, url);
+        return url;
+      }
+      await figureCacheDelete(asset.sha256, userId);
+      requireSameUser();
+    }
+    if (!supa || !supa.storage) throw new Error('私有題圖目前離線且尚未快取');
+    const result = await supa.storage.from(FIGURE_BUCKET).download(asset.path);
+    requireSameUser();
+    if (result.error || !result.data) throw new Error((result.error && result.error.message) || '題圖下載失敗');
+    const bytes = await result.data.arrayBuffer();
+    requireSameUser();
+    if ((await sha256Bytes(bytes)) !== asset.sha256) throw new Error('題圖完整性驗證失敗');
+    requireSameUser();
+    const blob = new Blob([bytes], { type: result.data.type || asset.mime || 'image/webp' });
+    await figureCachePut(asset.sha256, blob, userId);
+    requireSameUser();
+    const url = URL.createObjectURL(blob);
+    if (!stillSameUser()) { try { URL.revokeObjectURL(url); } catch (_) {} requireSameUser(); }
+    privateFigureURLs.set(key, url);
+    return url;
+  })().finally(() => { if (privateFigureLoads.get(key) === task) privateFigureLoads.delete(key); });
+  privateFigureLoads.set(key, task);
+  return task;
+}
+function preflightQuestionFigures(questions) {
+  const visual = [...new Map((questions || []).filter((q) => verifiedFigureAsset(q)).map((q) => [q.id, q])).values()];
+  if (!visual.length) return null;
+  return (async () => {
+    syncState.msg = `正在預載並驗證 ${visual.length} 張私有題圖`; syncPill();
+    const results = await Promise.allSettled(visual.map((q) => privateFigureURL(q)));
+    const failed = results.map((result, index) => result.status === 'rejected' ? visual[index] : null).filter(Boolean);
+    if (failed.length) {
+      syncState.msg = `${failed.length} 張題圖尚未安全載入`; syncPill();
+      alert(`有 ${failed.length} 題的必要圖形尚未安全載入，因此這回尚未開始、也不會計時或留下成績。請確認網路後重試。`);
+      return false;
+    }
+    syncState.msg = `題圖已驗證 ${visual.length} 張`; syncPill();
+    return true;
+  })();
+}
+function afterFigurePreflight(questions, begin) {
+  const task = preflightQuestionFigures(questions);
+  if (!task) { begin(); return; }
+  task.then((ok) => { if (ok) begin(); }).catch(() => {});
+}
+function questionFigureHTML(q) {
+  if (!verifiedFigureAsset(q)) return '';
+  return `<figure class="qfig private-qfig" data-private-figure="${escH(q.id)}" aria-label="題目圖形"><div class="private-qfig-status">題圖載入中</div></figure>`;
+}
+async function hydratePrivateFigures(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return;
+  for (const host of root.querySelectorAll('[data-private-figure]')) {
+    if (host.dataset.figureReady === '1' || host.dataset.figureLoading === '1') continue;
+    const q = bankById(host.dataset.privateFigure);
+    if (!q || !verifiedFigureAsset(q)) { host.textContent = '題圖尚未通過內容檢查'; continue; }
+    if (!supa || !syncState.user) { host.innerHTML = '<div class="private-qfig-status">登入後載入私有題圖</div>'; continue; }
+    host.dataset.figureLoading = '1';
+    try {
+      const url = await privateFigureURL(q);
+      if (!host.isConnected) continue;
+      host.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = url; img.alt = '題目所需圖形'; img.decoding = 'async';
+      const actions = document.createElement('div'); actions.className = 'private-qfig-actions';
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'btn sm';
+      button.innerHTML = `${uiIcon('expand')}放大圖形`; button.addEventListener('click', () => openPrivateFigure(q.id));
+      actions.appendChild(button); host.append(img, actions); host.dataset.figureReady = '1';
+    } catch (error) {
+      host.innerHTML = `<div class="private-qfig-status badc">題圖載入失敗：${escH((error && error.message) || '請確認網路後重試')}</div>`;
+    } finally { delete host.dataset.figureLoading; }
+  }
+}
+async function openPrivateFigure(qid) {
+  const q = bankById(qid); if (!q || !verifiedFigureAsset(q)) return;
+  try {
+    const url = await privateFigureURL(q);
+    const overlay = document.createElement('div'); overlay.className = 'private-figure-overlay'; overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', '放大題目圖形');
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'private-figure-close'; close.textContent = '關閉';
+    const img = document.createElement('img'); img.src = url; img.alt = '放大的題目圖形';
+    close.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) overlay.remove(); });
+    overlay.append(close, img); document.body.appendChild(overlay); close.focus();
+  } catch (error) { alert((error && error.message) || '題圖載入失敗'); }
+}
 function outOfRange(q) {
   const stem = String((q && q.q) || '');
   return OUT_OF_RANGE_RE.some((re) => re.test(stem));
 }
 let outRangeSkipped = 0; // 供 UI/回報顯示這輪濾掉幾題
+let missingVisualSkipped = 0;
 function applyExtBank() {
   BANK.length = BUILTIN_N; // 冪等重建：內容更新（rev 覆蓋/停用切換/雲端拉回）直接重灌外部段
   const ext = extBankArr();
   const have = new Set(BANK.map((q) => q.id));
   outRangeSkipped = 0;
+  missingVisualSkipped = 0;
   for (const q of ext) {
     if (!q || !q.id || have.has(q.id)) continue;
-    if (q.needsFigure && !q.fig) continue; // 需要圖才能解、圖還沒補上的題不出（避免無圖硬解）
+    if (questionMissingVisualAsset(q)) { missingVisualSkipped++; continue; }
     if (q.dup) continue; // 內容重複題（講義收錄的歷屆題等）：只出正主，不出分身
     if (q.src && packIsOff(q.src)) continue; // 使用者停用的內容包
     if (outOfRange(q)) { outRangeSkipped++; continue; } // 超出學測數A範圍（cot/sec/csc、十分逼近法…）
@@ -771,7 +1049,7 @@ function applyExtBank() {
 function importQPack(items, name) {
   const bad = [];
   const good = items.filter((q) => {
-    const err = validateQ(q);
+    const err = validateQ(q) || (questionMissingVisualAsset(q) ? '引用圖形但缺少圖資' : '');
     if (err) bad.push(`${(q && q.id) || '(無id)'}：${err}`);
     return !err;
   });
@@ -851,7 +1129,10 @@ function importData(input) {
       if (!d || !Array.isArray(d.attempts)) { alert('這不是本系統的備份檔（缺 attempts 欄位）。'); return; }
       const cur = S.attempts.length;
       if (!confirm(`備份檔含 ${d.attempts.length} 筆作答紀錄、${Object.keys(d.wrong || {}).length} 題錯題。\n匯入會覆蓋目前這個瀏覽器裡的 ${cur} 筆紀錄，確定？`)) return;
-      const content = d.__content; // 分家版備份的內容層（qpack/notes/flash 包）
+      // 備份是使用者可編輯的輸入；即使它仿造 curated:true、官方 pack id 與 sha256，
+      // 也只能還原使用者自建內容，官方題庫一律由 Storage 的原始 bytes 重新驗證。
+      const cleanContent = backupContentPacks(d.__content);
+      const content = Object.keys(cleanContent).length ? cleanContent : null;
       delete d.__content;
       if (splitOn()) {
         // 分家裝置：內容進 IDB。備份自帶內容層就用它；否則把備份 S 裡的 legacy ext* 搬進內容層（不然分家模式讀不到）
@@ -2562,9 +2843,163 @@ function parseFrac(s) {
   s = norm(s);
   const NUM = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)'; // 接受 5 / +5 / -5 / .5 / 5. / 5.5（含正號與省略整數位的小數）
   const m = s.match(new RegExp('^(' + NUM + ')\\/(' + NUM + ')$'));
-  if (m) return parseFloat(m[1]) / parseFloat(m[2]);
+  if (m) {
+    const integerUnsafe = (part) => /^[+-]?\d+$/.test(part) && !Number.isSafeInteger(Number(part));
+    if (integerUnsafe(m[1]) || integerUnsafe(m[2])) return NaN;
+    return parseFloat(m[1]) / parseFloat(m[2]);
+  }
   const n = parseFloat(s);
-  return new RegExp('^' + NUM + '$').test(s) ? n : NaN;
+  if (!new RegExp('^' + NUM + '$').test(s)) return NaN;
+  if (/^[+-]?\d+$/.test(s) && !Number.isSafeInteger(n)) return NaN;
+  return n;
+}
+/* 將 AI/OCR 常見的 LaTeX 與 Unicode 寫法收斂成可安全解析的數學字串。
+   不使用 eval；只允許數字、四則、次方、圓周率、平方根與 n 次根。 */
+function mathPlain(value) {
+  const rawValue = String(value == null ? '' : value);
+  if (rawValue.length > 1000) return '';
+  let s = norm(rawValue)
+    .replace(/^\$+|\$+$/g, '')
+    .replace(/^\\\(|\\\)$/g, '')
+    .replace(/\\left|\\right/g, '')
+    .replace(/\\dfrac|\\tfrac/g, '\\frac')
+    .replace(/\\cdot|\\times|×|·/g, '*')
+    .replace(/\\div|÷/g, '/')
+    .replace(/\\pi\b/g, 'pi')
+    .replace(/−|–|—/g, '-');
+  const groupAt = (text, start, open, close) => {
+    if (text[start] !== open) return null;
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === open) depth++;
+      else if (text[i] === close && --depth === 0) return { body:text.slice(start + 1, i), end:i + 1 };
+    }
+    return null;
+  };
+  const expand = (text, depth = 0) => {
+    if (depth > 80 || text.length > 1200) throw new Error('math expression too deep');
+    let out = '';
+    for (let i = 0; i < text.length;) {
+      if (text.startsWith('\\frac', i)) {
+        const a = groupAt(text, i + 5, '{', '}');
+        const b = a && groupAt(text, a.end, '{', '}');
+        if (a && b) { out += `((${expand(a.body, depth + 1)})/(${expand(b.body, depth + 1)}))`; i = b.end; continue; }
+      }
+      if (text.startsWith('\\boxed', i)) {
+        const box = groupAt(text, i + 6, '{', '}');
+        if (box) { out += expand(box.body, depth + 1); i = box.end; continue; }
+      }
+      if (text.startsWith('\\sqrt', i)) {
+        let at = i + 5, index = null;
+        const opt = groupAt(text, at, '[', ']');
+        if (opt) { index = expand(opt.body, depth + 1); at = opt.end; }
+        const rad = groupAt(text, at, '{', '}');
+        if (rad) { out += index ? `root(${index},${expand(rad.body, depth + 1)})` : `sqrt(${expand(rad.body, depth + 1)})`; i = rad.end; continue; }
+      }
+      out += text[i++];
+    }
+    return out;
+  };
+  try { s = expand(s); } catch (_) { return ''; }
+  s = s
+    .replace(/\\frac([+-]?\d)([+-]?\d)/g, '(($1)/($2))')
+    .replace(/∛\s*(\([^()]+\)|[+-]?(?:\d+(?:\.\d*)?|\.\d+))/g, 'root(3,$1)')
+    .replace(/√\s*(\([^()]+\)|[+-]?(?:\d+(?:\.\d*)?|\.\d+))/g, 'sqrt($1)')
+    .replace(/\\sqrt\s*(\([^()]+\)|[+-]?(?:\d+(?:\.\d*)?|\.\d+))/g, 'sqrt($1)')
+    .replace(/\^\{([^{}]+)\}/g, '^($1)')
+    .replace(/[{}]/g, (ch) => ch === '{' ? '(' : ')')
+    .replace(/\\,/g, '')
+    .replace(/\\(?:mathrm|text)\(([^()]*)\)/g, '$1');
+  return s;
+}
+function mathNumericValue(value) {
+  let source = mathPlain(value);
+  if (!source || source.length > 180 || /[^0-9a-z()+\-*/^.,]/i.test(source)) return NaN;
+  const raw = source.match(/sqrt|root|pi|(?:\d+(?:\.\d*)?|\.\d+)|[()+\-*/^,]/g) || [];
+  if (raw.join('') !== source) return NaN;
+  const tokens = [];
+  const isValueEnd = (t) => t && (t.type === 'number' || t.type === 'pi' || t.value === ')');
+  const isValueStart = (t) => t && (t.type === 'number' || t.type === 'pi' || t.type === 'func' || t.value === '(');
+  for (const text of raw) {
+    const token = /^\d|^\./.test(text) ? { type:'number', value:Number(text) }
+      : text === 'pi' ? { type:'pi', value:Math.PI }
+      : text === 'sqrt' || text === 'root' ? { type:'func', value:text }
+      : { type:'symbol', value:text };
+    const prev = tokens[tokens.length - 1];
+    if (prev && prev.type === 'number' && token.type === 'number') return NaN;
+    if (isValueEnd(prev) && isValueStart(token)) tokens.push({ type:'symbol', value:'*' });
+    tokens.push(token);
+  }
+  let at = 0;
+  const peek = (value) => tokens[at] && tokens[at].value === value;
+  const take = (value) => peek(value) ? tokens[at++] : null;
+  const primary = () => {
+    const token = tokens[at];
+    if (!token) throw new Error('missing value');
+    if (token.type === 'number' || token.type === 'pi') { at++; return token.value; }
+    if (token.type === 'func') {
+      at++; if (!take('(')) throw new Error('missing function parenthesis');
+      const first = expression();
+      let value;
+      if (token.value === 'root') {
+        if (!take(',')) throw new Error('missing root comma');
+        const radicand = expression(); value = nthRoot(radicand, first);
+      } else value = Math.sqrt(first);
+      if (!take(')')) throw new Error('missing function close');
+      return value;
+    }
+    if (take('(')) { const value = expression(); if (!take(')')) throw new Error('missing close'); return value; }
+    throw new Error('invalid primary');
+  };
+  const nthRoot = (radicand, degree) => {
+    if (!Number.isInteger(degree) || degree === 0) return NaN;
+    if (radicand < 0 && Math.abs(degree) % 2 === 1) return -Math.pow(-radicand, 1 / degree);
+    return Math.pow(radicand, 1 / degree);
+  };
+  const power = () => { const left = primary(); return take('^') ? Math.pow(left, unary()) : left; };
+  const unary = () => take('+') ? unary() : take('-') ? -unary() : power();
+  const term = () => { let value = unary(); while (peek('*') || peek('/')) { const op = tokens[at++].value, right = unary(); value = op === '*' ? value * right : value / right; } return value; };
+  const expression = () => { let value = term(); while (peek('+') || peek('-')) { const op = tokens[at++].value, right = term(); value = op === '+' ? value + right : value - right; } return value; };
+  try {
+    const value = expression();
+    return at === tokens.length && Number.isFinite(value) ? value : NaN;
+  } catch (_) { return NaN; }
+}
+function mathEquivalentStatus(a, b) {
+  if (/,[ \t]*,/.test(String(a)) || /\d[ \t]+\d/.test(String(a))) return 'different';
+  const plainA = mathPlain(a), plainB = mathPlain(b);
+  /* 純十進位先轉成精確的 BigInt 係數＋小數位數。這同時封住 unsafe integer 與
+     0.0000000001 被浮點 tolerance 當成 0 的問題；分數/根式仍留給後面的數值解析。 */
+  const exactDecimal = (plain) => {
+    if (typeof BigInt !== 'function' || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(plain)) return null;
+    const negative = plain.startsWith('-');
+    const unsigned = plain.replace(/^[+-]/, '');
+    let [whole, fraction = ''] = unsigned.split('.');
+    whole ||= '0';
+    fraction = fraction.replace(/0+$/, '');
+    let digits = `${whole}${fraction}`.replace(/^0+(?=\d)/, '');
+    if (!digits || /^0+$/.test(digits)) return { coefficient:0n, scale:0 };
+    let coefficient = BigInt(digits);
+    if (negative) coefficient = -coefficient;
+    return { coefficient, scale:fraction.length };
+  };
+  const decimalA = exactDecimal(plainA), decimalB = exactDecimal(plainB);
+  if (decimalA && decimalB) {
+    const scale = Math.max(decimalA.scale, decimalB.scale);
+    const left = decimalA.coefficient * (10n ** BigInt(scale - decimalA.scale));
+    const right = decimalB.coefficient * (10n ** BigInt(scale - decimalB.scale));
+    return left === right ? 'equivalent' : 'different';
+  }
+  if (norm(a) === norm(b) || (plainA && plainA === plainB)) return 'equivalent';
+  const x = mathNumericValue(a), y = mathNumericValue(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return 'uncertain';
+  const same = Number.isSafeInteger(x) && Number.isSafeInteger(y)
+    ? x === y
+    : Math.abs(x - y) <= Math.min(1e-8, 1e-10 * Math.max(1, Math.abs(x), Math.abs(y)));
+  return same ? 'equivalent' : 'different';
+}
+function mathEquivalent(a, b) {
+  return mathEquivalentStatus(a, b) === 'equivalent';
 }
 /* 學測多選給分（全 app 唯一實作）：全對滿分、錯 1 個選項 3/5、錯 2 個 1/5、錯 3 個以上或空白（未作答）0 分。
    optionIndexes＝該題全部選項的索引宇集（系統模考 0-based、掃描卷 1-based），逐一比對「該勾沒勾／不該勾卻勾」。 */
@@ -2575,27 +3010,75 @@ function multiPartialPoints(points, chosenArr, correctArr, optionIndexes) {
   const errors = optionIndexes.filter((i) => chosen.has(i) !== correct.has(i)).length;
   return errors === 0 ? points : errors === 1 ? points * .6 : errors === 2 ? points * .2 : 0;
 }
-function checkFill(input, accepted) {
+function fillVerdict(input, accepted) {
+  if (/,[ \t]*,/.test(String(input)) || /\d[ \t]+\d/.test(String(input))) return 'different';
+  accepted = Array.isArray(accepted) ? accepted : [];
   const ni = norm(input);
-  if (accepted.some((a) => norm(a) === ni)) return true;
+  const scalarStatuses = accepted.map((a) => mathEquivalentStatus(input, a));
+  if (scalarStatuses.includes('equivalent')) return 'equivalent';
+  // 座標／有序對維持分量順序，但每個分量可以用等價分數、根式或 LaTeX 表示。
+  const tuple = (value) => {
+    const text = String(value || '').trim();
+    if (!(text.startsWith('(') && text.endsWith(')'))) return null;
+    const parts = text.slice(1, -1).split(',');
+    return parts.length >= 2 && parts.every((part) => part.trim()) ? parts : null;
+  };
+  const ti = tuple(input);
+  let tupleUncertain = false, tupleKnownDifferent = false;
+  if (ti && accepted.some((answer) => {
+    const ta = tuple(answer);
+    if (!ta || ta.length !== ti.length) return false;
+    const statuses = ti.map((part, index) => mathEquivalentStatus(part, ta[index]));
+    if (statuses.every((status) => status === 'equivalent')) return true;
+    if (statuses.includes('uncertain')) tupleUncertain = true;
+    else tupleKnownDifferent = true;
+    return false;
+  })) return 'equivalent';
   // 逗號分隔的多值答案（如兩根「-1,5」）：順序不拘，逐值比對。
   // 只有「所有」接受形式都無括號才啟用——座標題常提供 '(7,0)' 與 '7,0' 兩種別名，屬有序對，不可交換。
   const bare = (s) => !/[()]/.test(norm(s));
   if (ni.includes(',') && bare(input) && accepted.every((a) => bare(a))) {
-    const toKey = (s) => norm(s).split(',').filter(Boolean)
-      .map((t) => { const v = parseFrac(t); return isNaN(v) ? t : String(v); })
-      .sort().join('|');
+    const toKey = (s) => {
+      const parts = norm(s).split(',');
+      if (parts.some((part) => !part)) return null;
+      return parts.map((t) => { const v = parseFrac(t); return isNaN(v) ? t : String(v); }).sort().join('|');
+    };
     const ki = toKey(input);
-    if (accepted.some((a) => norm(a).includes(',') && bare(a) && toKey(a) === ki)) return true;
+    if (ki != null && accepted.some((a) => norm(a).includes(',') && bare(a) && toKey(a) === ki)) return 'equivalent';
+    const inputParts = String(input).split(',').map((part) => part.trim());
+    const candidates = accepted.map((answer) => String(answer).split(',').map((part) => part.trim()))
+      .filter((parts) => parts.length === inputParts.length && parts.length > 1 && parts.every(Boolean));
+    const hasPerfectMatching = (answerParts, allowUncertain) => {
+      const used = new Set();
+      const visit = (index) => {
+        if (index === inputParts.length) return true;
+        for (let j = 0; j < answerParts.length; j++) {
+          if (used.has(j)) continue;
+          const status = mathEquivalentStatus(inputParts[index], answerParts[j]);
+          if (status !== 'equivalent' && !(allowUncertain && status === 'uncertain')) continue;
+          used.add(j);
+          if (visit(index + 1)) return true;
+          used.delete(j);
+        }
+        return false;
+      };
+      return visit(0);
+    };
+    if (candidates.some((parts) => hasPerfectMatching(parts, false))) return 'equivalent';
+    if (candidates.length) return candidates.some((parts) => hasPerfectMatching(parts, true)) ? 'uncertain' : 'different';
   }
+  if (scalarStatuses.length && scalarStatuses.every((status) => status === 'different')) return 'different';
   const vi = parseFrac(input);
   if (!isNaN(vi)) {
-    return accepted.some((a) => {
-      const va = parseFrac(a);
-      return !isNaN(va) && Math.abs(va - vi) < 1e-9;
-    });
+    const numericAnswers = accepted.map((a) => parseFrac(a)).filter((value) => !isNaN(value));
+    if (numericAnswers.some((va) => Math.abs(va - vi) < 1e-9)) return 'equivalent';
+    if (numericAnswers.length) return 'different';
   }
-  return false;
+  if (tupleKnownDifferent && !tupleUncertain) return 'different';
+  return 'uncertain';
+}
+function checkFill(input, accepted) {
+  return fillVerdict(input, accepted) === 'equivalent';
 }
 function qTarget(q) { return (q.target || DIFF_TARGET[q.diff]) * 1000; }
 function gradeOf(acc) {
@@ -2650,6 +3133,19 @@ function pendingCorrections() {
 function dueCorrections() {
   return pendingCorrections().filter((batch) => String(batch.due || '') <= today());
 }
+function paperPendingReviewNos(run) {
+  const wrong = Array.isArray(run && run.wrongNos)
+    ? run.wrongNos
+    : Array.isArray(run && run.aiGrade && run.aiGrade.wrongNos) ? run.aiGrade.wrongNos : [];
+  return wrong.filter((no) => Number.isInteger(Number(no)) && !(run.review && run.review[no] && run.review[no].done));
+}
+function duePaperCorrections() {
+  return (S.paperRuns || []).filter((run) => {
+    if (!run || !['awaiting-key', 'awaiting-correction'].includes(run.status) || !run.aiGrade) return false;
+    const due = String(run.due || '');
+    return /^\d{4}-\d{2}-\d{2}$/.test(due) && due <= today() && paperPendingReviewNos(run).length > 0;
+  }).sort((a, b) => String(a.due).localeCompare(String(b.due)) || Number(a.submittedAt || 0) - Number(b.submittedAt || 0));
+}
 function outlineUnits() {
   const byId = new Map(OUTLINE_DEFAULTS.map((x) => [x.id, { ...x }]));
   for (const x of extOutlineArr()) {
@@ -2679,23 +3175,163 @@ function conceptDueCards() {
     return !last || String(last.due || '') <= today();
   });
 }
+function hasRecentConceptWork(days) {
+  const cutoff = Number(days) || 7;
+  return (S.conceptAttempts || []).some((attempt) => dayDistance(attempt && attempt.d) < cutoff);
+}
 function visionDueEntries() {
   return (S.visionQueue || []).filter((x) => !x.done && x.stage === 'waiting' && String(x.due || '') <= today());
 }
 function severeWeakTopics() {
-  const recent = (S.attempts || []).filter((a) => a.mode === 'mixed' || a.mode === 'mock').slice(-60);
+  const recent = (S.attempts || []).filter((a) => ['mixed', 'mock', 'adaptive-textbook'].includes(a.mode)).slice(-80);
   const by = {};
   for (const a of recent) {
     const q = bankById(a.qid); if (!q) continue;
     const t = (by[q.topic] = by[q.topic] || { n: 0, ok: 0, tail: [] });
     t.n++; t.ok += a.ok ? 1 : 0; t.tail.push(!!a.ok); t.tail = t.tail.slice(-4);
   }
-  return Object.keys(by).filter((k) => {
+  const signals = learningSignalIndex();
+  return Object.keys(TOPICS).filter((k) => {
+    const evidence = signals.topics[k] || { n:0, ok:0, noDirection:0, l3:0, open:0 };
     const t = by[k];
-    return (t.n >= 6 && t.ok / t.n <= 0.35) || (t.tail.length === 4 && t.tail.every((ok) => !ok));
-  }).map((k) => ({ k, n: by[k].n, ok: by[k].ok, acc: by[k].ok / by[k].n }));
+    return (evidence.n >= 6 && evidence.ok / evidence.n <= 0.35)
+      || (t && t.tail.length === 4 && t.tail.every((ok) => !ok))
+      || evidence.l3 >= 3 || evidence.noDirection + evidence.open >= 4;
+  }).map((k) => {
+    const evidence = signals.topics[k] || { n:0, ok:0 };
+    return { k, n:evidence.n, ok:evidence.ok, acc:evidence.n ? evidence.ok / evidence.n : 0 };
+  });
+}
+/* 個人化選題索引：一次掃完作答、眼刷與兩種訂正，避免四千題排序時反覆掃全歷史。 */
+function learningSignalIndex() {
+  const questions = new Map(), topics = Object.create(null);
+  const qrow = (id) => {
+    if (!questions.has(id)) questions.set(id, { n:0, ok:0, guess:0, noDirection:0, vision:0, obvious:0, l2:0, l3:0, open:0, retentionDue:0, retentionPending:0, lastTs:0, lastD:'', lastObviousD:'' });
+    return questions.get(id);
+  };
+  const trow = (topic) => (topics[topic] = topics[topic] || { n:0, ok:0, noDirection:0, l2:0, l3:0, open:0 });
+  for (const attempt of S.attempts || []) {
+    const q = bankById(attempt.qid); if (!q) continue;
+    /* 訂正完成是「需提示後學會」的證據，不是一次獨立作答；第二／三級由 corrections 另行計入。 */
+    if (attempt.mode === 'correction') continue;
+    const row = qrow(q.id), topic = trow(q.topic);
+    const guessed = attempt.confidence === 'guess' || attempt.err === '用猜的';
+    const credit = attempt.ok ? (guessed ? .15 : 1) : 0;
+    row.n++; topic.n++; row.ok += credit; topic.ok += credit;
+    if (guessed) row.guess++;
+    if (Number(attempt.ts) >= row.lastTs) { row.lastTs = Number(attempt.ts) || 0; row.lastD = attempt.d || row.lastD; }
+  }
+  for (const entry of S.visionHistory || []) {
+    const q = bankById(entry.qid); if (!q) continue;
+    const row = qrow(q.id), topic = trow(q.topic); row.vision++;
+    if (entry.outcome === 'obvious') {
+      row.obvious++;
+      if (!row.lastObviousD || String(entry.d || '') > row.lastObviousD) row.lastObviousD = entry.d || '';
+    } else if (!['works', 'different'].includes(entry.outcome)) { row.noDirection++; topic.noDirection++; }
+  }
+  for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
+    const q = bankById(entry.qid); if (!q) continue;
+    const row = qrow(q.id), topic = trow(q.topic), level = correctionLevel(entry);
+    if (!entry.done) { row.open++; topic.open++; }
+    else if (level === 2) { row.l2++; topic.l2++; }
+    else if (level === 3) { row.l3++; topic.l3++; }
+    if (entry.done && level >= 2 && !entry.retentionPassed && entry.retentionDue) {
+      if (String(entry.retentionDue) <= today()) row.retentionDue++;
+      else row.retentionPending++;
+    }
+  }
+  for (const run of S.paperRuns || []) {
+    const source = run && paperSourceById(run.sourceId); if (!source) continue;
+    const graded = run.aiGrade && Array.isArray(run.aiGrade.questions) ? run.aiGrade.questions : [];
+    for (const item of graded) {
+      const no = Number(item && item.no), review = run.review && run.review[no];
+      const topicKey = item && item.topic || review && review.topic;
+      if (!topicKey || !TOPICS[topicKey]) continue;
+      const topic = trow(topicKey);
+      topic.n++;
+      topic.ok += item.status === 'correct' ? 1 : 0;
+    }
+    for (const [noText, review] of Object.entries(run.review || {})) {
+      const q = source.key[Number(noText) - 1];
+      const item = graded.find((row) => Number(row && row.no) === Number(noText));
+      const topicKey = review && review.topic || item && item.topic || q && q.topic;
+      if (!topicKey || !TOPICS[topicKey]) continue;
+      const topic = trow(topicKey), level = Number(review && review.level) || 0;
+      if (!review || !review.done) topic.open++;
+      else if (level === 2) topic.l2++;
+      else if (level === 3) topic.l3++;
+    }
+  }
+  return { questions, topics };
+}
+function dayDistance(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return Infinity;
+  return Math.max(0, Math.round((new Date(today() + 'T00:00:00Z') - new Date(date + 'T00:00:00Z')) / 86400000));
+}
+function questionLearningValue(q, signals, options) {
+  signals ||= learningSignalIndex(); options ||= {};
+  const row = signals.questions.get(q.id) || { n:0, ok:0, guess:0, noDirection:0, vision:0, obvious:0, l2:0, l3:0, open:0, retentionDue:0, retentionPending:0, lastD:'', lastObviousD:'' };
+  const topic = signals.topics[q.topic] || { n:0, ok:0, noDirection:0, l2:0, l3:0, open:0 };
+  const baseline = ({ 1:.62, 2:.54, 3:.36 })[q.diff] || .52;
+  const solveP = row.n ? (row.ok + 1) / (row.n + 2) : topic.n >= 4 ? (topic.ok + 2) / (topic.n + 4) : baseline;
+  const weakness = .55 + (1 - solveP);
+  const learnable = Math.max(.38, 1 - Math.abs(solveP - .55));
+  const coverage = 1 + 1 / Math.sqrt(1 + row.n);
+  const wrong = S.wrong && S.wrong[q.id];
+  const retention = row.retentionDue ? 1.95 : row.retentionPending ? 1.28
+    : wrong && String(wrong.due || '') <= today() ? 1.65 : wrong ? 1.25 : 1;
+  const direction = 1 + Math.min(1.1,
+    row.noDirection * .28 + row.l2 * .16 + row.l3 * .34 + row.open * .24
+    + topic.noDirection * .05 + topic.l2 * .035 + topic.l3 * .08 + topic.open * .05);
+  let role = 1;
+  if (q.role === 'example') role = solveP < .48 || topic.l3 ? 1.18 : .88;
+  else if (q.role === 'chapter-end-easy') role = !row.n ? 1.05 : solveP >= .78 ? .45 : .92;
+  else if (q.role === 'chapter-end-medium') role = 1.22;
+  else if (q.role === 'chapter-end-hard') role = solveP >= .45 ? 1.18 : .72;
+  else if (q.role === 'comprehensive-review') role = 1.12;
+  const source = q.src || q.bookId ? 1.12 : 1;
+  const days = dayDistance(row.lastD);
+  const recency = days === 0 ? .12 : days <= 2 ? .38 : days <= 7 ? .72 : 1;
+  const guessPriority = 1 + Math.min(.5, row.guess * .18);
+  const obviousDays = dayDistance(row.lastObviousD);
+  /* 老師明確說「一眼就會」先不寫：30 天內強力降權，久未驗證後才逐漸恢復。 */
+  const obviousPenalty = !row.obvious ? 1 : obviousDays <= 7 ? .08 : obviousDays <= 30 ? .22 : .55;
+  const eyePenalty = options.forVision && row.vision ? 1 / (1 + row.vision * .7) : 1;
+  const minutes = Math.max(1, Number(q.estimatedMinutes) || ({ 1:2, 2:4, 3:7 })[q.diff] || 4);
+  return 100 * weakness * learnable * coverage * retention * direction * role * source * recency * guessPriority * obviousPenalty * eyePenalty / Math.sqrt(minutes);
+}
+function questionSelectionReason(q, signals) {
+  signals ||= learningSignalIndex();
+  const row = signals.questions.get(q.id) || {};
+  const topic = signals.topics[q.topic] || {};
+  const wrong = S.wrong && S.wrong[q.id];
+  if (row.retentionDue) return '第二／三級題已到 2 日或 7 日保留重測';
+  if (wrong && String(wrong.due || '') <= today()) return '這題已到間隔重測時間';
+  if (row.noDirection) return '你曾在這題找不到破題方向';
+  if (row.l3) return '這題曾需看詳解才完成';
+  if (row.l2) return '這題曾需最終答案才能重建方向';
+  if (topic.l3) return '這個單元曾需要看詳解才完成';
+  if (!row.n) return q.role === 'example' ? '尚未校準的教材例題' : '尚未取得你的作答證據';
+  if (row.guess) return '曾猜中，不能視為真正掌握';
+  return '難度與目前掌握度接近可學會區間';
+}
+function rankAdaptiveQuestions(pool, options) {
+  const signals = learningSignalIndex();
+  const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals, options)]));
+  return pool.slice().sort((a, b) => scores.get(b.id) - scores.get(a.id)
+    || String(a.id).localeCompare(String(b.id)));
 }
 function nextBestAction() {
+  const paperDue = duePaperCorrections();
+  if (paperDue.length) {
+    const first = paperDue[0];
+    const dueN = paperDue.reduce((sum, run) => sum + paperPendingReviewNos(run).length, 0);
+    return {
+      kind: 'paper-correction', title: `先完成原卷 ${dueN} 題隔日訂正`,
+      why: '直接在第一次紅筆卷上，只看最終答案重新找方向；仍無收穫才看該題詳解。',
+      time: `約 ${Math.max(15, dueN * 6)} 分鐘`, onclick: `startPaperAnswerReview('${jsA(first.id)}')`, button: '在原卷上訂正',
+    };
+  }
   const due = dueCorrections();
   const dueN = due.reduce((sum, batch) => sum + batch.entries.filter((x) => !x.done).length, 0);
   if (dueN) return {
@@ -2709,6 +3345,13 @@ function nextBestAction() {
   if (visionDue.length) return {
     kind: 'vision', title: `再給 ${visionDue.length} 題一次機會`, why: '昨天想不到方向的題，今天再只看題目找一次切入點；仍沒有方向才看詳解。', time: `約 ${Math.max(5, visionDue.length * 4)} 分鐘`, onclick: `startVisionScan('${visionDue[0].id}')`, button: '第二天再想',
   };
+  const retentionSignals = learningSignalIndex();
+  const retentionDue = [...retentionSignals.questions.values()].filter((row) => row.retentionDue).length;
+  if (retentionDue) return {
+    kind: 'retention', title: `驗證 ${retentionDue} 題是否真的留住`,
+    why: '這些第二／三級題已到 2 日或 7 日重測點；混進教材精選重新獨立作答，答對兩關才算保留。',
+    time: `約 ${Math.max(12, Math.min(35, retentionDue * 5))} 分鐘`, onclick: 'startAdaptiveTextbook(10)', button: '開始保留重測',
+  };
   const cal = mockCalibration();
   if (!cal.count) return {
     kind: 'mock', title: '建立一回全真基準', why: '用正式的 20 題、100 分鐘完成一整回；今天只批分，明天才訂正。', time: '100 分鐘', onclick: "nav('mock')", button: '查看模考說明',
@@ -2721,8 +3364,8 @@ function nextBestAction() {
     return { kind: 'topic', title: `「${TOPICS[severe.k]}」需要短期補洞`, why: `混合／模考近 ${severe.n} 題只答對 ${severe.ok} 題，已達到才例外分章介入的門檻。`, time: '約 20 分鐘', onclick: `startTopicIntervention('${severe.k}')`, button: '補洞 6 題' };
   }
   const concept = conceptDueCards()[0];
-  if (concept) return { kind: 'concept', title: `用自己的話說明「${concept.title}」`, why: '不背字句；說清楚真正意思、限制與一個例子，AI 再檢查語意缺口。', time: '約 5 分鐘', onclick: `startConceptCheck('${concept.id}')`, button: '開始說明' };
-  return { kind: 'vision', title: '用眼睛刷一整回', why: '依學測 20 題完整結構逐題找破題方向，不展開計算；卡住的題保留到明天再想。', time: '約 40 分鐘', onclick: 'startVisionScan()', button: '開始 20 題找方向' };
+  if (concept && !hasRecentConceptWork(7)) return { kind: 'concept', title: `用自己的話說明「${concept.title}」`, why: '不背字句；說清楚真正意思、限制與一個例子，AI 再檢查語意缺口。', time: '約 5 分鐘', onclick: `startConceptCheck('${concept.id}')`, button: '開始說明' };
+  return { kind: 'adaptive-textbook', title: '寫今天最值得的 10 題教材題', why: '跨章混合、不練速度；根據答錯、沒有方向、第二／三級、間隔到期與未校準章節選題，寫到你最需要的部分。', time: '約 35 分鐘', onclick: 'startAdaptiveTextbook(10)', button: '開始教材精選' };
 }
 function nextActionCard() {
   const a = nextBestAction();
@@ -2768,6 +3411,35 @@ function advFrom(v) {
   a.d = today();
   return a;
 }
+function updateRetentionCheckpoint(q, ok, mode) {
+  if (!q || mode === 'correction') return;
+  const candidates = [];
+  for (const batch of S.corrections || []) for (const entry of batch && batch.entries || []) {
+    const level = correctionLevel(entry);
+    if (entry && entry.qid === q.id && entry.done && level >= 2 && !entry.retentionPassed && entry.retentionDue) {
+      candidates.push({ batch, entry });
+    }
+  }
+  candidates.sort((a, b) => Number(b.entry.completedAt || 0) - Number(a.entry.completedAt || 0));
+  const current = candidates[0];
+  if (!current || String(current.entry.retentionDue) > today()) return;
+  const entry = current.entry;
+  entry.retentionLogs = Array.isArray(entry.retentionLogs) ? entry.retentionLogs : [];
+  entry.retentionLogs.push({ d:today(), ts:Date.now(), ok:!!ok, mode:String(mode || 'practice'), stage:Number(entry.retentionStage) || 0 });
+  if (!ok) {
+    entry.retentionStage = 0;
+    entry.retentionDue = addDays(today(), 2);
+  } else if ((Number(entry.retentionStage) || 0) < 1) {
+    entry.retentionStage = 1;
+    entry.retentionDue = addDays(today(), 7);
+  } else {
+    entry.retentionStage = 2;
+    entry.retentionDue = null;
+    entry.retentionPassed = true;
+    entry.retentionPassedAt = Date.now();
+  }
+  entry.mt = Date.now(); current.batch.mt = entry.mt;
+}
 function recordAttempt(q, ok, ms, err, mode, proc, ai, opts) {
   const rec = { qid: q.id, ok, ms, err: err || null, d: today(), mode, ts: Date.now() };
   if (ok && err === '用猜的') rec.confidence = 'guess'; // 猜中不是已掌握：留下可分析的顯性訊號
@@ -2775,6 +3447,7 @@ function recordAttempt(q, ok, ms, err, mode, proc, ai, opts) {
   const adv = advFrom(ai);
   if (adv) rec.ai = adv;
   S.attempts.push(rec);
+  updateRetentionCheckpoint(q, ok, mode);
   if ((!ok || err === '超時' || err === '用猜的') && !(opts && opts.skipWrong)) {
     const w = S.wrong[q.id] || { fails: 0, wins: 0, itv: 0 };
     if (w.grad) { delete w.grad; } // 畢業生回鍋：前科保留、重新入本
@@ -2875,6 +3548,7 @@ function typesetIn(el) {
       renderMathInElement(el, { delimiters: [{ left: '\\(', right: '\\)', display: false }, { left: '$$', right: '$$', display: true }], throwOnError: false });
     } catch (e) {}
   }
+  void hydratePrivateFigures(el);
 }
 
 /* ═══════════ 導覽 ═══════════ */
@@ -3330,8 +4004,9 @@ function pracNext() {
   if (prac.i >= prac.queue.length) return pracDone();
   renderQuestion(prac.queue[prac.i], {
     head: `第 ${prac.i + 1} / ${prac.queue.length} 題`,
-    hideTopic: prac.mode === 'mixed',
-    noTimer: prac.mode === 'mixed',
+    hideTopic: prac.hideTopic || prac.mode === 'mixed',
+    noTimer: prac.noTimer || prac.mode === 'mixed',
+    reason: prac.reasons && prac.reasons[prac.queue[prac.i].id],
     onDone(res) {
       prac.results.push(res);
       prac.i++;
@@ -3346,7 +4021,7 @@ function pracDone() {
   const all = prac.results;
   const r = all.filter((x) => !x.excluded);
   const okN = r.filter((x) => x.ok).length;
-  const showSpeed = prac.mode !== 'mixed' && timerOn();
+  const showSpeed = !prac.noTimer && prac.mode !== 'mixed' && timerOn();
   const slowOk = showSpeed ? r.filter((x) => x.ok && x.ms > x.target * 1.5).length : 0;
   const hardWins = all.filter((x, i) => !x.excluded && x.ok && prac.queue[i].diff === 3).length;
   const rows = all.map((x, i) => {
@@ -3385,7 +4060,7 @@ function pracDone() {
   const stuckRecap = roundStuck.length ? `<div class="stuck-box"><p class="stuck-title"><b>🧠 本輪卡點</b></p>
     ${roundStuck.slice(0, 4).map((s) => `<p style="margin:3px 0">${s.topic ? TOPICS[s.topic] + '：' : ''}${rtAi(s.what || '')}${s.dur ? `（停 ${s.dur}s）` : ''}${s.fix ? ` <span class="okc">💡 ${rtAi(s.fix)}</span>` : ''}</p>`).join('')}</div>` : '';
   app().innerHTML = `
-    <h1>刷題結果</h1>
+    <h1>${prac.mode === 'adaptive-textbook' ? '教材混合精選結果' : '刷題結果'}</h1>
     ${goalCrossBanner()}
     <div class="card">
       ${prac.picked && prac.picked.length ? `<p class="dim fs13">🔒 本輪鎖定：${prac.picked.map((p) => `${TOPICS[p.k]}（${p.reason}）`).join('、')}</p>` : ''}
@@ -3395,7 +4070,7 @@ function pracDone() {
       ${stuckRecap}
       <table class="tbl"><tr><th>單元</th><th>結果</th>${showSpeed ? '<th>耗時/目標</th>' : ''}<th>錯因</th></tr>${rows}</table>
       <div class="actr"><button class="btn" onclick="nav('stats')">看數據</button>
-      ${prac.topics && prac.topics.length ? `<button class="btn primary" onclick="startPracTopics([${prac.topics.map((t) => `'${t}'`).join(',')}], ${prac.cnt || 6})">再刷一輪</button>` : ''}</div>
+      ${prac.mode === 'adaptive-textbook' ? `<button class="btn primary" onclick="startAdaptiveTextbook(${prac.cnt || 10})">重新選下一輪</button>` : prac.topics && prac.topics.length ? `<button class="btn primary" onclick="startPracTopics([${prac.topics.map((t) => `'${t}'`).join(',')}], ${prac.cnt || 6})">再刷一輪</button>` : ''}</div>
     </div>`;
 }
 
@@ -3429,7 +4104,7 @@ function bkCard(q, head, submitFn, actions) {
     <div class="bk-head"><span class="bk-exam">數學Ａ</span><span class="bk-sect">${sectionLabel(q)}</span></div>
     <div class="sheet-tools"><b>✍️ 整張都能寫${q.type === 'fill' ? '，答案寫在最後、圈起來' : ''}</b>${inkToolsHTML()}</div>
     <div class="bk-item"><span class="bk-num">${bkNum(head)}</span>
-      <div class="bk-content">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${q.fig ? `<div class="qfig">${sanitizeSVG(q.fig)}</div>` : ''}${bkOpts(q, submitFn)}</div></div>
+      <div class="bk-content">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${questionFigureHTML(q)}${bkOpts(q, submitFn)}</div></div>
     <div class="write-pad"></div>
     <div class="ansarea">${actions}</div>
     <div id="qfb"></div>
@@ -3448,6 +4123,7 @@ function renderQuestion(q, cfg) {
   const target = qTarget(q);
   const showTimer = timerOn() && !cfg.noTimer;
   const meta = cfg.hideTopic ? '全範圍混合' : `${TOPICS[q.topic]}${q.src ? `｜<b class="accent">${escH(q.src)}</b>` : ''}｜${stars(q.diff)}`; // src 來自匯入題包，不可信
+  const selectionNote = cfg.reason ? `<div class="selection-reason">${uiIcon('target')}<b>為什麼選這題</b><span>${escH(cfg.reason)}</span></div>` : '';
   const giveUp = `<button class="btn sm skip" onclick="qGiveUp()">🏳 放棄，看答案</button>`;
   const hintBtn = aiEnabled() ? `<button class="btn sm" onclick="qHint()">💡 我卡關了</button>` : ''; // AI 看你手寫、給下一步提示（不給完整答案）
   let actions;
@@ -3466,6 +4142,7 @@ function renderQuestion(q, cfg) {
       <span class="shr"><span class="dim" style="font-size:11px">${APP_VER}</span>${showTimer ? '<span id="qtimer" class="timer">00:00</span>' : ''}
       <button class="btn sm xbtn" onclick="exitFlow()" title="離開">✕</button></span>
     </div>
+    ${selectionNote}
     ${showTimer ? '<div class="timebar"><div id="tbfill" class="timebar-fill"></div></div>' : ''}
     <div id="q-flash" class="ink-flash" style="display:none"></div>
     <div id="qhint"></div><!-- 提示放在書寫卡「外面、上方」：出現時把整張卡連同手寫往下推、不蓋到手寫（卡內任何面板都會蓋到滿版書寫層） -->
@@ -3576,7 +4253,16 @@ function qGrade(optIdx) {
   }
   // 填充：打字（選用）自動判；手寫 → AI 批改，沒設 AI 就看正解自評。都不用鍵盤。
   const typed = $('#qin') ? $('#qin').value.trim() : '';
-  if (typed) { qsess.yourAns = typed; qResolve(checkFill(typed, q.ans)); return; }
+  if (typed) {
+    qsess.yourAns = typed;
+    const verdict = fillVerdict(typed, q.ans);
+    if (verdict === 'uncertain') {
+      /* 聯立式、集合、向量等尚未支援的形式不可硬判錯，否則會污染弱點統計。 */
+      qsess.fillUncertain = true;
+      qShowJudge(false);
+    } else qResolve(verdict === 'equivalent');
+    return;
+  }
   qsess.yourAns = '（手寫作答）';
   // 整卷截圖：題卡上的筆跡＋計算區筆跡拼成一張（跟題本一樣整面都能寫）
   const calcB64 = inkCaptureFull(q.id);
@@ -3617,7 +4303,8 @@ function qShowJudge(hasAI) {
       ? '<p class="warnc">⚠ AI 沒批改：抓不到手寫筆跡——先寫再按「算完了」。</p>' : '';
     const diag = qsess.diag && (qsess.aiErr || qsess.noInk) ? `<p style="font-size:13px;background:#fff8e1;border:1px solid #f0c14b;padding:6px 9px;border-radius:6px;margin:6px 0">🔎 ${qsess.diag}</p>` : ''; // 只在批改異常時亮診斷，平常自評不出 debug 噪音
     const noAIHint = !qsess.aiErr && !aiEnabled() ? '<p class="dim">（AI 批改未啟用——先對照正解自評；登入雲端後即可使用 OpenAI 自動批改與手寫分析。）</p>' : '';
-    $('#qfb').innerHTML = `${qsess.aiErr ? `<p class="warnc">⚠ AI 批改失敗：${escH(qsess.aiErr)}——先自評，key 問題到「📊 數據」頁按「測試連線」檢查。</p>` : noInkHint || noKeyHint}${diag}${peek}${noAIHint}
+    const uncertainHint = qsess.fillUncertain ? '<p class="notice"><b>這個答案形式超出本機等價判定範圍。</b>為避免誤判，請對照正解自行確認；你的選擇才會寫入統計。</p>' : '';
+    $('#qfb').innerHTML = `${qsess.aiErr ? `<p class="warnc">⚠ AI 批改失敗：${escH(qsess.aiErr)}——先自評，key 問題到「📊 數據」頁按「測試連線」檢查。</p>` : noInkHint || noKeyHint}${diag}${uncertainHint}${peek}${noAIHint}
       <p><b>答對了嗎？</b><span class="dim">（等價形式都算對）</span></p>
       <div class="actr"><button class="btn err" onclick="qResolve(false)">✗ 我錯了</button>
       <button class="btn primary" onclick="qResolve(true)">✓ 我對了</button></div>`;
@@ -3909,6 +4596,7 @@ function renderMockIntro() {
       <div class="paper-source-grid">${PAPER_SOURCES.map(paperSourceCardHTML).join('')}</div>
       ${paperRunHistoryHTML()}
     </section>
+    <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的教材題排在前面，並避免同卷只換數字的近似題。</p><small>不顯示單題速度，每回最多同單元 2 題；正式 20 題、100 分鐘仍只用來校準。</small></div><button class="btn primary big" onclick="startAdaptiveTextbook(10)">開始今日精選</button></section>
     ${due.length ? `<div class="card next-action"><div><span class="eyebrow">第二天到期</span><h2>${due.length} 題昨天沒有方向</h2><p>今天再看一次題目。仍無方向，才開詳解。</p></div><button class="btn primary" onclick="startVisionScan('${due[0].id}')">再想一次</button></div>` : ''}
     <div class="training-choice">
     <section class="card choice-card"><span class="eyebrow">完整一回</span><h2>全真模考</h2>
@@ -3969,29 +4657,35 @@ function startVisionScan(entryId) {
     const entry = (S.visionQueue || []).find((x) => x.id === entryId && !x.done);
     if (!entry) { renderMockIntro(); return; }
     if (entry.stage === 'waiting' && String(entry.due || '') > today()) { alert(`這題要到 ${entry.due} 再想；先讓腦袋真正隔一天。`); return; }
-    visionOpenEntry(entry, null, false);
+    const q = visionQuestionFromEntry(entry);
+    afterFigurePreflight(q ? [q] : [], () => visionOpenEntry(entry, null, false));
     return;
   }
   let entries = visionActivePaperEntries();
   if (!entries) {
     const paper = buildPaper(true);
     if (paper.length !== MOCK_SPEC.total) { alert(`題庫目前只能組出 ${paper.length} 題，尚不足完整 20 題眼睛刷題。`); return; }
-    const ts = Date.now(), paperId = `vision-paper-${ts}`;
-    entries = paper.map((q, index) => ({
-      id: `${paperId}-${index + 1}`, paperId, paperTs: ts, paperIndex: index,
-      mixedGroupId: buildPaper.lastMixedGroupId || null,
-      qid: q.id, examNo: q.examNo, examSection: q.examSection, points: q.points,
-      d: today(), ts: ts + index, mt: ts, due: null, stage: 'new', attempts: [], done: false, paperSeen: false,
-    }));
-    S.visionQueue = S.visionQueue || []; S.visionQueue.push(...entries); save();
+    afterFigurePreflight(paper, () => {
+      const ts = Date.now(), paperId = `vision-paper-${ts}`;
+      const created = paper.map((q, index) => ({
+        id: `${paperId}-${index + 1}`, paperId, paperTs: ts, paperIndex: index,
+        mixedGroupId: buildPaper.lastMixedGroupId || null,
+        qid: q.id, examNo: q.examNo, examSection: q.examSection, points: q.points,
+        d: today(), ts: ts + index, mt: ts, due: null, stage: 'new', attempts: [], done: false, paperSeen: false,
+      }));
+      S.visionQueue = S.visionQueue || []; S.visionQueue.push(...created); save();
+      visionOpenEntry(created[0], created, true);
+    });
+    return;
   }
   const entry = entries.find((x) => !x.paperSeen);
   if (!entry) { renderVisionPaperResult(entries); return; }
-  visionOpenEntry(entry, entries, true);
+  const q = visionQuestionFromEntry(entry);
+  afterFigurePreflight(q ? [q] : [], () => visionOpenEntry(entry, entries, true));
 }
 function visionQuestionHTML(q) {
   return `<div class="eye-question"><div class="bk-head"><span class="bk-exam">數學Ａ</span><span class="bk-sect">${escH(sectionLabel(q))}</span></div>
-    <div class="bk-item"><span class="bk-num">${q.examNo ? `${q.examNo}.` : '※'}</span><div class="bk-content">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${q.fig ? `<div class="qfig">${sanitizeSVG(q.fig)}</div>` : ''}${q.opts ? `<div class="eye-options">${q.opts.map((o, i) => `<p>(${i + 1}) ${rtTxt(o)}</p>`).join('')}</div>` : ''}</div></div></div>`;
+    <div class="bk-item"><span class="bk-num">${q.examNo ? `${q.examNo}.` : '※'}</span><div class="bk-content">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${questionFigureHTML(q)}${q.opts ? `<div class="eye-options">${q.opts.map((o, i) => `<p>(${i + 1}) ${rtTxt(o)}</p>`).join('')}</div>` : ''}</div></div></div>`;
 }
 function renderVisionWork() {
   const { entry, q } = vision;
@@ -4910,6 +5604,9 @@ function paperAiPaintCanvas(cv, questions, includeAnswer, forcedScale) {
         summaryAnchor = { y:Math.max(summaryFont + 3, symbolY) };
       }
     }
+    if (!summaryAnchor && (Array.isArray(item.marks) ? item.marks : []).some((mark) => mark && mark.unlocalized)) {
+      summaryAnchor = { y:Math.max(summaryFont + 3, summaryRailBottom + summaryFont + 7) };
+    }
     if (summaryAnchor && item.status) {
       const points = Number(item.points) || 0;
       const storedAnswer = item.answer || (includeAnswer && paperSourceSession && paperSourceSession.source
@@ -5619,6 +6316,7 @@ function paperGradePromptKey(source) {
 }
 async function paperAiGradeCall(source, pages) {
   const key = paperGradePromptKey(source);
+  const topicKeys = Object.entries(TOPICS).map(([id, label]) => `${id}=${label}`).join('、');
   const content = [{
     type: 'text',
     text: `你是台灣學測數學閱卷老師。接下來依序附上「${source.title}」的 ${pages.length} 張單頁題本；每張已把原掃描題目、考生在題目上與右側留白寫的黑／藍／綠筆跡合成。請直接讀取題本上的作答，不存在另外的答案卡。
@@ -5636,7 +6334,8 @@ async function paperAiGradeCall(source, pages) {
 8. 複選題必須像真人逐項批改：每個正確選到的手寫選項回傳 kind=check；每個錯選的手寫選項回傳 kind=strike；每個漏選的正確選項回傳 kind=add，box 放在答案清單旁可補寫的位置。這三種 mark 的 option 都填該選項 1–5。若部分得分，可另回傳一個 option=0 的 partial，但不可省略逐項 marks。
 9. label 只可放「✓」「✕」「△」「未答」「看不清楚」或補入的選項號碼；系統會在紅叉或部分得分旁強制寫出完整正解。
 10. read 只記錄實際辨識到的最終答案與必要的「寫了不會」事實，供稽核；note 只記錄整體辨識風險。
-11. 這是第一次簡批。禁止輸出詳解、提示、破題方向、錯誤類型或「從哪一步開始錯」；也不要把這些內容塞進 read、note 或 label。`,
+11. 每題 topic 只回傳下列一個內部分類 key：${topicKeys}。這個欄位只供後台統計，不在第一次批改畫面顯示。
+12. 這是第一次簡批。禁止輸出詳解、提示、破題方向、錯誤類型或「從哪一步開始錯」；也不要把這些內容塞進 read、note 或 label。`,
   }];
   pages.forEach((b64, index) => {
     content.push({ type: 'text', text: `【完整單頁 ${index + 1}／${pages.length}】` });
@@ -5653,12 +6352,10 @@ async function paperAiGradeCall(source, pages) {
   };
 }
 function paperFallbackMark(source, no, page, label, kind, option, slot) {
-  const pageNos = source.key.map((_, index) => index + 1)
-    .filter((itemNo) => paperQuestionScanIndex(source, itemNo) + 1 === page);
-  const index = Math.max(0, pageNos.indexOf(no));
-  const y = .09 + index * (.78 / Math.max(1, pageNos.length)) + (Number(slot) || 0) * .018;
   return {
-    box: [.78, Math.min(.94, y), .85, Math.min(.97, y + .035)],
+    // 沒有可靠座標時不在卷面猜位置；畫布改在右側批改摘要列列出題號、分數與正解。
+    box: [],
+    unlocalized: true,
     label,
     kind: kind || 'uncertain',
     option: Number(option) || 0,
@@ -5712,9 +6409,13 @@ function paperNormalizeAiGrade(source, raw, model) {
         status = 'uncertain';
         points = 0;
       } else {
-        const correct = checkFill(finalAnswer, q.ans);
-        status = correct ? 'correct' : 'incorrect';
-        points = correct ? q.points : 0;
+        const verdict = fillVerdict(finalAnswer, q.ans);
+        if (verdict === 'equivalent') { status = 'correct'; points = q.points; }
+        else if (verdict === 'different') { status = 'incorrect'; points = 0; }
+        /* 不支援的代數／集合形式保留模型原判，不把 parser 的「不會」寫成學生答錯。 */
+        else if (status === 'correct') points = q.points;
+        else if (status === 'incorrect' || status === 'unanswered') points = 0;
+        else { status = 'uncertain'; points = 0; }
       }
     }
     else if (q.type === 'multi' && selectedOptionsProvided) {
@@ -5777,6 +6478,7 @@ function paperNormalizeAiGrade(source, raw, model) {
     }
     return {
       no, page, status, points,
+      topic: TOPICS[item.topic] ? item.topic : (TOPICS[q.topic] ? q.topic : ''),
       answer: paperFinalAnswerText(q),
       read: String(item.read || '').slice(0, 120),
       hasFinalAnswer: status !== 'unanswered' && item.hasFinalAnswer !== false,
@@ -6177,21 +6879,30 @@ function paperSourceCloseResult() {
 }
 let mock = null;
 function buildPaper(forVision) {
-  const usedIds = new Set(), usedGroups = new Set(), topicUse = {};
-  const ac = attCountMap();
-  const visionUse = new Map();
-  if (forVision) for (const row of S.visionHistory || []) visionUse.set(row.qid, (visionUse.get(row.qid) || 0) + 1);
-  const eligible = (q) => !usedIds.has(q.id) && !(q.grp && usedGroups.has(q.grp)) && !(q.src && packIsOff(q.src));
+  const usedIds = new Set(), usedGroups = new Set(), usedSkeletons = new Set(), topicUse = {};
+  const heldUntilTomorrow = new Set((S.visionQueue || []).filter((entry) => entry && !entry.done && entry.stage === 'waiting').map((entry) => entry.qid));
+  const signals = learningSignalIndex();
+  const scores = new Map(BANK.map((q) => [q.id, questionLearningValue(q, signals, { forVision })]));
+  const eligible = (q) => {
+    const skeleton = qSkeleton(q);
+    return !usedIds.has(q.id) && !heldUntilTomorrow.has(q.id)
+      && !(q.grp && usedGroups.has(q.grp))
+      && !(skeleton.length >= 12 && usedSkeletons.has(skeleton))
+      && !(q.src && packIsOff(q.src));
+  };
   const choose = (type, count, diffPattern) => {
     const out = [];
     for (let i = 0; i < count; i++) {
       const want = diffPattern[i % diffPattern.length];
       let pool = BANK.filter((q) => q.type === type && q.diff === want && eligible(q));
       if (!pool.length) pool = BANK.filter((q) => q.type === type && eligible(q));
-      pool.sort((a, b) => ((topicUse[a.topic] || 0) - (topicUse[b.topic] || 0))
-        || (((ac.get(a.id) || 0) + (visionUse.get(a.id) || 0) * 4) - ((ac.get(b.id) || 0) + (visionUse.get(b.id) || 0) * 4)) || (Math.random() - 0.5));
+      pool.sort((a, b) => (scores.get(b.id) / (1 + (topicUse[b.topic] || 0) * .55)
+          - scores.get(a.id) / (1 + (topicUse[a.topic] || 0) * .55))
+        || String(a.id).localeCompare(String(b.id)));
       const q = pool[0]; if (!q) break;
-      usedIds.add(q.id); if (q.grp) usedGroups.add(q.grp); topicUse[q.topic] = (topicUse[q.topic] || 0) + 1;
+      usedIds.add(q.id); if (q.grp) usedGroups.add(q.grp);
+      const skeleton = qSkeleton(q); if (skeleton.length >= 12) usedSkeletons.add(skeleton);
+      topicUse[q.topic] = (topicUse[q.topic] || 0) + 1;
       out.push(q);
     }
     return out;
@@ -6227,15 +6938,17 @@ function startMock() {
   if (!syncGate()) return;
   const paper = buildPaper();
   if (paper.length !== MOCK_SPEC.total) { alert(`題庫目前只能組出 ${paper.length} 題，尚不足正式 20 題結構。`); return; }
-  mock = {
-    paper, orig: paper.slice(), i: 0, round: 1, skipped: [],
-    mixedGroupId: buildPaper.lastMixedGroupId,
-    answers: {}, times: {}, proc: {}, exclude: {}, judge: {},
-    tEnd: Date.now() + MOCK_SPEC.minutes * 60 * 1000, t0: 0, sessT0: Date.now(),
-  };
-  sessionActive = true;
-  sessionMode = 'mock';
-  mockNext();
+  const mixedGroupId = buildPaper.lastMixedGroupId;
+  afterFigurePreflight(paper, () => {
+    mock = {
+      paper, orig: paper.slice(), i: 0, round: 1, skipped: [], mixedGroupId,
+      answers: {}, times: {}, proc: {}, exclude: {}, judge: {},
+      tEnd: Date.now() + MOCK_SPEC.minutes * 60 * 1000, t0: 0, sessT0: Date.now(),
+    };
+    sessionActive = true;
+    sessionMode = 'mock';
+    mockNext();
+  });
 }
 function mockNext() {
   if (Date.now() >= mock.tEnd) return mockGrade('時間到！');
@@ -6373,12 +7086,15 @@ function mockGrade(reason, partial) {
   // 完整模擬＝整份原卷（含未作答）；中途保留＝只結算作答過的題。排除「離開座位」題。
   mock.graded = (partial ? mock.orig.filter((q) => mock.answers[q.id]) : mock.orig)
     .filter((q) => !mock.exclude[q.id]);
-  const inkfills = mock.graded.filter((q) => { const a = mock.answers[q.id]; return a && a.type === 'inkfill'; });
-  if (inkfills.length) {
+  const manualFills = mock.graded.filter((q) => {
+    const a = mock.answers[q.id];
+    return a && (a.type === 'inkfill' || (a.type === 'fill' && fillVerdict(a.v, q.ans) === 'uncertain'));
+  });
+  if (manualFills.length) {
     // 批改期間紀錄還沒寫入——維持 session 守衛，nav 會先確認，避免一點就整場蒸發
     sessionActive = true;
     sessionMode = 'judging';
-    return mockJudgePanel(inkfills);
+    return mockJudgePanel(manualFills);
   }
   mockFinal();
 }
@@ -6387,9 +7103,10 @@ function mockJudgePanel(list) {
   sessionChrome(false);
   mock.toJudge = list;
   const items = list.map((q, i) => {
-    const img = inkCaptureFull(q.id, true);
+    const answer = mock.answers[q.id];
+    const img = answer && answer.type === 'fill' ? null : inkCaptureFull(q.id, true);
     return `<div class="judge-item">
-      <div class="judge-img">${img ? `<img src="${img}" alt="手寫過程">` : '<span class="dim">（沒有筆跡）</span>'}</div>
+      <div class="judge-img">${answer && answer.type === 'fill' ? `<p>打字作答：<b class="big">${escH(answer.v || '（空白）')}</b></p>` : img ? `<img src="${img}" alt="手寫過程">` : '<span class="dim">（沒有筆跡）</span>'}</div>
       <div class="judge-info">
         <div class="wc-q fs13 dim" style="margin-bottom:4px">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}</div>
         <p class="dim">第 ${q.examNo} 題｜批改用最終答案：<b class="big">${q.type === 'fill' ? mDispOpt(String(q.ans[0])) : q.ans.map((a) => `(${a + 1})`).join('')}</b></p>
@@ -6461,7 +7178,11 @@ function mockAnswerResult(q, a) {
     ok = chosen.length === q.ans.length && q.ans.every((x) => chosen.includes(x));
     yourAns = chosen.length ? chosen.map((c) => `(${c + 1})`).join('') : '（未選）';
   } else if (a.type === 'inkfill') { ok = !!mock.judge[q.id]; yourAns = '（手寫）'; }
-  else { ok = checkFill(a.v, q.ans); yourAns = a.v || '（空白）'; }
+  else {
+    const verdict = fillVerdict(a.v, q.ans);
+    ok = verdict === 'uncertain' ? !!mock.judge[q.id] : verdict === 'equivalent';
+    yourAns = a.v || '（空白）';
+  }
   let points = ok ? q.points : 0;
   if (a.type === 'multi' && !ok) points = multiPartialPoints(q.points, a.v, q.ans, (q.opts || []).map((_, i) => i));
   return { ok, yourAns, points: Math.round(points * 100) / 100 };
@@ -6538,11 +7259,16 @@ function correctionLevel(entry) {
   return Number(entry && entry.level) || (entry && entry.outcome === 'direct' ? 1 : entry && entry.outcome === 'answer-only' ? 2 : entry && entry.outcome === 'solution' ? 3 : null);
 }
 function correctionCounts(batch) {
-  const out = { open: 0, l1: 0, l2: 0, l3: 0 };
+  const out = { open: 0, l1: 0, l2: 0, l3: 0, retentionDue:0, retentionPending:0, retentionPassed:0 };
   for (const entry of (batch && batch.entries) || []) {
     const level = correctionLevel(entry);
     if (!entry.done) out.open++;
     else if (level) out[`l${level}`]++;
+    if (entry.retentionPassed) out.retentionPassed++;
+    else if (entry.done && level >= 2 && entry.retentionDue) {
+      if (String(entry.retentionDue) <= today()) out.retentionDue++;
+      else out.retentionPending++;
+    }
   }
   return out;
 }
@@ -6560,14 +7286,14 @@ function renderCorrections() {
   const waitingCards = waiting.map((batch) => { const c = correctionCounts(batch); return `<div class="card"><h2>${escH(batch.name || '全真模考')}｜${batch.d}</h2>
     <p>第一級 ${c.l1} 題；其餘 ${c.open} 題的<b>答案與詳解鎖到 ${batch.due}</b>，今天不訂正。</p><div class="actr"><button class="btn" onclick="renderTeacherReport('${jsA(batch.id)}')">查看目前紀錄</button></div></div>`; }).join('');
   const completed = all.filter((batch) => (batch.entries || []).length && (batch.entries || []).every((x) => x.done)).slice(0, 6);
-  const completedCards = completed.map((batch) => { const c = correctionCounts(batch); return `<div class="report-row"><span>${batch.d}</span><b>第一級 ${c.l1}｜第二級 ${c.l2}｜第三級 ${c.l3}</b><button class="btn sm" onclick="renderTeacherReport('${jsA(batch.id)}')">老師檢視</button></div>`; }).join('');
+  const completedCards = completed.map((batch) => { const c = correctionCounts(batch); return `<div class="report-row"><span>${batch.d}${c.retentionDue ? `｜保留重測到期 ${c.retentionDue}` : c.retentionPending ? `｜等待保留重測 ${c.retentionPending}` : ''}</span><b>第一級 ${c.l1}｜第二級 ${c.l2}｜第三級 ${c.l3}</b><button class="btn sm" onclick="renderTeacherReport('${jsA(batch.id)}')">老師檢視</button></div>`; }).join('');
   const sourceWaiting = (S.paperRuns || []).filter((run) => run && ['awaiting-key', 'awaiting-correction'].includes(run.status))
     .sort((a, b) => Number(b.submittedAt || 0) - Number(a.submittedAt || 0));
   const sourceWaitingCards = sourceWaiting.map((run) => {
     const dueNow = String(run.due || '') <= today();
     return `<div class="card paper-key-wait"><span class="eyebrow">原版紙本卷｜${dueNow ? '已到訂正日' : '尚未到期'}</span><h2>${escH(run.name || '原版模考')}｜${run.d}</h2>
       <p><b>${run.score}/100</b>｜錯題 ${Array.isArray(run.wrongNos) && run.wrongNos.length ? run.wrongNos.join('、') : '無'}。</p>
-      <div class="notice"><b>${dueNow ? '今天直接在第一次紅筆卷上重新做；每一道錯題都可一按查看本題詳解。' : `逐題詳解鎖到 ${run.due}。`}</b><p>${dueNow ? '卷面先提示最終答案；請盡量在原題與留白處重新思考。需要時可直接按「看本題詳解」，看過後仍要重算並再次批改。' : '第一次批改已標出對錯、分數與正確答案；隔日才開放逐題詳解與重算。'}</p></div>
+      <div class="notice"><b>${dueNow ? '今天直接在第一次紅筆卷上重新做；每題都保留詳解入口，但先完成一次真實重想。' : `逐題詳解鎖到 ${run.due}。`}</b><p>${dueNow ? '卷面先提示最終答案；請在原題或留白處重算。寫下新算式／方向，或至少留下單元與卡點後，才可一按打開本題詳解；看過仍要重算並再次批改。' : '第一次批改已標出對錯、分數與正確答案；隔日才開放重想與逐題詳解。'}</p></div>
       <div class="actr"><button class="btn" onclick="openPaperGradeResult('${jsA(run.id)}')">查看第一次紅筆卷／輸出 PDF</button><button class="btn" onclick="renderPaperTeacherReport('${jsA(run.id)}')">給老師看逐題紀錄</button>${dueNow ? `<button class="btn primary" onclick="startPaperAnswerReview('${jsA(run.id)}')">在紅筆卷上開始訂正</button>` : ''}</div>
     </div>`;
   }).join('');
@@ -6730,7 +7456,11 @@ async function startPaperAnswerReview(runId) {
   if (!wrongNos.length) { run.status = 'completed'; run.mt = Date.now(); save(); renderCorrections(); return; }
   run.review = run.review || {};
   for (let no = 1; no <= source.questions; no++) {
-    if (!wrongNos.includes(no) && !run.review[no]) run.review[no] = { done: true, level: 1, outcome: 'direct', completedAt: run.submittedAt };
+    const graded = run.aiGrade && run.aiGrade.questions && run.aiGrade.questions.find((item) => Number(item.no) === no);
+    if (!run.review[no]) run.review[no] = wrongNos.includes(no)
+      ? { done:false, attempts:0, logs:[] }
+      : { done:true, level:1, outcome:'direct', completedAt:run.submittedAt };
+    if (!run.review[no].topic && graded && TOPICS[graded.topic]) run.review[no].topic = graded.topic;
   }
   app().innerHTML = `<div class="card"><h1>正在開啟 ${escH(source.title)}</h1><p class="dim">載入原卷，答案仍只會逐題顯示。</p></div>`;
   try {
@@ -6821,24 +7551,38 @@ function paperReviewDetailLogs(state) {
     .filter((log) => String(log && log.kind || '') !== 'detail-gate');
 }
 async function paperReviewDetailCallCompat(review, no, state, image) {
-  try {
-    return await paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state));
-  } catch (error) {
-    const message = String(error && error.message || error || '');
-    const logs = state && Array.isArray(state.logs) ? state.logs : [];
-    const alreadyMarked = logs.some((log) => String(log && log.kind || '') === 'detail-gate');
-    if (!message.includes('本題詳解尚未開放') || alreadyMarked) throw error;
-
-    // 舊版 Edge Function 仍要求 logs 非空。這筆只用於相容閘門，不算一次重想、也不顯示在老師報告。
-    const now = Date.now();
-    state.logs = [...logs, { kind:'detail-gate', ts:now, resolved:false }];
-    state.detailGateCompatAt = now;
-    state.mt = now;
-    review.run.mt = now;
-    save();
-    await syncPush();
-    return paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state));
+  // 後端與前端都只接受真實 retry log；絕不再製造空白 detail-gate 來繞過老師流程。
+  return paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state));
+}
+function paperReviewLiveStrokeIds() {
+  const ids = new Set();
+  const pages = paperSourceSession && paperSourceSession.inkPages || {};
+  for (const data of Object.values(pages)) {
+    const deleted = data && data.deleted instanceof Set ? data.deleted : new Set(data && data.deleted || []);
+    for (const stroke of data && Array.isArray(data.s) ? data.s : []) {
+      const id = paperInkStrokeId(stroke);
+      if (stroke && !stroke.dead && Array.isArray(stroke.pts) && stroke.pts.length > 1 && !deleted.has(id)) ids.add(id);
+    }
   }
+  return ids;
+}
+function paperReviewResetEffortBaseline() {
+  if (paperReview) paperReview.effortBaseline = paperReviewLiveStrokeIds();
+}
+function paperReviewCurrentEffort() {
+  const baseline = paperReview && paperReview.effortBaseline instanceof Set ? paperReview.effortBaseline : new Set();
+  const live = paperReviewLiveStrokeIds();
+  const newStrokeIds = [...live].filter((id) => !baseline.has(id));
+  const direction = String(($('#paper-review-direction') || {}).value || '').trim().slice(0, 500);
+  const topic = String(($('#paper-review-topic') || {}).value || '').trim();
+  const concept = String(($('#paper-review-concept') || {}).value || '').trim().slice(0, 160);
+  return {
+    strokes:newStrokeIds.length,
+    direction,
+    topic:TOPICS[topic] ? topic : '',
+    concept,
+    meaningful:newStrokeIds.length > 0 || direction.length >= 8 || (!!TOPICS[topic] && concept.length >= 2),
+  };
 }
 async function paperReviewDetailed(force = false) {
   if (!paperReview || paperReview.detailLoading) return;
@@ -6847,6 +7591,11 @@ async function paperReviewDetailed(force = false) {
   if (String(review.run.due || '') > today() || !state) {
     const msg = $('#paper-review-msg');
     if (msg) msg.textContent = '詳解會在隔日訂正開始後開放。';
+    return;
+  }
+  if (!state.aiDetail && (Number(state.attempts) || 0) < 1) {
+    review.detailError = '請先在卷面留下新的重算，或保存一個具體方向／單元判斷；完成一次真實重想後才開放詳解。';
+    renderPaperAnswerReview();
     return;
   }
   if (state.aiDetail && !force) {
@@ -6906,7 +7655,7 @@ function paperReviewStatusHTML(state) {
   if (paperReview.detailError) return `<div class='paper-review-toast is-error'><b>本題詳解尚未載入</b><span>${escH(paperReview.detailError)}</span></div>`;
   if (state && state.pendingLevel) return `<div class='paper-review-toast is-pass'><b>這次訂正已算對</b><span>紅勾已標在訂正卷面；確認後再進下一題。</span></div>`;
   const grade = state && state.correctionGrade;
-  if (grade && !grade.correct) return `<div class='paper-review-toast is-retry'><b>這次訂正還沒完整成立</b><span>只標對錯與正確答案；你可以繼續在原位重算，或直接按「看本題詳解」。</span></div>`;
+  if (grade && !grade.correct) return `<div class='paper-review-toast is-retry'><b>這次訂正還沒完整成立</b><span>只標對錯與正確答案；這次真實重想已保存，現在可選擇繼續重算或打開詳解。</span></div>`;
   return '';
 }
 function renderPaperAnswerReviewWorkspace() {
@@ -6935,13 +7684,15 @@ function renderPaperAnswerReviewWorkspace() {
     paperReview.run.reviewCurrentNo = no;
     paperReview.run.reviewPage = scanIndex;
     paperReview.run.mt = Date.now(); save();
+    paperReviewResetEffortBaseline();
   }
   const page = Number(paperSourceSession.page) || 0;
   const scan = paperReview.source.scans[page];
   const answer = paperFinalAnswerText(q);
   const detailAvailable = !!state.aiDetail;
-  const detailButtonLabel = paperReview.detailLoading ? '正在產生詳解…' : detailAvailable ? `打開第 ${no} 題詳解` : `看第 ${no} 題詳解`;
-  const detailShortcut = `<button id='paper-detail-shortcut' class='paper-detail-shortcut' onclick='paperReviewDetailed()' ${paperReview.detailLoading ? 'disabled' : ''}>${uiIcon('book')}<span>${detailButtonLabel}</span></button>`;
+  const detailUnlocked = detailAvailable || (Number(state.attempts) || 0) > 0;
+  const detailButtonLabel = paperReview.detailLoading ? '正在產生詳解…' : detailAvailable ? `打開第 ${no} 題詳解` : detailUnlocked ? `看第 ${no} 題詳解` : '先留下一次重想';
+  const detailShortcut = `<button id='paper-detail-shortcut' class='paper-detail-shortcut' onclick='paperReviewDetailed()' ${paperReview.detailLoading || !detailUnlocked ? 'disabled' : ''} aria-disabled='${paperReview.detailLoading || !detailUnlocked}'>${uiIcon('book')}<span>${detailButtonLabel}</span></button>`;
   let actions = '';
   if (state.pendingLevel) {
     actions = `<button class='btn primary' onclick='paperReviewAcceptCorrection()'>確認訂正完成，下一題</button>`;
@@ -6950,7 +7701,8 @@ function renderPaperAnswerReviewWorkspace() {
   } else {
     actions = `<button class='btn' onclick='paperReviewStuckWorkspace()'>仍沒算出，保存這次重想</button><button class='btn primary' onclick='paperReviewGrade(2)' ${paperReview.grading ? 'disabled' : ''}>${paperReview.grading ? 'AI 批改中…' : '寫完了，AI 再批改'}</button>`;
   }
-  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'>${paperAiToggleButtonHTML()}<button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'><span>黑、藍、綠是你的訂正筆跡；紅色是 AI 批改。訂正筆跡獨立保存，不會改掉考試原稿。</span><div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
+  const effortFields = !state.pendingLevel && !detailAvailable ? `<details class='paper-review-effort'><summary>沒有完整算式時，補記方向／單元</summary><div><label>破題方向<textarea id='paper-review-direction' rows='2' placeholder='例如：先把垂直改寫成內積為 0，再用條件建式。'></textarea></label><label>可能單元<select id='paper-review-topic'>${visionTopicOptions('')}</select></label><label>卡住的觀念<input id='paper-review-concept' type='text' placeholder='例如：兩事件獨立的判定'></label></div></details>` : '';
+  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>隔日訂正｜第 ${no} 題</b><small>${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small></div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'>${paperAiToggleButtonHTML()}<button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'>${effortFields}<span>黑、藍、綠是你的訂正筆跡；紅色是 AI 批改。訂正筆跡獨立保存，不會改掉考試原稿。</span><div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true); paperInkAttach(); paperInkStatusRender();
   startTicker(() => {
     if (!paperReview || !paperSourceSession || sessionMode !== 'paper-review') return stopTicker();
@@ -7001,6 +7753,12 @@ async function paperReviewGrade(targetLevel = 2) {
   const review = paperReview, session = paperSourceSession;
   const no = review.nos[review.i], state = review.run.review[no];
   if (!state) return;
+  const effort = paperReviewCurrentEffort();
+  if (effort.strokes < 1) {
+    review.gradeError = '請先在訂正層新增可辨識的算式或答案，再交給 AI 批改；只抄正式答案或空白送出都不算重想。';
+    renderPaperAnswerReview();
+    return;
+  }
   review.grading = true; review.gradeError = ''; renderPaperAnswerReview();
   try {
     paperInkCommitCurrent();
@@ -7020,12 +7778,14 @@ async function paperReviewGrade(targetLevel = 2) {
       state.logs = state.logs || [];
       state.logs.push({
         ts:Date.now(), kind:'retry',
-        direction:'已在原卷訂正層留下手寫重算，AI 再批改仍未完整成立。',
+        direction:effort.direction || `已在原卷訂正層新增 ${effort.strokes} 筆手寫重算，AI 再批改仍未完整成立。`,
+        topic:effort.topic, concept:effort.concept,
         errorKind:paperCorrectionErrorKind(grade.errKind),
         aiRead:grade.read,
       });
       state.attempts = (Number(state.attempts) || 0) + 1;
       state.errorKind = state.errorKind || paperCorrectionErrorKind(grade.errKind);
+      paperReviewResetEffortBaseline();
     }
     review.run.reviewCurrentNo = no; review.run.reviewPage = page; review.run.mt = Date.now();
     paperRunRefreshLearningTags(review.run); paperSourceUpdateExtMock(review.source, review.run); save();
@@ -7057,6 +7817,12 @@ function paperReviewAcceptCorrection() {
 }
 async function paperReviewStuckWorkspace() {
   if (!paperReview || !paperSourceSession) return;
+  const effort = paperReviewCurrentEffort();
+  if (!effort.meaningful) {
+    paperReview.gradeError = '請先留下真實重想：在卷面新增算式／方向；若完全沒有方向，至少選可能單元並寫出卡住的觀念。';
+    renderPaperAnswerReview();
+    return;
+  }
   const session = paperSourceSession;
   paperInkCommitCurrent();
   const [journalOk, snapshotOk] = await Promise.all([paperInkJournalDrain(session), paperInkPersist(true)]);
@@ -7067,10 +7833,16 @@ async function paperReviewStuckWorkspace() {
   }
   const no = paperReview.nos[paperReview.i], state = paperReview.run.review[no];
   state.logs = state.logs || [];
-  state.logs.push({ ts:Date.now(), kind:'retry', direction:'我已把目前想到的方向或算式留在原卷訂正層，但仍無法完成。', errorKind:state.errorKind || '看不出第一個切入點' });
+  state.logs.push({
+    ts:Date.now(), kind:'retry',
+    direction:effort.direction || (effort.strokes ? `我已在原卷訂正層新增 ${effort.strokes} 筆方向或算式，但仍無法完成。` : ''),
+    topic:effort.topic, concept:effort.concept,
+    errorKind:state.errorKind || '看不出第一個切入點',
+  });
   state.attempts = (Number(state.attempts) || 0) + 1;
   state.errorKind = state.errorKind || '看不出第一個切入點'; state.mt = Date.now();
   paperReview.run.mt = Date.now(); paperRunRefreshLearningTags(paperReview.run); paperSourceUpdateExtMock(paperReview.source, paperReview.run); save();
+  paperReviewResetEffortBaseline();
   paperReview.detailError = ''; paperReview.gradeError = ''; renderPaperAnswerReview();
 }
 function paperReviewDetailToggle(open) {
@@ -7162,7 +7934,9 @@ function correctionComplete(usedSolution) {
   if (usedSolution && !entry.solutionUnlockedAt) return;
   entry.logs = entry.logs || [];
   entry.logs.push({ ts: Date.now(), note: effort.note, alternate: effort.alternate, topic: effort.topic, concept: effort.concept, strokes: effort.proc ? effort.proc.n || 0 : 0, ms: effort.ms, resolved: true });
-  entry.done = true; entry.completedAt = Date.now(); entry.outcome = usedSolution ? 'solution' : 'answer-only'; entry.level = usedSolution ? 3 : 2;
+  entry.done = true; entry.completedAt = Date.now(); entry.mt = entry.completedAt; entry.outcome = usedSolution ? 'solution' : 'answer-only'; entry.level = usedSolution ? 3 : 2;
+  /* 第二／三級都不因「訂正當下會了」直接畢業：2 天後與再 7 天後各需一次獨立答對。 */
+  entry.retentionStage = 0; entry.retentionDue = addDays(today(), 2); entry.retentionPassed = false; entry.retentionLogs = [];
   correction.batch.mt = Date.now();
   const q = correctionQuestion(entry);
   if (q) recordAttempt(q, true, effort.ms, null, 'correction', effort.proc, null, { skipWrong: true });
@@ -7177,7 +7951,7 @@ function correctionDone() {
   if (!batch) return renderCorrections();
   const c = correctionCounts(batch);
   app().innerHTML = `<h1>這回訂正完成</h1><div class="card good"><p class="big">第一級 <b>${c.l1}</b> 題｜第二級 <b>${c.l2}</b> 題｜第三級 <b>${c.l3}</b> 題</p>
-    <p>第一級＝考場直接會寫；第二級＝只給最終答案就能自己算出；第三級＝努力重想後仍須看詳解。每題留下的方向與單元判斷都可交給老師檢視。</p>
+    <p>第一級＝考場直接會寫；第二級＝只給最終答案就能自己算出；第三級＝努力重想後仍須看詳解。第二、三級會在 2 天後與再 7 天後混入教材精選重測，兩關都獨立答對才算真正留住。</p>
     <div class="actr"><button class="btn" onclick="renderTeacherReport('${jsA(batch.id)}')">給老師看這一回</button><button class="btn primary" onclick="nav('mock')">回模考與破題</button></div></div>`;
 }
 function renderTeacherReport(batchId) {
@@ -7207,13 +7981,55 @@ function startPracTopics(topics, cnt) {
   if (!syncGate()) return;
   let pool = BANK.filter((q) => topics.includes(q.topic));
   if (!pool.length) { alert('這些單元目前沒有題目。'); return; }
-  const ac = attCountMap();
-  pool = shuffle(pool).sort((a, b) => (ac.get(a.id) || 0) - (ac.get(b.id) || 0));
-  prac = { queue: dedupeStems(pool, Math.min(cnt || 8, pool.length)), i: 0, results: [], mode: 'topic-intervention', topics, cnt: cnt || 8 }; // topics/cnt 留給結果頁「再刷一輪」原樣重開
-  sessionActive = true;
-  sessionMode = 'prac';
-  snapSession();
-  pracNext();
+  const signals = learningSignalIndex();
+  pool = pool.slice().sort((a, b) => questionLearningValue(b, signals) - questionLearningValue(a, signals) || String(a.id).localeCompare(String(b.id)));
+  const queue = dedupeStems(pool, Math.min(cnt || 8, pool.length));
+  const reasons = Object.fromEntries(queue.map((q) => [q.id, questionSelectionReason(q, signals)]));
+  afterFigurePreflight(queue, () => {
+    prac = { queue, reasons, i: 0, results: [], mode: 'topic-intervention', topics, cnt: cnt || 8 }; // topics/cnt 留給結果頁「再刷一輪」原樣重開
+    sessionActive = true;
+    sessionMode = 'prac';
+    snapSession();
+    pracNext();
+  });
+}
+function adaptiveTextbookQueue(cnt) {
+  const library = typeof TEXTBOOK_LIBRARY === 'object' && TEXTBOOK_LIBRARY ? TEXTBOOK_LIBRARY : { books:[] };
+  const ready = (library.books || []).filter((book) => book.ingestion === 'ready' && book.eligibility === 'core');
+  const readyIds = new Set(ready.map((book) => book.id));
+  const readySources = new Set(ready.flatMap((book) => book.sourceNames || []));
+  const held = new Set((S.visionQueue || []).filter((entry) => entry && !entry.done && entry.stage === 'waiting').map((entry) => entry.qid));
+  let pool = BANK.filter((q) => !held.has(q.id) && !(q.src && packIsOff(q.src))
+    && (readyIds.has(q.bookId) || readySources.has(q.src)));
+  if (!pool.length) pool = BANK.filter((q) => !held.has(q.id) && q.src && !packIsOff(q.src));
+  const signals = learningSignalIndex();
+  const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals)]));
+  const ranked = pool.slice().sort((a, b) => scores.get(b.id) - scores.get(a.id) || String(a.id).localeCompare(String(b.id)));
+  const queue = [], groups = new Set(), skeletons = new Set(), topicUse = Object.create(null);
+  const add = (q, enforceMix) => {
+    const skeleton = qSkeleton(q);
+    if (queue.includes(q) || (q.grp && groups.has(q.grp)) || (skeleton.length >= 12 && skeletons.has(skeleton))) return false;
+    if (enforceMix && (topicUse[q.topic] || 0) >= 2) return false;
+    queue.push(q); if (q.grp) groups.add(q.grp); if (skeleton.length >= 12) skeletons.add(skeleton);
+    topicUse[q.topic] = (topicUse[q.topic] || 0) + 1;
+    return true;
+  };
+  for (const q of ranked) { add(q, true); if (queue.length >= cnt) break; }
+  for (const q of ranked) { add(q, false); if (queue.length >= cnt) break; }
+  adaptiveTextbookQueue.lastSignals = signals;
+  return queue;
+}
+function startAdaptiveTextbook(cnt) {
+  if (!syncGate()) return;
+  const count = Math.max(8, Math.min(12, Number(cnt) || 10));
+  const queue = adaptiveTextbookQueue(count);
+  if (!queue.length) { alert('私人教材題庫尚未載入，請先確認登入與題庫同步。'); return; }
+  const signals = adaptiveTextbookQueue.lastSignals || learningSignalIndex();
+  const reasons = Object.fromEntries(queue.map((q) => [q.id, questionSelectionReason(q, signals)]));
+  afterFigurePreflight(queue, () => {
+    prac = { queue, reasons, i:0, results:[], mode:'adaptive-textbook', cnt:count, noTimer:true, hideTopic:true };
+    sessionActive = true; sessionMode = 'prac'; snapSession(); pracNext();
+  });
 }
 function startTopicIntervention(k) {
   if (!severeWeakTopics().some((x) => x.k === k)) {
@@ -7258,6 +8074,18 @@ function paperLearningSummaryCard() {
     <div class="paper-analysis-grid"><div><h3>較常失分的單元</h3>${bars(topTopics, maxTopic, (key) => TOPICS[key] || key)}</div><div><h3>較常出現的卡點</h3>${bars(topErrors, maxError, (key) => key)}</div></div>
     <h3>最近原版模考</h3><div class="report-list">${recent}</div></section>`;
 }
+function textbookLibraryCard() {
+  const library = typeof TEXTBOOK_LIBRARY === 'object' && TEXTBOOK_LIBRARY ? TEXTBOOK_LIBRARY : { books:[], supplemental:[] };
+  const books = Array.isArray(library.books) ? library.books : [];
+  const ready = books.filter((book) => book.ingestion === 'ready');
+  const pending = books.filter((book) => book.ingestion !== 'ready');
+  const core = books.filter((book) => book.eligibility === 'core');
+  const pages = books.reduce((sum, book) => sum + (Number(book.pages) || 0), 0);
+  return `<section class="card textbook-library-summary"><span class="eyebrow">私有教材主庫</span><h2>22 本主題教材＋2 本總複習已完成清冊</h2>
+    <div class="paper-level-summary"><span>已可安全出題 <b>${ready.length}</b></span><span>待 OCR／圖形 QA <b>${pending.length}</b></span><span>數 A 核心 <b>${core.length}</b></span><span>掃描頁數 <b>${pages}</b></span></div>
+    <p>其餘教材會逐本通過來源、頁碼、例題／章末角色、難度、圖資與答案驗證後才啟用，不用題目數量換取錯題風險。</p>
+    <p class="dim">《週攻略數學 A》另列補充題源；數 B 讀寫教材不進數 A 正式校準。</p></section>`;
+}
 function renderStats() {
   const entries = (S.corrections || []).flatMap((b) => b.entries || []);
   const done = entries.filter((x) => x.done);
@@ -7279,6 +8107,7 @@ function renderStats() {
       <section><span>觀念理解</span><b>${conceptsUnderstood}/${CONCEPT_CARDS.length}</b><small>張能用自己的話說清楚</small></section>
     </div>
     ${paperLearningSummaryCard()}
+    ${textbookLibraryCard()}
     ${syncCard()}
     ${aiCard()}
     ${packCard()}
@@ -7298,6 +8127,8 @@ function packCard() {
     : '尚未完成';
   const healthMeta = curatedState.count ? `<div class="bank-health" role="status">
       <div><b>內建</b><span>${BUILTIN_N} 題</span></div><div><b>私有</b><span>${curatedState.count} 題</span></div><div><b>目前可用</b><span>${BUILTIN_N + curatedState.count} 題</span></div>
+      ${curatedState.pendingVisualCount ? `<div><b>有圖題待補</b><span>${curatedState.pendingVisualCount} 題</span></div>` : ''}
+      ${curatedState.quarantinedCount ? `<div><b>資料驗證未通過</b><span>${curatedState.quarantinedCount} 題</span></div>` : ''}
       <div><b>資料包</b><span>${curatedState.packCount || '—'} 包</span></div><div><b>最近驗證</b><span>${escH(checkedAt)}</span></div><div><b>Manifest</b><span class="mono">${escH((curatedState.manifestSha || '').slice(0, 12) || '—')}</span></div>
     </div>` : '';
   const curatedLine = curatedState.status === 'ready'
@@ -7352,6 +8183,7 @@ function supaInit() {
     const was = activeAuthUserId;
     activeAuthUserId = nextId;
     authSwitchPromise = authSwitchPromise.then(async () => {
+      if (nextId !== was) { revokePrivateFigureURLs(); if (was) void figureCacheClearUser(was); }
       syncState.user = nextUser;
       if (nextUser && nextId !== was) {
         await activateUserState(nextUser);
@@ -7704,16 +8536,38 @@ function mergeState(a, b) {
         const logKey = `${log.ts || ''}|${log.note || ''}|${log.strokes || 0}|${log.resolved ? 1 : 0}`;
         logMap.set(logKey, log);
       }
+      const retentionLogMap = new Map();
+      for (const log of [...(old.retentionLogs || []), ...(entry.retentionLogs || [])]) {
+        const logKey = `${log.ts || ''}|${log.d || ''}|${log.mode || ''}|${log.ok ? 1 : 0}|${log.stage || 0}`;
+        retentionLogMap.set(logKey, log);
+      }
       const oldCompleted = Number(old.completedAt || 0), newCompleted = Number(entry.completedAt || 0);
       const completed = newCompleted >= oldCompleted ? entry : old;
+      const retentionStamp = (value) => Math.max(
+        Number(value.mt || 0),
+        Number(value.retentionPassedAt || 0),
+        ...(value.retentionLogs || []).map((log) => Number(log.ts || 0)),
+      );
+      const oldRetentionStamp = retentionStamp(old), newRetentionStamp = retentionStamp(entry);
+      let retention = newRetentionStamp > oldRetentionStamp ? entry : old;
+      if (newRetentionStamp === oldRetentionStamp) {
+        if (!!entry.retentionPassed !== !!old.retentionPassed) retention = entry.retentionPassed ? entry : old;
+        else if (Number(entry.retentionStage || 0) > Number(old.retentionStage || 0)) retention = entry;
+      }
       entryMap.set(key, {
         ...old, ...entry,
         attempts: Math.max(Number(old.attempts || 0), Number(entry.attempts || 0)),
         logs: [...logMap.values()].sort((x, y) => Number(x.ts || 0) - Number(y.ts || 0)),
+        retentionLogs: [...retentionLogMap.values()].sort((x, y) => Number(x.ts || 0) - Number(y.ts || 0)),
         solutionUnlockedAt: Math.max(Number(old.solutionUnlockedAt || 0), Number(entry.solutionUnlockedAt || 0)) || null,
         done: !!(old.done || entry.done),
         completedAt: Math.max(oldCompleted, newCompleted) || null,
         outcome: completed.outcome || old.outcome || entry.outcome || null,
+        mt: Math.max(Number(old.mt || 0), Number(entry.mt || 0)) || null,
+        retentionStage: Number(retention.retentionStage || 0),
+        retentionDue: retention.retentionDue || null,
+        retentionPassed: !!retention.retentionPassed,
+        retentionPassedAt: Math.max(Number(old.retentionPassedAt || 0), Number(entry.retentionPassedAt || 0)) || null,
       });
     }
     return {

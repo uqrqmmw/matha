@@ -23,10 +23,23 @@ test('原版模考 bucket 保持私有且只有核准帳號能讀取', () => {
   assert.doesNotMatch(paperBlock, /create policy[^;]+(?:insert|update|delete)[^;]+matha-papers/is);
 });
 
+test('教材題圖 bucket 保持私有唯讀，學生端不能上傳或改寫裁圖', () => {
+  const schema = fs.readFileSync(path.join(ROOT, 'supabase', 'schema.sql'), 'utf8');
+  const figureBlock = schema.slice(schema.indexOf("'matha-figures'"), schema.indexOf("'matha-papers'"));
+  assert.match(figureBlock, /'matha-figures'[\s\S]*false[\s\S]*image\/webp/);
+  assert.match(figureBlock, /create policy "approved read matha figures"[\s\S]*for select[\s\S]*to authenticated[\s\S]*bucket_id = 'matha-figures'[\s\S]*is_matha_user\(auth\.uid\(\)\)/i);
+  assert.doesNotMatch(figureBlock, /create policy[^;]+(?:insert|update|delete)[^;]+matha-figures/is);
+});
+
 test('本機 IndexedDB 同時保存狀態與未上傳原始筆跡', () => {
   const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
-  assert.match(source, /indexedDB\.open\('mathA13Content', 5\)/);
+  assert.match(source, /indexedDB\.open\('mathA13Content', 6\)/);
   assert.match(source, /createObjectStore\('state'\)/);
+  assert.match(source, /createObjectStore\('figurecache', \{ keyPath: 'key' \}\)/);
+  assert.match(source, /figureCacheGet\(asset\.sha256, userId\)/);
+  assert.match(source, /figureCachePut\(asset\.sha256, blob, userId\)/);
+  assert.match(source, /privateFigureGeneration === generation/);
+  assert.match(source, /figureCacheClearUser\(was\)/);
   assert.match(source, /`current:\$\{KEY\}`/);
   assert.match(source, /createObjectStore\('inkrecords'/);
   assert.match(source, /createIndex\('qid', 'qid'/);
@@ -88,10 +101,13 @@ test('未上傳筆跡只會被所屬帳號看見，舊筆跡只由第一次認�
 
 test('一次性配對 Edge Function 只為已登入使用者產生 magic link hash', () => {
   const source = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'device-pair', 'index.ts'), 'utf8');
-  assert.match(source, /auth\.getUser\(\)/);
-  assert.match(source, /auth\.admin\.generateLink\(\{/);
+  assert.match(source, /"\/auth\/v1\/user"/);
+  assert.match(source, /\/rest\/v1\/app_users\?select=enabled/);
+  assert.match(source, /"\/auth\/v1\/admin\/generate_link"/);
   assert.match(source, /type: "magiclink"/);
+  assert.match(source, /redirect_to: APP_REDIRECT_URL/);
   assert.match(source, /hashed_token/);
+  assert.match(source, /Bearer \$\{SUPABASE_SERVICE_ROLE_KEY\}/);
   assert.doesNotMatch(source, /refresh_token|access_token|password:/);
 });
 
@@ -130,5 +146,12 @@ test('逐題詳解由後端驗證已到隔日且題目屬於該次訂正，不�
   assert.match(proxy, /return !!state/);
   assert.doesNotMatch(proxy, /Number\(state\.attempts\) > 0 \|\| logs\.length > 0/);
   assert.match(app, /context:\s*\{[\s\S]*paperRunId:[\s\S]*questionNo: no/);
-  assert.match(app, /await syncPush\(\);[\s\S]*paperAiDetailCall/);
+  const detailed = app.match(/async function paperReviewDetailed[\s\S]*?\n\}/)?.[0] || '';
+  const compat = app.match(/async function paperReviewDetailCallCompat[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(detailed, /await syncPush\(\);[\s\S]*paperReviewDetailCallCompat/,
+    '詳解前必須先同步，再由相容層送出已保存的真實 retry log');
+  assert.match(compat, /paperAiDetailCall\([\s\S]*paperReviewDetailLogs\(state\)/,
+    '相容層仍須呼叫後端詳解 API，且只能傳入過濾後的真實紀錄');
+  assert.doesNotMatch(compat, /detail-gate\s*['"]\s*\}|push\(/,
+    '不得在相容層製造空白紀錄繞過後端隔日訂正閘門');
 });

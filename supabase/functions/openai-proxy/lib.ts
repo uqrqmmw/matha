@@ -182,6 +182,25 @@ export const responseSchemas = {
           properties: {
             no: { type: "integer", minimum: 1, maximum: 20 },
             page: { type: "integer", minimum: 1, maximum: 6 },
+            topic: {
+              type: "string",
+              enum: [
+                "num",
+                "line",
+                "poly",
+                "seq",
+                "comb",
+                "prob",
+                "data",
+                "trig1",
+                "trig2",
+                "exp",
+                "vec",
+                "vec3",
+                "space",
+                "mat",
+              ],
+            },
             read: { type: "string", maxLength: 120 },
             status: {
               type: "string",
@@ -204,6 +223,7 @@ export const responseSchemas = {
           required: [
             "no",
             "page",
+            "topic",
             "read",
             "status",
             "hasFinalAnswer",

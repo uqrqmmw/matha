@@ -87,7 +87,10 @@ test('隔日訂正沿用全頁原卷工作台，新筆跡與第一次紅筆分�
   assert.match(css, /\.paper-review-session #paper-ai-canvas\s*\{\s*z-index:\s*4/);
   assert.match(css, /\.paper-detail-shortcut\s*\{[\s\S]*?min-height:\s*44px/);
   assert.match(css, /\.paper-detail-drawer\s*\{[\s\S]*?position:\s*absolute/);
-  assert.doesNotMatch(source, /paper-review-layout|paper-review-direction|paper-review-ink-canvas/);
+  assert.match(source, /class='paper-review-effort'/,
+    '沒有完整算式時仍要能在同一全頁工作台留下方向、單元與卡點');
+  assert.match(css, /\.paper-review-effort\s*\{[\s\S]*?min-width:\s*min\(330px, 100%\)/);
+  assert.doesNotMatch(source, /paper-review-layout|paper-review-ink-canvas/);
 });
 
 test('AI 回饋欄位統一經數學字串修復後再渲染', () => {

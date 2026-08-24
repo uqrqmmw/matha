@@ -24,11 +24,17 @@ test('級分校準只採完整模擬，三場皆過 72% 才標穩定', () => {
   assert.equal(result.after.grade, '13 級分');
 });
 
-test('下一步優先順序為隔日盲訂正、未完成大綱；大綱完成後才排全真校準、弱點與觀念', () => {
+test('下一步優先處理原卷與系統隔日訂正，再排未完成大綱、全真校準、弱點與觀念', () => {
   const { run } = loadApp();
   const states = plain(run(`(() => {
-    S.attempts = []; S.mocks = []; S.wrong = {}; S.corrections = []; S.outlineAttempts = [];
+    S.attempts = []; S.mocks = []; S.wrong = {}; S.corrections = []; S.outlineAttempts = []; S.paperRuns = [];
     const outline = nextBestAction();
+    const source = PAPER_SOURCES[0];
+    S.paperRuns = [{ id:'paper-due', sourceId:source.id, status:'awaiting-correction', due:today(), submittedAt:1,
+      wrongNos:[3, 11], aiGrade:{ wrongNos:[3, 11], questions:[] }, review:{ 3:{ done:true } } }];
+    const paperDue = nextBestAction();
+    const paperPending = paperPendingReviewNos(S.paperRuns[0]);
+    S.paperRuns = [];
     S.corrections = [{ id:'c1', due:today(), entries:[{ qid:BANK[0].id, done:false }] }];
     const due = nextBestAction();
     S.corrections = [];
@@ -39,9 +45,71 @@ test('下一步優先順序為隔日盲訂正、未完成大綱；大綱完成�
     const weak = nextBestAction();
     S.attempts = [];
     const normal = nextBestAction();
-    return { outline:outline.kind, noData:noData.kind, due:due.kind, weak:weak.kind, normal:normal.kind };
+    S.conceptAttempts = [{ conceptId:CONCEPT_CARDS[0].id, d:today(), ts:Date.now(), understood:true }];
+    const adaptive = nextBestAction();
+    return { outline:outline.kind, paperDue:paperDue.kind, paperAction:paperDue.onclick, paperPending, noData:noData.kind, due:due.kind, weak:weak.kind, normal:normal.kind, adaptive:adaptive.kind };
   })()`));
-  assert.deepEqual(states, { outline:'outline', noData:'mock', due:'correction', weak:'topic', normal:'concept' });
+  assert.equal(states.paperDue, 'paper-correction');
+  assert.match(states.paperAction, /startPaperAnswerReview\('paper-due'\)/);
+  assert.deepEqual(states.paperPending, [11]);
+  assert.deepEqual({ outline:states.outline, noData:states.noData, due:states.due, weak:states.weak, normal:states.normal },
+    { outline:'outline', noData:'mock', due:'correction', weak:'topic', normal:'concept' });
+  assert.equal(states.adaptive, 'adaptive-textbook');
+});
+
+test('個人化選題會把到期錯題、沒有方向與第三級單元排在剛答對的題目前面', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const pair = BANK.filter((q) => q.topic === 'num' && q.type === 'fill').slice(0, 2);
+    const due = pair[0], recent = pair[1];
+    S.attempts = [{ qid:recent.id, ok:true, ms:60000, d:today(), mode:'mixed', ts:Date.now() }];
+    S.wrong = { [due.id]:{ fails:1, wins:0, due:today(), err:'沒有方向' } };
+    S.visionHistory = [{ qid:due.id, outcome:'fails', days:2, d:today(), ts:1 }];
+    S.paperRuns = [{ id:'signal', sourceId:PAPER_SOURCES[0].id, status:'completed', aiGrade:{ questions:[{ no:1, status:'incorrect', topic:'num' }] }, review:{ 1:{ done:true, level:3 } } }];
+    const signals = learningSignalIndex();
+    const ranked = rankAdaptiveQuestions(pair);
+    return { due:due.id, recent:recent.id, first:ranked[0].id, dueScore:questionLearningValue(due, signals), recentScore:questionLearningValue(recent, signals), reason:questionSelectionReason(due, signals) };
+  })()`));
+  assert.equal(result.first, result.due);
+  assert.ok(result.dueScore > result.recentScore);
+  assert.match(result.reason, /間隔重測|破題方向/);
+});
+
+test('教材混合精選不被正式卷題型比例限制，並排除眼刷留到明天的題', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = '114班·實數與數線';
+    const topics = Object.keys(TOPICS).slice(0, 6);
+    const added = Array.from({length:18}, (_, i) => ({
+      id:'adaptive-test-' + i, topic:topics[i % topics.length], type:'fill', diff:i % 3 + 1,
+      q:'自適應教材測試題 ' + i, ans:[String(i)], sol:'解', src:source, role:i % 4 === 0 ? 'example' : 'unclassified'
+    }));
+    BANK.push(...added); BANK_MAP = null;
+    S.visionQueue = [{ qid:added[0].id, stage:'waiting', done:false, due:addDays(today(), 1) }];
+    const queue = adaptiveTextbookQueue(10);
+    const use = {}; queue.forEach((q) => { use[q.topic] = (use[q.topic] || 0) + 1; });
+    return { n:queue.length, types:[...new Set(queue.map((q) => q.type))], held:queue.some((q) => q.id === added[0].id), maxTopic:Math.max(...Object.values(use)) };
+  })()`));
+  assert.equal(result.n, 10);
+  assert.deepEqual(result.types, ['fill']);
+  assert.equal(result.held, false);
+  assert.ok(result.maxTopic <= 2);
+});
+
+test('看過詳解的訂正不冒充獨立答對，猜中與一眼會寫分開處理', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const q = BANK.find((row) => row.topic === 'num');
+    S.attempts = [
+      { qid:q.id, ok:true, mode:'correction', d:today(), ts:1 },
+      { qid:q.id, ok:true, mode:'mixed', confidence:'guess', err:'用猜的', d:addDays(today(), -3), ts:2 },
+    ];
+    S.corrections = [{ entries:[{ qid:q.id, done:true, level:3 }] }];
+    S.visionHistory = [{ qid:q.id, outcome:'obvious', d:today(), ts:3 }];
+    const row = learningSignalIndex().questions.get(q.id);
+    return { n:row.n, ok:row.ok, guess:row.guess, l3:row.l3, obvious:row.obvious };
+  })()`));
+  assert.deepEqual(result, { n:1, ok:.15, guess:1, l3:1, obvious:1 });
 });
 
 test('全真多選採部分計分，模考錯題排到隔天且當天不開放', () => {
@@ -457,6 +525,22 @@ test('GPT-5.5 第一次整卷批改保存對錯、分數與正式答案，但不
   assert.equal(result.hasDetailedFields, false);
 });
 
+test('AI 沒有回傳可信座標時不在卷面假猜紅筆位置', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES[0], q = source.key[0];
+    const raw = { questions:source.key.map((row, i) => ({
+      no:i + 1, page:paperQuestionScanIndex(source, i + 1) + 1, topic:'num', read:'',
+      status:i ? 'correct' : 'incorrect', hasFinalAnswer:true, finalAnswer:'',
+      selectedOptions:row.type === 'fill' ? [] : [i ? row.ans[0] + 1 : ((row.ans[0] + 1) % 5) + 1], points:0, marks:[]
+    })), note:'' };
+    const grade = paperNormalizeAiGrade(source, raw, 'gpt-5.5');
+    return grade.questions[0].marks[0];
+  })()`));
+  assert.deepEqual(result.box, []);
+  assert.equal(result.unlocalized, true);
+});
+
 test('交卷會合成全部單頁、呼叫一次整卷批改並直接進入紅筆唯讀結果', async () => {
   const { context, run } = loadApp();
   context.__app = { innerHTML: '' };
@@ -769,7 +853,7 @@ test('批改卷與隔日訂正都能一鍵隱藏或顯示紅筆，不必忍受�
   assert.equal(result.paints, 2);
 });
 
-test('原版隔日每題可立即查看詳解，內容會快取且看完仍須重算再批改', async () => {
+test('原版隔日每題先保存一次真實重想才可查看詳解，內容會快取且仍須重算再批改', async () => {
   const { run } = loadApp();
   const result = plain(await run(`(async () => {
     save = () => {}; renderPaperAnswerReview = () => {}; paperInkCommitCurrent = () => false;
@@ -790,6 +874,10 @@ test('原版隔日每題可立即查看詳解，內容會快取且看完仍須�
       } };
     };
     await paperReviewDetailed();
+    const lockedCalls = calls, lockedError = paperReview.detailError;
+    state.attempts = 1; state.logs.push({ ts:Date.now(), kind:'retry', direction:'先把條件改寫成內積再建式' });
+    paperReview.detailError = '';
+    await paperReviewDetailed();
     const firstCalls = calls;
     await paperReviewDetailed();
     const cachedCalls = calls;
@@ -797,14 +885,16 @@ test('原版隔日每題可立即查看詳解，內容會快取且看完仍須�
     let verifyLevel = 0; paperReviewGrade = (level) => { verifyLevel = level; };
     paperReviewFinishDetailed();
     return {
-      firstCalls, cachedCalls, done:state.done, verifyLevel,
+      lockedCalls, lockedError, firstCalls, cachedCalls, done:state.done, verifyLevel,
       firstError:detail.firstError, solution:detail.solution,
       answer:detail.answer, official:paperFinalAnswerText(source.key[no - 1]),
       mark:detail.marks[0].label, unlocked:!!state.solutionUnlockedAt,
       detailViewCount:state.detailViewCount, firstOpened:!!state.detailFirstOpenedAt,
     };
   })()`));
-  assert.equal(result.firstCalls, 1, '第一次按鈕立即產生本題詳解');
+  assert.equal(result.lockedCalls, 0, '沒有重想紀錄時不得呼叫詳解 API');
+  assert.match(result.lockedError, /先在卷面留下新的重算|真實重想/);
+  assert.equal(result.firstCalls, 1, '保存一次真實重想後才產生本題詳解');
   assert.equal(result.cachedCalls, 1, '再次打開沿用已保存詳解，不重複花 API');
   assert.equal(result.done, false, '看完詳解不能直接算完成，仍要把重算寫回原卷');
   assert.equal(result.verifyLevel, 3, '第三級也必須再經一次卷面 AI 驗證');
@@ -817,26 +907,21 @@ test('原版隔日每題可立即查看詳解，內容會快取且看完仍須�
   assert.equal(result.firstOpened, true);
 });
 
-test('舊版詳解閘門 403 會安全同步後只重試一次，不製造假的重想次數', async () => {
+test('後端拒絕詳解時不再製造假的 detail-gate 繞過老師流程', async () => {
   const { run } = loadApp();
   const result = plain(await run(`(async () => {
     save = () => {}; renderPaperAnswerReview = () => {}; paperInkCommitCurrent = () => false;
     paperInkJournalDrain = async () => true; paperInkPersist = async () => true;
     let syncCalls = 0; syncPush = async () => { syncCalls++; };
     const source = PAPER_SOURCES[0], no = 2;
-    const state = { done:false, attempts:0, logs:[] };
+    const state = { done:false, attempts:1, logs:[{ ts:Date.now(), kind:'retry', direction:'先把條件拆成兩段再建式' }] };
     const row = { id:'legacy-detail-gate', sourceId:source.id, due:today(), mt:1, review:{ [no]:state } };
     paperReview = { source, run:row, urls:[], inkPages:{}, nos:[no], i:0, detailLoading:false, detailError:'' };
     paperReviewPageComposite = async () => 'composite';
     const receivedLogs = []; let calls = 0;
     paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
       calls++; receivedLogs.push(logs.length);
-      if (calls === 1) throw new Error('本題詳解尚未開放：必須先保存一次重想。');
-      return { model:'gpt-5.5', json:{
-        readable:true, read:'重試成功', firstError:null, errorKind:null,
-        explanation:'完整說明', solution:['步驟一'], answer:'模型答案',
-        nextTime:'辨識條件', marks:[],
-      } };
+      throw new Error('本題詳解尚未開放：必須先保存一次重想。');
     };
     await paperReviewDetailed();
     return {
@@ -846,17 +931,17 @@ test('舊版詳解閘門 403 會安全同步後只重試一次，不製造假的
       hasDetail:!!state.aiDetail, error:paperReview.detailError,
     };
   })()`));
-  assert.equal(result.calls, 2, '舊閘門只允許一次相容重試');
-  assert.equal(result.syncCalls, 2, '第一次請求前與相容標記後都完成同步');
-  assert.deepEqual(result.receivedLogs, [0, 0], '相容標記不應送進 AI 的重想內容');
-  assert.equal(result.attempts, 0, '查看詳解不冒充一次數學重想');
-  assert.equal(result.gateLogs, 1);
-  assert.equal(result.retryCount, 0, '合併統計不得把相容標記算成重想');
-  assert.equal(result.hasDetail, true);
-  assert.equal(result.error, '');
+  assert.equal(result.calls, 1, '後端拒絕後不得塞假紀錄再試');
+  assert.equal(result.syncCalls, 1);
+  assert.deepEqual(result.receivedLogs, [1], '只送出真正的重想紀錄');
+  assert.equal(result.attempts, 1);
+  assert.equal(result.gateLogs, 0);
+  assert.equal(result.retryCount, 1);
+  assert.equal(result.hasDetail, false);
+  assert.match(result.error, /尚未開放/);
 });
 
-test('原版隔日訂正使用全頁可寫工作台，每題固定顯示可收合詳解按鈕', () => {
+test('原版隔日訂正使用全頁可寫工作台，每題保留詳解入口但先鎖到真實重想後', () => {
   const { context, run } = loadApp();
   context.__app = { innerHTML: '' };
   context.document.querySelector = (selector) => selector === '#app' ? context.__app : null;
@@ -879,9 +964,12 @@ test('原版隔日訂正使用全頁可寫工作台，每題固定顯示可收�
   assert.match(result.locked, /id='paper-ai-toggle'/);
   assert.match(result.locked, /隱藏紅筆/);
   assert.match(result.locked, /id='paper-detail-shortcut'/);
-  assert.match(result.locked, /看第 2 題詳解/);
+  assert.match(result.locked, /先留下一次重想/);
+  assert.match(result.locked, /paper-detail-shortcut[^>]*disabled/);
+  assert.match(result.locked, /id='paper-review-direction'/);
+  assert.match(result.locked, /id='paper-review-topic'/);
   assert.match(result.locked, /寫完了，AI 再批改/);
-  assert.doesNotMatch(result.locked, /paper-review-layout|paper-review-direction/);
+  assert.doesNotMatch(result.locked, /paper-review-layout/);
   assert.match(result.detailed, /完整解法與第一個錯誤/);
   assert.match(result.detailed, /第二行符號寫反/);
   assert.match(result.detailed, /重新產生詳解/);
@@ -893,9 +981,44 @@ test('隔日訂正入口明確說明在紅筆卷上作答，不再沿用唯讀�
   const { run } = loadApp();
   const source = run('String(renderCorrections)');
   assert.match(source, /在紅筆卷上開始訂正/);
-  assert.match(source, /每一道錯題都可一按查看本題詳解/);
-  assert.match(source, /看過後仍要重算並再次批改/);
+  assert.match(source, /每題都保留詳解入口，但先完成一次真實重想/);
+  assert.match(source, /留下單元與卡點後，才可一按打開本題詳解/);
   assert.doesNotMatch(source, /開始原卷盲訂正/);
+});
+
+test('空白訂正不能灌水解鎖詳解，單元與具體卡點可保存成一次真實重想', async () => {
+  const { context, run } = loadApp();
+  context.__reviewDirection = { value:'' };
+  context.__reviewTopic = { value:'' };
+  context.__reviewConcept = { value:'' };
+  context.document.querySelector = (selector) => ({
+    '#paper-review-direction':context.__reviewDirection,
+    '#paper-review-topic':context.__reviewTopic,
+    '#paper-review-concept':context.__reviewConcept,
+  })[selector] || null;
+  const result = plain(await run(`(async () => {
+    save = () => {}; renderPaperAnswerReview = () => {}; paperSourceUpdateExtMock = () => {};
+    paperInkCommitCurrent = () => false; paperInkJournalDrain = async () => true; paperInkPersist = async () => true;
+    const source = PAPER_SOURCES[0], no = 2;
+    const state = { done:false, attempts:0, logs:[] };
+    const row = { id:'effort-gate', sourceId:source.id, due:today(), mt:1, review:{ [no]:state } };
+    const inkRun = paperReviewInkRun(row);
+    paperReview = { source, run:row, urls:[], baseInkPages:{}, inkPages:{0:{s:[],deleted:new Set(),dirty:false}}, inkRun, nos:[no], i:0, grading:false, gradeError:'', effortBaseline:new Set() };
+    paperSourceSession = { source, run:row, inkRun, inkPages:paperReview.inkPages, page:0, reviewMode:true };
+    await paperReviewStuckWorkspace();
+    const blank = { attempts:state.attempts, logs:state.logs.length, error:paperReview.gradeError };
+    __reviewTopic.value = 'prob'; __reviewConcept.value = '不知道如何判斷事件是否獨立';
+    await paperReviewStuckWorkspace();
+    return { blank, saved:{ attempts:state.attempts, log:state.logs[0], error:paperReview.gradeError } };
+  })()`));
+  assert.deepEqual(result.blank.attempts, 0);
+  assert.deepEqual(result.blank.logs, 0);
+  assert.match(result.blank.error, /真實重想/);
+  assert.equal(result.saved.attempts, 1);
+  assert.equal(result.saved.log.kind, 'retry');
+  assert.equal(result.saved.log.topic, 'prob');
+  assert.match(result.saved.log.concept, /事件是否獨立/);
+  assert.equal(result.saved.error, '');
 });
 
 test('隔日訂正筆跡使用獨立 namespace，不會覆蓋考試原稿', () => {
@@ -923,7 +1046,7 @@ test('隔日卷面重算通過 AI 再批改後，才列為第二級並進下一�
     const row = { id:'verify-flow', sourceId:source.id, due:today(), mt:1, review:{ [no]:state, [nextNo]:{done:false,attempts:0,logs:[]} } };
     const inkRun = paperReviewInkRun(row);
     paperReview = { source, run:row, urls:[], baseInkPages:{}, inkPages:{}, inkRun, nos:[no,nextNo], i:0, grading:false, gradeError:'' };
-    paperSourceSession = { source, run:row, inkRun, inkPages:{0:{s:[],deleted:new Set(),dirty:false}}, page:0, reviewMode:true };
+    paperSourceSession = { source, run:row, inkRun, inkPages:{0:{s:[{id:'new-work',t0:2,pts:[[.1,.1,.5],[.2,.2,.5]]}],deleted:new Set(),dirty:false}}, page:0, reviewMode:true };
     await paperReviewGrade(2);
     const before = { done:state.done, pending:state.pendingLevel, correct:state.correctionGrade.correct, i:paperReview.i };
     paperReviewAcceptCorrection();
@@ -952,11 +1075,12 @@ test('隔日訂正保存失敗時不呼叫逐題詳解，也不離開可寫卷�
     save = () => {}; renderPaperAnswerReview = () => {}; paperInkCommitCurrent = () => false;
     paperInkJournalDrain = async () => false; paperInkPersist = async () => false;
     const source = PAPER_SOURCES[0], no = 2;
-    const state = { done:false, attempts:0, logs:[] };
+    const state = { done:false, attempts:1, logs:[{ ts:Date.now(), kind:'retry', direction:'先整理條件再建式' }] };
     const row = { id:'save-failure', sourceId:source.id, due:today(), mt:1, review:{ [no]:state } };
     const inkRun = paperReviewInkRun(row);
     paperReview = { source, run:row, urls:[], baseInkPages:{}, inkPages:{0:{s:[],deleted:new Set(),dirty:true}}, inkRun, nos:[no], i:0, grading:false, gradeError:'' };
     paperSourceSession = { source, run:row, inkRun, inkPages:paperReview.inkPages, page:0, reviewMode:true };
+    paperReviewCurrentEffort = () => ({ meaningful:true, strokes:1, direction:'先整理條件再建式', topic:'', concept:'' });
     let detailCalls = 0; paperAiDetailCall = async () => { detailCalls++; return {}; };
     await paperReviewDetailed();
     const detail = { calls:detailCalls, saved:!!state.aiDetail, error:paperReview.detailError };
@@ -968,7 +1092,7 @@ test('隔日訂正保存失敗時不呼叫逐題詳解，也不離開可寫卷�
   assert.equal(result.detail.calls, 0);
   assert.equal(result.detail.saved, false);
   assert.match(result.detail.error, /尚未安全保存/);
-  assert.equal(result.stuck.attempts, 0);
+  assert.equal(result.stuck.attempts, 1, '保存失敗不得新增重想次數');
   assert.match(result.stuck.error, /尚未安全保存/);
   assert.equal(result.stuck.stillOpen, true);
   assert.equal(result.left, false);
@@ -1030,7 +1154,27 @@ test('完整模考二十題全部進三級報告，考場答對題直接列第�
     return { total:batch.entries.length, counts:correctionCounts(batch) };
   })()`));
   assert.equal(result.total, 20);
-  assert.deepEqual(result.counts, { open: 8, l1: 12, l2: 0, l3: 0 });
+  assert.deepEqual(result.counts, { open: 8, l1: 12, l2: 0, l3: 0, retentionDue:0, retentionPending:0, retentionPassed:0 });
+});
+
+test('第二三級完成後經 2 日與再 7 日兩次獨立答對才算保留', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    save = () => {}; S.attempts = []; S.wrong = {};
+    const q = BANK.find((row) => row.type === 'fill');
+    const entry = { qid:q.id, done:true, level:3, completedAt:1, retentionStage:0, retentionDue:today(), retentionPassed:false };
+    const batch = { id:'retention', entries:[entry], mt:1 };
+    S.corrections = [batch];
+    recordAttempt(q, true, 50000, null, 'adaptive-textbook');
+    const afterTwoDays = { stage:entry.retentionStage, due:entry.retentionDue, passed:!!entry.retentionPassed };
+    entry.retentionDue = today();
+    recordAttempt(q, true, 45000, null, 'adaptive-textbook');
+    return { afterTwoDays, final:{ stage:entry.retentionStage, due:entry.retentionDue, passed:entry.retentionPassed, logs:entry.retentionLogs.length } };
+  })()`));
+  assert.equal(result.afterTwoDays.stage, 1);
+  assert.equal(result.afterTwoDays.passed, false);
+  assert.match(result.afterTwoDays.due, /^\d{4}-\d{2}-\d{2}$/);
+  assert.deepEqual(result.final, { stage:2, due:null, passed:true, logs:2 });
 });
 
 test('模考交卷當天只顯示分數與錯題號，不洩漏答案、章節或詳解', () => {

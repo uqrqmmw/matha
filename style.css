@@ -207,6 +207,25 @@ label.opt.block input { margin-right: 8px; accent-color: var(--accent); }
   font-size: 13px; color: var(--dim); margin: 2px 0 4px; flex-wrap: wrap; gap: 4px;
 }
 .session-head .shr { display: flex; align-items: center; gap: 4px; }
+.selection-reason {
+  display: grid; grid-template-columns: 20px auto minmax(0, 1fr); align-items: center; gap: 8px;
+  margin: 8px 0 12px; padding: 9px 12px; border: 1px solid #d8d2c8; border-radius: 8px;
+  background: #f3f0ea; color: #5c544d; font-size: 13px;
+}
+.selection-reason .ui-icon { width: 18px; height: 18px; color: var(--accent); }
+.selection-reason b { color: var(--text); }
+.adaptive-textbook-card {
+  display: flex; align-items: center; justify-content: space-between; gap: clamp(18px, 4vw, 52px);
+  min-height: 180px; padding: clamp(22px, 3vw, 38px);
+}
+.adaptive-textbook-card > div { max-width: 760px; }
+.adaptive-textbook-card h2 { margin: 7px 0 10px; font-size: clamp(24px, 2.3vw, 34px); }
+.adaptive-textbook-card p { font-size: clamp(15px, 1.3vw, 18px); line-height: 1.75; }
+.adaptive-textbook-card > .btn { flex: 0 0 auto; min-width: 190px; min-height: 58px; }
+@media (max-width: 780px) {
+  .adaptive-textbook-card { align-items: stretch; flex-direction: column; }
+  .adaptive-textbook-card > .btn { width: 100%; }
+}
 .timer { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 17px; color: var(--text); }
 .timebar { height: 4px; background: var(--panel2); border-radius: 3px; overflow: hidden; margin-bottom: 6px; }
 .timebar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.25s linear; }
@@ -276,6 +295,29 @@ button.bk-opt { appearance: none; border: 0; background: transparent; color: inh
 .qtext { font-size: 17px; margin-bottom: 12px; }
 .qfig { margin: 10px auto 4px; text-align: center; }
 .qfig svg { max-width: min(100%, 460px); height: auto; background: #fff; }
+.private-qfig { margin-block: 18px 10px; min-height: 120px; }
+.private-qfig > img {
+  display: block; max-width: min(100%, 760px); max-height: 52vh; width: auto; height: auto;
+  margin: 0 auto; object-fit: contain; background: #fff; border: 1px solid var(--paper-border);
+}
+.private-qfig-status {
+  display: grid; place-items: center; min-height: 120px; padding: 18px;
+  color: var(--dim); background: rgba(255,255,255,.72); border: 1px dashed var(--paper-border);
+}
+.private-qfig-actions { position: relative; z-index: 4; display: flex; justify-content: center; margin-top: 8px; }
+.private-figure-overlay {
+  position: fixed; inset: 0; z-index: 1000; overflow: auto; padding: 68px 24px 40px;
+  background: rgba(31,29,27,.92); touch-action: pan-x pan-y pinch-zoom; overscroll-behavior: contain;
+}
+.private-figure-overlay > img {
+  display: block; width: auto; min-width: min(94vw, 820px); max-width: none; max-height: none;
+  margin: 0 auto; background: #fff; box-shadow: 0 18px 60px rgba(0,0,0,.35);
+}
+.private-figure-close {
+  position: fixed; top: 14px; right: 18px; z-index: 1; min-width: 72px; min-height: 44px;
+  border: 1px solid rgba(255,255,255,.45); border-radius: 8px; color: #fff; background: #514a44;
+  font: inherit; font-weight: 700;
+}
 .qtext.big { font-size: 26px; text-align: center; padding: 12px 0; }
 .ansrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; flex-direction: column; align-items: stretch; }
 /* 速訓選項＝整寬大目標，別繼承「動作鈕靠右」變成右緣一條窄欄 */
@@ -1551,6 +1593,27 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 }
 .paper-review-session > .paper-finish-bar .paper-result-actions { flex-wrap: wrap; }
 .paper-review-session > .paper-finish-bar .paper-result-actions .btn { min-height: 46px; }
+.paper-review-effort {
+  min-width: min(330px, 100%); border: 1px solid #c8bdb0; border-radius: 8px; background: rgba(246, 243, 237, .96);
+}
+.paper-review-effort > summary {
+  min-height: 44px; display: flex; align-items: center; padding: 7px 12px; color: #5d554c;
+  font-size: 13px; font-weight: 650; cursor: pointer; user-select: none;
+}
+.paper-review-effort[open] { width: min(540px, calc(100vw - 40px)); }
+.paper-review-effort > div {
+  display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(140px, .8fr); gap: 8px;
+  padding: 0 10px 10px; border-top: 1px solid #d8cfc4;
+}
+.paper-review-effort label { min-width: 0; display: grid; gap: 4px; padding-top: 8px; color: var(--dim); font-size: 11px; }
+.paper-review-effort label:first-child { grid-row: span 2; }
+.paper-review-effort textarea,
+.paper-review-effort select,
+.paper-review-effort input {
+  width: 100%; min-height: 44px; box-sizing: border-box; border: 1px solid #bdb1a3; border-radius: 7px;
+  padding: 8px 10px; background: #fffefa; color: var(--text); font: inherit; font-size: 14px;
+}
+.paper-review-effort textarea { min-height: 96px; resize: vertical; }
 .paper-review-toast {
   position: absolute; z-index: 7; left: max(12px, env(safe-area-inset-left)); bottom: max(76px, calc(env(safe-area-inset-bottom) + 76px));
   width: min(470px, calc(100vw - 24px)); display: grid; gap: 2px; padding: 10px 14px;
@@ -1597,6 +1660,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
   .paper-review-session .paper-workgroup.right { grid-column: 2; grid-row: 1; }
   .paper-review-session > .paper-finish-bar { right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); }
   .paper-review-session > .paper-finish-bar > span { display: none; }
+  .paper-review-effort[open] { width: min(520px, calc(100vw - 32px)); }
   .paper-detail-drawer {
     top: auto; left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right));
     bottom: max(72px, calc(env(safe-area-inset-bottom) + 72px)); width: auto; max-height: 52dvh;
@@ -1616,6 +1680,9 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
   .paper-session-shell .paper-save-status { max-width: 92px; }
   .paper-detail-shortcut span { display: none; }
   .paper-detail-shortcut { min-width: 44px; padding-inline: 10px; }
+  .paper-review-effort > div { grid-template-columns: 1fr; }
+  .paper-review-effort label:first-child { grid-row: auto; }
+  .paper-review-effort textarea { min-height: 76px; }
   .paper-recovery-grid { grid-template-columns: 1fr; }
 }
 

@@ -58,6 +58,7 @@ function loadApp() {
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'bank.js'), 'utf8'), context, { filename: 'bank.js' });
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'practice-bank.js'), 'utf8'), context, { filename: 'practice-bank.js' });
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'textbook-catalog.js'), 'utf8'), context, { filename: 'textbook-catalog.js' });
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'), context, { filename: 'app.js' });
   return {
     context,

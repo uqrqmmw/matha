@@ -1,5 +1,3 @@
-import { createClient } from "npm:@supabase/supabase-js@2.110.6";
-
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ||
@@ -32,6 +30,35 @@ function reply(origin: string, status: number, body: Record<string, unknown>) {
   });
 }
 
+async function supabaseJson(
+  path: string,
+  key: string,
+  authorization: string,
+  init: RequestInit = {},
+) {
+  const response = await fetch(`${SUPABASE_URL}${path}`, {
+    ...init,
+    headers: {
+      apikey: key,
+      Authorization: authorization,
+      Accept: "application/json",
+      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(init.headers || {}),
+    },
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const record = data && typeof data === "object"
+      ? data as Record<string, unknown>
+      : {};
+    throw new Error(String(
+      record.message || record.msg || record.error_description ||
+        `Supabase ${response.status}`,
+    ));
+  }
+  return data;
+}
+
 Deno.serve(async (req: Request) => {
   const origin = req.headers.get("origin") || "";
   if (origin && !allowedOrigins.has(origin)) {
@@ -52,39 +79,67 @@ Deno.serve(async (req: Request) => {
     return reply(origin, 401, { message: "請先登入再建立配對連結" });
   }
 
-  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: authorization } },
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  const { data: userData, error: userError } = await userClient.auth.getUser();
-  const email = userData.user?.email;
-  if (userError || !email) {
+  let user: Record<string, unknown>;
+  try {
+    user = await supabaseJson(
+      "/auth/v1/user",
+      SUPABASE_ANON_KEY,
+      authorization,
+    ) as Record<string, unknown>;
+  } catch (_) {
+    return reply(origin, 401, { message: "登入狀態已失效，請重新登入" });
+  }
+  const email = typeof user.email === "string" ? user.email : "";
+  const userId = typeof user.id === "string" ? user.id : "";
+  if (!email || !userId) {
     return reply(origin, 401, { message: "登入狀態已失效，請重新登入" });
   }
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
   // 與資料層同一份白名單（app_users）：未核可帳號連配對碼也不給，別留第二套授權標準
-  const userId = String(userData.user?.id || "");
-  const { data: approved } = await admin
-    .from("app_users")
-    .select("enabled")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (!approved || approved.enabled !== true) {
+  let approved: Array<Record<string, unknown>> = [];
+  try {
+    approved = await supabaseJson(
+      `/rest/v1/app_users?select=enabled&user_id=eq.${
+        encodeURIComponent(userId)
+      }&limit=1`,
+      SUPABASE_SERVICE_ROLE_KEY,
+      `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    ) as Array<Record<string, unknown>>;
+  } catch (_) {
+    return reply(origin, 502, { message: "目前無法核對帳號權限" });
+  }
+  if (!Array.isArray(approved) || approved[0]?.enabled !== true) {
     return reply(origin, 403, { message: "這個帳號尚未被核可使用本系統" });
   }
-  const { data, error } = await admin.auth.admin.generateLink({
-    type: "magiclink",
-    email,
-    options: { redirectTo: APP_REDIRECT_URL },
-  });
-  const tokenHash = data?.properties?.hashed_token;
-  if (error || !tokenHash) {
+
+  let link: Record<string, unknown>;
+  try {
+    link = await supabaseJson(
+      "/auth/v1/admin/generate_link",
+      SUPABASE_SERVICE_ROLE_KEY,
+      `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          type: "magiclink",
+          email,
+          redirect_to: APP_REDIRECT_URL,
+        }),
+      },
+    ) as Record<string, unknown>;
+  } catch (error) {
     return reply(origin, 502, {
-      message: error?.message || "無法建立一次性配對碼",
+      message: error instanceof Error ? error.message : "無法建立一次性配對碼",
     });
+  }
+  const properties = link.properties && typeof link.properties === "object"
+    ? link.properties as Record<string, unknown>
+    : link;
+  const tokenHash = typeof properties.hashed_token === "string"
+    ? properties.hashed_token
+    : "";
+  if (!tokenHash) {
+    return reply(origin, 502, { message: "配對服務沒有回傳一次性代碼" });
   }
 
   return reply(origin, 200, {

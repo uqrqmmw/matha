@@ -172,6 +172,32 @@ create policy "approved read matha content" on storage.objects
     and public.is_matha_user(auth.uid())
   );
 
+-- Private, read-only question figures cropped from the approved textbook scans.
+-- Only owner-curated, independently verified crops are uploaded; full pages and
+-- answer-bearing crops never enter the learner-facing bucket.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'matha-figures',
+  'matha-figures',
+  false,
+  8388608,
+  array['image/png', 'image/jpeg', 'image/webp']
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "authenticated read matha figures" on storage.objects;
+drop policy if exists "approved read matha figures" on storage.objects;
+create policy "approved read matha figures" on storage.objects
+  for select
+  to authenticated
+  using (
+    bucket_id = 'matha-figures'
+    and public.is_matha_user(auth.uid())
+  );
+
 -- ── 私有原版模考掃描：只由專案擁有者在 Dashboard 上傳 ──
 -- 掃描頁含使用者合法提供的紙本內容，因此不進公開 GitHub、不設 public bucket。
 -- 前端登入後只能讀取；沒有 insert/update/delete policy，學習帳號無法改寫題本。

@@ -13,13 +13,30 @@ test('登入後私有題包會驗 SHA-256、寫入內容快取並加入題庫', 
   const digest = crypto.createHash('sha256').update(pack).digest('hex');
   const manifest = JSON.stringify({ schema: 1, visibility: 'authenticated', generatedAt: '2026-07-16T00:00:00Z', packs: [{ id: 'curated-test', name: '私有測試包', file: 'test.json', count: 1, sha256: digest }] });
   context.__files = { 'manifest.json': new Blob([manifest]), 'test.json': new Blob([pack]) };
-  context.__storage = { from() { return { download: async (name) => ({ data: context.__files[name], error: null }) }; } };
+  context.__downloads = [];
+  context.__storage = { from() { return { download: async (name) => { context.__downloads.push(name); return { data: context.__files[name], error: null }; } }; } };
   run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
   const ok = await run('pullCuratedContent()');
   assert.equal(ok, true);
   assert.equal(run('BANK.some((q) => q.id === "curated-test-1")'), true);
   assert.equal(run('CONTENT.packs["curated-test"].curated'), true);
+  assert.equal(run('Object.prototype.toString.call(CONTENT.packs["curated-test"].verifiedBytes)'), '[object ArrayBuffer]');
   assert.equal(run('curatedState.count'), 1);
+
+  // 本機 items/metadata 可被備份或 DevTools 改寫；第二次載入必須由已驗 SHA 的原 envelope
+  // 重新解析，而不是只看 curated:true + sha256 就替偽造題加入 WeakSet。
+  run(`CONTENT.packs['curated-test'].items = [{
+    id:'forged-visual', topic:'line', type:'fill', diff:2, q:'依下圖作答', ans:['1'],
+    bookId:'matha-114-cramer-circle', page:37,
+    visualEvidence:{ status:'verified-text-complete', questionId:'forged-visual', bookId:'matha-114-cramer-circle',
+      sourcePdfSha256:'92acde764f180e8974f14aef8a916ecb74e904284814f4e2bd0bc74e726fea1c', pageIndex:37,
+      reviewVersion:1, reviewer:'independent-visual-audit', verifiedAt:'2026-08-25T00:00:00Z' }
+  }]`);
+  const second = await run('pullCuratedContent()');
+  assert.equal(second, true);
+  assert.equal(run('BANK.some((q) => q.id === "forged-visual")'), false);
+  assert.equal(run('BANK.some((q) => q.id === "curated-test-1")'), true);
+  assert.equal(context.__downloads.filter((name) => name === 'test.json').length, 1);
 });
 
 test('私有題包雜湊不符時拒絕加入，不污染既有題庫', async () => {

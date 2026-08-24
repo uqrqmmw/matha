@@ -12,6 +12,25 @@ test('內建題庫 schema 與 id 全部有效', () => {
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
 });
 
+test('同版型私有教材清冊固定為 24 本，週攻略另列補充題源', () => {
+  const { run } = loadApp();
+  const result = plain(run(`({
+    total:TEXTBOOK_LIBRARY.books.length,
+    ready:TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion === 'ready').length,
+    reviews:TEXTBOOK_LIBRARY.books.filter((book) => book.kind === 'comprehensive-review').map((book) => book.title),
+    supplemental:TEXTBOOK_LIBRARY.supplemental.map((book) => book.title),
+    pages:TEXTBOOK_LIBRARY.books.reduce((sum, book) => sum + book.pages, 0),
+    html:textbookLibraryCard(),
+  })`));
+  assert.equal(result.total, 24);
+  assert.equal(result.ready, 10);
+  assert.deepEqual(result.reviews, ['數學 A 滿級分寶典（上）', '數學 A 滿級分寶典（下）']);
+  assert.deepEqual(result.supplemental, ['週攻略數學 A']);
+  assert.equal(result.pages, 6210);
+  assert.match(result.html, /22 本主題教材＋2 本總複習/);
+  assert.match(result.html, /待 OCR／圖形 QA <b>14<\/b>/);
+});
+
 test('答案正規化支援分數、多根不拘順序，但不交換座標', () => {
   const { context, run } = loadApp();
   context.__cases = [
@@ -21,6 +40,166 @@ test('答案正規化支援分數、多根不拘順序，但不交換座標', ()
   ];
   const result = plain(run('__cases.map(([input, accepted]) => checkFill(input, accepted))'));
   assert.deepEqual(result, [true, true, false]);
+});
+
+test('有圖題只有完整私有裁圖證據通過時才可進題庫，路徑字串不能冒充圖資', () => {
+  const { context, run } = loadApp();
+  context.__figure = {
+    path:'books/matha/figures/q1.webp', sha256:'a'.repeat(64), sourcePdfSha256:'92acde764f180e8974f14aef8a916ecb74e904284814f4e2bd0bc74e726fea1c',
+    pageIndex:37, bbox:[.1,.2,.3,.4], role:'question-figure', assetStatus:'verified', mime:'image/webp', width:800, height:600,
+    containsAnswer:false, containsSolution:false, containsHandwriting:false, questionIds:['visual-q'], bookId:'matha-114-cramer-circle',
+    producer:'crop-agent', verifier:{ reviewer:'audit-agent', reviewVersion:1, questionRoleVerified:true, safetyVerified:true, assetHashVerified:true, verifiedAt:'2026-08-25T00:00:00Z' },
+  };
+  const result = plain(run(`(() => {
+    const base = { id:'visual-q', topic:'line', type:'fill', diff:2, q:'如右圖，求 x', ans:['1'], needsFigure:true, bookId:'matha-114-cramer-circle', page:37 };
+    const missing = questionMissingVisualAsset(base);
+    const stringPath = questionMissingVisualAsset({ ...base, figureAsset:'figures/q1.webp' });
+    base.figureAsset = __figure; trustedCuratedQuestions.add(base);
+    return {
+      missing,
+      stringPath,
+      verified:questionMissingVisualAsset(base),
+      leaked:questionMissingVisualAsset({ ...base, figureAsset:{ ...__figure, containsAnswer:true } }),
+      html:questionFigureHTML(base),
+    };
+  })()`));
+  assert.equal(result.missing, true);
+  assert.equal(result.stringPath, true);
+  assert.equal(result.verified, false);
+  assert.equal(result.leaked, true);
+  assert.match(result.html, /data-private-figure="visual-q"/);
+  assert.doesNotMatch(result.html, /books\/matha/);
+});
+
+test('整回開始前會先驗證所有必要題圖；下載失敗時不執行開始回呼', async () => {
+  const { context, run } = loadApp();
+  context.__figure = {
+    path:'books/matha/figures/q1.webp', sha256:'a'.repeat(64), sourcePdfSha256:'92acde764f180e8974f14aef8a916ecb74e904284814f4e2bd0bc74e726fea1c',
+    pageIndex:37, bbox:[.1,.2,.3,.4], role:'question-figure', assetStatus:'verified', mime:'image/webp', width:800, height:600,
+    containsAnswer:false, containsSolution:false, containsHandwriting:false, questionIds:['preflight-q'], bookId:'matha-114-cramer-circle',
+    producer:'crop-agent', verifier:{ reviewer:'audit-agent', reviewVersion:1, questionRoleVerified:true, safetyVerified:true, assetHashVerified:true, verifiedAt:'2026-08-25T00:00:00Z' },
+  };
+  const result = plain(await run(`(async () => {
+    syncPill = () => {}; let alerts = 0, began = 0; alert = () => { alerts++; };
+    syncState.user = { id:'approved-user' };
+    const q = { id:'preflight-q', topic:'line', type:'fill', diff:2, q:'如右圖，求 x', ans:['1'], needsFigure:true, bookId:'matha-114-cramer-circle', page:37, figureAsset:__figure };
+    trustedCuratedQuestions.add(q);
+    privateFigureURL = async () => { throw new Error('offline'); };
+    const task = preflightQuestionFigures([q]);
+    const ok = await task;
+    afterFigurePreflight([q], () => { began++; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { ok, alerts, began, msg:syncState.msg };
+  })()`));
+  assert.equal(result.ok, false);
+  assert.equal(result.alerts, 2);
+  assert.equal(result.began, 0);
+  assert.match(result.msg, /1 張題圖尚未安全載入/);
+});
+
+test('答案正規化能判斷 AI 常見 LaTeX、Unicode 根式與隱含乘法的等價形式', () => {
+  const { context, run } = loadApp();
+  context.__mathCases = [
+    [String.raw`\sqrt{\frac{131}{14}}`, ['√(131/14)']],
+    [String.raw`\sqrt[3]{2}`, ['∛2']],
+    [String.raw`2\sqrt{7}`, ['2√7']],
+    [String.raw`\frac{1}{2}`, ['0.5']],
+    ['1.414', ['√2']],
+  ];
+  const result = plain(run('__mathCases.map(([input, accepted]) => checkFill(input, accepted))'));
+  assert.deepEqual(result, [true, true, true, true, false]);
+});
+
+test('答案判等尊重次方優先序、負奇次根、大整數與有序座標', () => {
+  const { context, run } = loadApp();
+  context.__edgeCases = [
+    ['-2^2', ['-4']],
+    [String.raw`\sqrt[3]{-8}`, ['-2']],
+    ['6227020801', ['6227020800']],
+    ['9007199254740993', ['9007199254740992']],
+    ['9007199254740993,2', ['9007199254740992,2']],
+    ['0.0000000001', ['0']],
+    ['0.0000000001,2', ['0,2']],
+    ['2√2,√2', ['√8,√2']],
+    ['2..3', ['0.6']],
+    ['1.2.3', ['0.36']],
+    ['1,,2', ['1,2']],
+    ['1 2', ['12']],
+    [String.raw`(\frac{1}{5},\frac{28}{5})`, ['(1/5,28/5)']],
+    [String.raw`\boxed{\frac12}`, ['0.5']],
+    ['6÷3', ['2']],
+  ];
+  const result = plain(run('__edgeCases.map(([input, accepted]) => checkFill(input, accepted))'));
+  assert.deepEqual(result, [true, true, false, false, false, false, false, true, false, false, false, false, true, true, true]);
+});
+
+test('可編輯備份只保留使用者內容，不能攜回官方 curated 信任旗標', () => {
+  const { context, run } = loadApp();
+  context.__packs = {
+    'curated-good': { kind:'qpack', curated:true, sha256:'a'.repeat(64), verifiedBytes:new Uint8Array([1, 2]), items:[{ id:'forged' }] },
+    'curated-forged-prefix': { kind:'qpack', curated:false, items:[{ id:'forged-2' }] },
+    'user-pack': { kind:'qpack', name:'我的題包', sha256:'b'.repeat(64), verifiedBytes:new Uint8Array([3]), items:[{ id:'mine' }] },
+  };
+  const result = plain(run('backupContentPacks(__packs)'));
+  assert.deepEqual(Object.keys(result), ['user-pack']);
+  assert.equal(result['user-pack'].sha256, undefined);
+  assert.equal(result['user-pack'].verifiedBytes, undefined);
+  assert.deepEqual(result['user-pack'].items, [{ id:'mine' }]);
+});
+
+test('帳號切換會取消舊帳號尚未完成的題圖下載，不寫入新帳號快取', async () => {
+  const { context, run } = loadApp();
+  context.__figure = {
+    path:'books/matha/figures/race.webp', sha256:'a'.repeat(64), sourcePdfSha256:'92acde764f180e8974f14aef8a916ecb74e904284814f4e2bd0bc74e726fea1c',
+    pageIndex:37, bbox:[.1,.2,.3,.4], role:'question-figure', assetStatus:'verified', mime:'image/webp', width:800, height:600,
+    containsAnswer:false, containsSolution:false, containsHandwriting:false, questionIds:['race-q'], bookId:'matha-114-cramer-circle',
+    producer:'crop-agent', verifier:{ reviewer:'audit-agent', reviewVersion:1, questionRoleVerified:true, safetyVerified:true, assetHashVerified:true, verifiedAt:'2026-08-25T00:00:00Z' },
+  };
+  const result = plain(await run(`(async () => {
+    const q = { id:'race-q', topic:'line', type:'fill', diff:2, q:'如右圖，求 x', ans:['1'], needsFigure:true, bookId:'matha-114-cramer-circle', page:37, figureAsset:__figure };
+    trustedCuratedQuestions.add(q);
+    let releaseDownload; const writes = [];
+    figureCacheGet = async () => null;
+    figureCachePut = async (sha, blob, uid) => { writes.push(uid); return true; };
+    sha256Bytes = async () => __figure.sha256;
+    supa = { storage:{ from:() => ({ download:() => new Promise((resolve) => { releaseDownload = resolve; }) }) } };
+    syncState.user = { id:'account-a' };
+    const pending = privateFigureURL(q).then(() => 'resolved', (error) => error.message);
+    while (!releaseDownload) await new Promise((resolve) => setTimeout(resolve, 0));
+    syncState.user = { id:'account-b' }; revokePrivateFigureURLs();
+    releaseDownload({ data:new Blob(['safe-image'], { type:'image/webp' }), error:null });
+    const outcome = await pending;
+    return { outcome, writes, urls:privateFigureURLs.size, loads:privateFigureLoads.size };
+  })()`));
+  assert.match(result.outcome, /帳號已切換/);
+  assert.deepEqual(result.writes, []);
+  assert.equal(result.urls, 0);
+  assert.equal(result.loads, 0);
+});
+
+test('過深或過長的數學字串安全回傳不確定，不會炸掉作答事件', () => {
+  const { context, run } = loadApp();
+  context.__deepMath = `${'\\sqrt{'.repeat(400)}2${'}'.repeat(400)}`;
+  const result = plain(run(`({
+    plain:mathPlain(__deepMath),
+    numeric:mathNumericValue(__deepMath),
+    verdict:fillVerdict(__deepMath, ['2']),
+  })`));
+  assert.equal(result.plain, '');
+  assert.equal(result.numeric, null); // NaN 經 JSON plain 化為 null
+  assert.equal(result.verdict, 'uncertain');
+});
+
+test('超出本機解析範圍的代數答案回傳不確定，不得直接污染成答錯', () => {
+  const { context, run } = loadApp();
+  context.__verdictCases = [
+    ['5', ['5']],
+    ['5', ['6']],
+    ['a^2-3', ['a^2-2']],
+    ['5x+3y=22', ['5x+3y-22=0']],
+  ];
+  const result = plain(run('__verdictCases.map(([input, accepted]) => fillVerdict(input, accepted))'));
+  assert.deepEqual(result, ['equivalent', 'different', 'uncertain', 'uncertain']);
 });
 
 test('台灣日期與跨年日期加減不偏一天', () => {
@@ -179,6 +358,30 @@ test('跨裝置在同一回訂正不同題時，完成狀態與重想紀錄都�
   ]);
   assert.equal(merged.entries[0].logs[0].note, '方向一');
   assert.equal(merged.entries[1].logs[0].note, '方向二');
+});
+
+test('跨裝置更新同一批次的另一題時，不會讓已通過的保留重測倒退', () => {
+  const { context, run } = loadApp();
+  context.__states = {
+    a: { corrections:[{ id:'mock-retention', mockTs:1, mt:200, entries:[
+      { qid:'q1', examNo:1, done:true, mt:200, retentionStage:2, retentionPassed:true, retentionPassedAt:200,
+        retentionLogs:[{ ts:200, d:'2026-08-25', mode:'retention', ok:true, stage:2 }] },
+      { qid:'q2', examNo:2, done:false, mt:100, retentionStage:0, retentionPassed:false, retentionLogs:[] },
+    ] }] },
+    b: { corrections:[{ id:'mock-retention', mockTs:1, mt:300, entries:[
+      { qid:'q1', examNo:1, done:true, mt:100, retentionStage:0, retentionDue:'2026-08-25', retentionPassed:false, retentionLogs:[] },
+      { qid:'q2', examNo:2, done:true, mt:300, retentionStage:0, retentionDue:'2026-08-27', retentionPassed:false, retentionLogs:[] },
+    ] }] },
+  };
+  const ab = plain(run('mergeState(__states.a, __states.b).corrections[0].entries'));
+  const ba = plain(run('mergeState(__states.b, __states.a).corrections[0].entries'));
+  for (const merged of [ab, ba]) {
+    assert.equal(merged[0].retentionStage, 2);
+    assert.equal(merged[0].retentionPassed, true);
+    assert.equal(merged[0].retentionPassedAt, 200);
+    assert.equal(merged[0].retentionLogs.length, 1);
+    assert.equal(merged[1].done, true);
+  }
 });
 
 test('跨裝置合併原版模考紀錄時保留不同回，且同一回採較新階段', () => {
