@@ -3835,7 +3835,7 @@ function questionSelectionReason(q, signals) {
         ? '教材章末進階題；目前多次證據顯示可往上伸展'
         : '尚未校準的教材伸展題；確認基本方法能否換到較複雜情境';
     }
-    if (questionIsCoreFallback(q)) return `「${TOPICS[q.topic]}」目前沒有載入已驗證教材題，先用可重算核心題補齊範圍`;
+    if (questionIsCoreFallback(q)) return `「${TOPICS[q.topic]}」目前沒有可用教材題，先用可重算核心題補齊範圍`;
     return '尚未取得你的作答證據';
   }
   if (row.guess) return '曾猜中，不能視為真正掌握';
@@ -8732,9 +8732,13 @@ function adaptiveTextbookQueue(cnt) {
   const readySources = new Set(ready.flatMap((book) => book.sourceNames || []));
   const held = new Set((S.visionQueue || []).filter((entry) => entry && !entry.done && entry.stage === 'waiting').map((entry) => entry.qid));
   const signals = learningSignalIndex();
+  const usableTextbook = (q) => !!q && !questionIsCoreFallback(q) && (readyIds.has(q.bookId) || readySources.has(q.src) || !!(q.bookId || q.src));
+  const textbookTopics = new Set(BANK.filter((q) => usableTextbook(q) && !questionFeedbackBlocked(q)
+    && !(q.src && packIsOff(q.src)) && !questionIsTemporarilyObvious(q, signals)
+    && !questionMissingVisualAsset(q) && !validateQ(q)).map((q) => q.topic));
   let pool = BANK.filter((q) => !held.has(q.id) && !questionFeedbackBlocked(q) && !(q.src && packIsOff(q.src))
     && !questionIsTemporarilyObvious(q, signals)
-    && (readyIds.has(q.bookId) || readySources.has(q.src) || questionIsCoreFallback(q)));
+    && (usableTextbook(q) || (questionIsCoreFallback(q) && !textbookTopics.has(q.topic))));
   if (!pool.length) pool = BANK.filter((q) => !held.has(q.id) && !questionFeedbackBlocked(q) && q.src && !packIsOff(q.src)
     && !questionIsTemporarilyObvious(q, signals));
   const scores = new Map(pool.map((q) => [q.id, questionLearningValue(q, signals)]));

@@ -155,6 +155,32 @@ test('私人教材尚未匯入的單元仍由核心題補位，不因十本題�
   assert.match(result.reason, /間隔重測|核心題補齊範圍/);
 });
 
+test('已匯入的人工核准教材題會取代同單元核心補位題', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const core = BANK.find((q) => questionIsCoreFallback(q) && q.topic === 'line');
+    BANK.length = 0;
+    BANK.push(core, {
+      id:'line-inequality-p067-q3',
+      topic:'line', type:'single', diff:1,
+      q:'點 P(3,4) 到直線 L: 12x - 5y + 10 = 0 的距離為多少？',
+      opts:['1', '26/17', '20/13', '2', '26/7'], ans:[3],
+      bookId:'matha-114-line-inequality', page:69, printedPage:67,
+      src:'matha-114-line-inequality p67', role:'chapter-end-easy'
+    });
+    BANK_MAP = null;
+    const queue = adaptiveTextbookQueue(2);
+    return {
+      ids:queue.map((q) => q.id),
+      hasCore:queue.some((q) => questionIsCoreFallback(q)),
+      reason:questionSelectionReason(queue[0], adaptiveTextbookQueue.lastSignals),
+    };
+  })()`));
+  assert.deepEqual(result.ids, ['line-inequality-p067-q3']);
+  assert.equal(result.hasCore, false);
+  assert.match(result.reason, /教材章末基礎題/);
+});
+
 test('教材角色依目前掌握度走打底、銜接、伸展階梯，不會對斷裂單元硬塞難題', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
