@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
@@ -99,6 +99,13 @@ def _looks_like_choice(text: str) -> bool:
 
 # Measured across both books: banner tags read 219-230, every plain line 255.
 BANNER_BACKGROUND_MAX = 245
+# A previous owner worked several books in pencil, in the gap between the
+# question and its 解答 tag — inside the question span, sometimes carrying the
+# final answer.  Measured against the printed text on the same page, printed
+# diagrams land at 0.87-1.12 and that pencil at 1.19-1.32.  This is a flag, not
+# an eraser: the crop is still produced, but the question drops to needs-repair
+# so a reviewer has to look before it can be approved.
+ANNOTATION_INK_RATIO = 1.18
 AXIS_LABEL_MAX_CHARS = 8
 AXIS_LABEL_REACH = 25
 
@@ -400,10 +407,17 @@ def segment_questions(
         # to the boundary, never discarded: dropping it turned a figure question
         # into a figureless one, which is the failure mode that matters most.
         span_limit = [0, max(0, y_start - 8), width, span_end]
+        printed_ink = page["layout"].get("printedInk") or 0
+        region_ink = page["layout"].get("nonTextInk") or []
         figures = []
+        annotated = 0
         clipped = 0
-        for box in page["layout"]["nonTextRegions"]:
+        for index, box in enumerate(page["layout"]["nonTextRegions"]):
             if not (y_start - 8 <= box[1] < span_end):
+                continue
+            ink = region_ink[index] if index < len(region_ink) else 0
+            if printed_ink and ink and ink / printed_ink >= ANNOTATION_INK_RATIO:
+                annotated += 1
                 continue
             grown = expand_figure_box(box, span_lines, span_limit)
             if grown[3] - grown[1] < 24 or grown[2] - grown[0] < 24:
@@ -434,6 +448,8 @@ def segment_questions(
             flags.append("solution-not-on-this-page")
         if context["section"] == "drill" and tier is None:
             flags.append("tier-unknown")
+        if annotated:
+            flags.append("annotation-suspected-in-question")
         if clipped:
             flags.append("figure-clipped-at-answer-boundary")
         if DRAWING_TASK_RE.search(stem_text):

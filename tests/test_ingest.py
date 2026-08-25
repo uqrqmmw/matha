@@ -37,14 +37,19 @@ def line(text, x0, y0, x1=None, y1=None, score=0.9, background=255):
             "text": text, "score": score, "backgroundLevel": background}
 
 
-def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=()):
+def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=(),
+         non_text_ink=None, printed_ink=110):
+    regions = [list(b) for b in non_text]
     return {
-        "schema": 6, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
+        "schema": 7, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
         "dpi": 150, "width": WIDTH, "height": HEIGHT, "pdfSha256": "0" * 64,
         "imageSha256": "1" * 64, "ocr": list(ocr), "bannerOcr": list(banner_ocr),
         "layout": {"frameBoxes": [list(b) for b in frame_boxes],
                    "labelBoxes": [list(b) for b in label_boxes],
-                   "nonTextRegions": [list(b) for b in non_text],
+                   "nonTextRegions": regions,
+                   "nonTextInk": list(non_text_ink) if non_text_ink is not None
+                   else [printed_ink] * len(regions),
+                   "printedInk": printed_ink,
                    "inkRows": [0] * HEIGHT},
     }
 
@@ -268,6 +273,30 @@ class FigureQuestions(unittest.TestCase):
         records, _ = segment(sample, in_drill=True, section="drill", tier="easy",
                              tier_evidence="基礎實力養成")
         self.assertNotIn("figure-referenced-but-missing", records[0]["flags"])
+
+    def test_pencil_working_is_flagged_and_not_offered_as_a_figure(self):
+        """The sequences book is a worked copy: a previous owner solved Ex12 in
+        pencil in the gap above the 解答 tag, final answer included.  That ink
+        is inside the question span, so it must not become the question's
+        figure and the question must not pass as clean."""
+        sample = page(11, [
+            line("Ex12. 在等比數列中，求 a5 的值", 75, 135, 700, 165),
+            line("解答", 120, 435, 173, 462),
+        ], non_text=[[320, 185, 600, 440]], non_text_ink=[157], printed_ink=120)
+        records, _ = segment(sample)
+        self.assertEqual(records[0]["regions"]["figures"], [])
+        self.assertIn("annotation-suspected-in-question", records[0]["flags"])
+        self.assertEqual(records[0]["qaLane"], "needs-repair")
+
+    def test_a_printed_diagram_is_not_mistaken_for_pencil(self):
+        """Printed diagrams measured 0.87-1.12 against their page's text."""
+        sample = page(69, [
+            line("Ex6. 如圖，設 m1, m2 分別為直線的斜率", 82, 126),
+            line("解析", 127, 900, 181, 928),
+        ], non_text=[[150, 200, 500, 700]], non_text_ink=[118], printed_ink=108)
+        records, _ = segment(sample)
+        self.assertEqual(len(records[0]["regions"]["figures"]), 1)
+        self.assertNotIn("annotation-suspected-in-question", records[0]["flags"])
 
     def test_figure_candidates_record_unknown_handwriting_safety(self):
         sample = page(66, [line("Ex9. 如圖", 82, 126), line("解析", 127, 900, 181, 928)],
