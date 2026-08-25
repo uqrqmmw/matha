@@ -75,12 +75,18 @@ TYPE_PATTERNS: tuple[tuple[str, Callable[[str], bool]], ...] = (
 # OCR renders 選擇 as 遥挥 / 遥摆 / 遥捍 depending on the scan.
 CHOICE_GARBLE = ("選", "擇", "遥", "挥", "摆", "捍", "揮")
 
+# "讀圖" only.  A bare 的圖形 or 所示 is about the *concept* of a graph and
+# matched pure algebra questions, so those are deliberately not here.
 VISUAL_REFERENCE_RE = re.compile(
     r"(?:如|由|見|依|根據|參考)(?:下|上|左|右|附)?圖"
     r"|(?:下|上|左|右|附)圖"
-    r"|圖中|圖示|示意圖|圖形為|的圖形|陰影(?:區域|部分)|圖所示|所示"
+    r"|圖中|示意圖|圖所示|陰影(?:區域|部分)"
     r"|(?:根據|依據|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表"
 )
+# "畫圖" — the figure is the answer the student produces, so a missing figure
+# candidate is correct here rather than a defect.  These questions need a
+# drawing surface downstream, not a figure asset.
+DRAWING_TASK_RE = re.compile(r"圖示|作出.{0,6}圖|畫出.{0,6}圖|繪出.{0,6}圖|試作圖|請畫")
 
 
 def _looks_like_choice(text: str) -> bool:
@@ -380,10 +386,21 @@ def segment_questions(
         span_lines = [line for line in lines if y_start - 6 <= line["bbox"][1] < span_end]
         option_lines = [line for line in span_lines if OPTION_RE.match(norm(line["text"]).strip())]
         stem_lines = [line for line in span_lines if line not in option_lines]
+        # A diagram whose ink bleeds a few pixels past the answer tag is clipped
+        # to the boundary, never discarded: dropping it turned a figure question
+        # into a figureless one, which is the failure mode that matters most.
         span_limit = [0, max(0, y_start - 8), width, span_end]
-        figures = [expand_figure_box(box, span_lines, span_limit)
-                   for box in page["layout"]["nonTextRegions"]
-                   if box[1] >= y_start - 8 and box[3] <= span_end + 8]
+        figures = []
+        clipped = 0
+        for box in page["layout"]["nonTextRegions"]:
+            if not (y_start - 8 <= box[1] < span_end):
+                continue
+            grown = expand_figure_box(box, span_lines, span_limit)
+            if grown[3] - grown[1] < 24 or grown[2] - grown[0] < 24:
+                continue
+            if grown[3] < box[3] - 4:
+                clipped += 1
+            figures.append(grown)
 
         stem_text = " ".join(norm(line["text"]) for line in stem_lines)
         option_text = [norm(line["text"]) for line in option_lines]
@@ -407,7 +424,11 @@ def segment_questions(
             flags.append("solution-not-on-this-page")
         if context["section"] == "drill" and tier is None:
             flags.append("tier-unknown")
-        if VISUAL_REFERENCE_RE.search(stem_text) and not figures:
+        if clipped:
+            flags.append("figure-clipped-at-answer-boundary")
+        if DRAWING_TASK_RE.search(stem_text):
+            flags.append("answer-is-a-drawing")
+        elif VISUAL_REFERENCE_RE.search(stem_text) and not figures:
             flags.append("figure-referenced-but-missing")
         if ANSWER_TAG_ANYWHERE_RE.search(stem_text):
             flags.append("answer-text-inside-stem")

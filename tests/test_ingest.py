@@ -233,6 +233,40 @@ class FigureQuestions(unittest.TestCase):
         self.assertGreaterEqual(figure[2], 588, "the x axis arrow must be inside the crop")
         self.assertLess(figure[3], 430, "the option row must stay out of the figure")
 
+    def test_a_figure_bleeding_past_the_boundary_is_clipped_not_dropped(self):
+        """Ex4 on printed page 124 lost its diagram because the ink ran 15 px
+        under the 解答 tag.  Dropping it made a figure question figureless."""
+        sample = page(126, [
+            line("Ex4. 已知兩直線的斜角分別為 α 與 β，如圖所示，求", 85, 501),
+            line("(2)45°，135°", 425, 673, 551, 704),
+            line("解答", 120, 676, 173, 702),
+        ], label_boxes=[[110, 673, 180, 705]], non_text=[[647, 494, 840, 688]])
+        records, _ = segment(sample)
+        figures = records[0]["regions"]["figures"]
+        self.assertEqual(len(figures), 1)
+        self.assertLessEqual(figures[0][3], 673)
+        self.assertIn("figure-clipped-at-answer-boundary", records[0]["flags"])
+        self.assertNotIn("figure-referenced-but-missing", records[0]["flags"])
+
+    def test_draw_the_graph_questions_are_not_reported_as_missing_figures(self):
+        """圖示…的解 asks the student to produce the figure; the answer region
+        holds it, so having no figure in the stem is correct."""
+        sample = page(150, [
+            line("Ex2. 圖示二元一次不等式 3x+2y<6 的解", 82, 126),
+            line("解析", 127, 900, 181, 928),
+        ])
+        records, _ = segment(sample)
+        self.assertIn("answer-is-a-drawing", records[0]["flags"])
+        self.assertNotIn("figure-referenced-but-missing", records[0]["flags"])
+
+    def test_the_words_the_graph_alone_are_not_a_figure_reference(self):
+        sample = page(184, [
+            line("1. 若點 P（k+1，2k-1）在聯立不等式的圖形內，則 k 之最大可能值為", 60, 80),
+        ])
+        records, _ = segment(sample, in_drill=True, section="drill", tier="easy",
+                             tier_evidence="基礎實力養成")
+        self.assertNotIn("figure-referenced-but-missing", records[0]["flags"])
+
     def test_figure_candidates_record_unknown_handwriting_safety(self):
         sample = page(66, [line("Ex9. 如圖", 82, 126), line("解析", 127, 900, 181, 928)],
                       non_text=[[150, 200, 500, 700]])
