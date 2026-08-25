@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank } = require('../scripts/build-private-bank');
+const { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, buildPrivateBank } = require('../scripts/build-private-bank');
 
 function q(id, text, extra) {
   return { id, topic: 'num', type: 'fill', diff: 1, q: text, ans: ['1'], sol: '解法', src: '測試', ...(extra || {}) };
@@ -58,6 +58,46 @@ test('掃描教材 apply-review envelope 的 questions 會被正式建置器接�
   assert.equal(manifest.report.accepted, 1);
   assert.equal(manifest.packs.length, 1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(output, manifest.packs[0].file), 'utf8')).items[0].id, 'line-inequality-p067-q3');
+});
+
+test('掃描教材草稿或 smoke 題包即使 schema 像正式題也不能進正式建置', (t) => {
+  const root = path.resolve(__dirname, '..');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'matha-untrusted-review-'));
+  t.after(() => fs.rmSync(temp, { recursive:true, force:true }));
+  const source = path.join(temp, 'draft-qpack.json');
+  const output = path.join(temp, 'out');
+  const payload = {
+    schema: 1,
+    kind: 'private-question-source',
+    bookId: 'matha-114-line-inequality',
+    reviewedBy: 'pipeline-smoke-test-not-a-human-sign-off',
+    questions: [
+      {
+        id: 'line-inequality-p009-ex9',
+        topic: 'line', type: 'fill', diff: 1,
+        q: '求通過點 (-3,1)，斜率為 2 的直線方程式。',
+        ans: ['2x-y+7=0'],
+        src: 'matha-114-line-inequality p9',
+      },
+    ],
+  };
+  assert.equal(untrustedReviewSource(payload), 'reviewer-not-human-signoff');
+  fs.writeFileSync(source, JSON.stringify(payload), 'utf8');
+  const manifest = buildPrivateBank(source, output, root);
+  assert.equal(manifest.report.sourceTotal, 1);
+  assert.equal(manifest.report.accepted, 0);
+  assert.equal(manifest.report.skipped.untrustedReview, 1);
+  assert.equal(manifest.report.trustBlockReason, 'reviewer-not-human-signoff');
+  assert.deepEqual(manifest.packs, []);
+});
+
+test('帶 draftedBy 草稿痕跡的掃描教材題包必須先經 apply-review 簽核清洗', () => {
+  assert.equal(untrustedReviewSource({
+    schema: 1,
+    kind: 'private-question-source',
+    reviewedBy: 'unit-test',
+    questions: [q('draft-marker-1', '草稿題', { draftedBy:'claude-draft' })],
+  }), 'draft-markers-present');
 });
 
 test('私有題庫保留缺圖題為可追蹤佇列，並拒絕超範圍、危險與完全重複內容', () => {

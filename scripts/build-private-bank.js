@@ -18,6 +18,7 @@ const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?�
 const QUESTION_ROLES = new Set(['example', 'chapter-end-easy', 'chapter-end-medium', 'chapter-end-hard', 'comprehensive-review', 'unclassified']);
 const BOOK_BY_SOURCE = new Map(TEXTBOOK_LIBRARY.books.flatMap((book) => (book.sourceNames || []).map((name) => [name, book])));
 const BOOK_BY_ID = new Map(TEXTBOOK_LIBRARY.books.map((book) => [book.id, book]));
+const UNTRUSTED_REVIEWER_RE = /(?:draft|smoke|not[-_\s]*a[-_\s]*human|not[-_\s]*human|not[-_\s]*importable|qa[-_\s]*only|forced|unsigned)/i;
 /* 逐頁核對後確認：題文已把印刷表格的全部欄列與數值完整序列化，位置/顏色/合併格不影響解題。
    這是 build-time 信任清單；外部 qpack 自報 visualComplete 或仿造 evidence 都不會取得 curated trust。 */
 const VERIFIED_TEXT_COMPLETE_IDS = new Set([
@@ -156,6 +157,18 @@ function sanitizeQuestion(input) {
   return q;
 }
 
+function untrustedReviewSource(raw) {
+  if (!raw || raw.kind !== 'private-question-source') return '';
+  const reviewer = String(raw.reviewedBy || raw.reviewer || '').trim();
+  if (!reviewer) return 'reviewer-missing';
+  if (UNTRUSTED_REVIEWER_RE.test(reviewer)) return 'reviewer-not-human-signoff';
+  const sourceItems = Array.isArray(raw.questions) ? raw.questions
+    : Array.isArray(raw.items) ? raw.items
+      : Array.isArray(raw.extbank) ? raw.extbank : [];
+  if (sourceItems.some((q) => q && typeof q === 'object' && q.draftedBy && !q.reviewedBy && !q.reviewedAt)) return 'draft-markers-present';
+  return '';
+}
+
 function enrichQuestionMetadata(input) {
   const q = { ...input };
   q.topic = canonicalTopic(q.topic);
@@ -213,7 +226,7 @@ function sanitizeBank(items, builtinQuestions) {
   const report = {
     sourceTotal: items.length,
     accepted: 0,
-    skipped: { schema: 0, missingFigure: 0, visualReferenceMissing: 0, outOfRange: 0, suspiciousHtml: 0, duplicateId: 0, duplicateBuiltin: 0, duplicateLegacy: 0 },
+    skipped: { schema: 0, missingFigure: 0, visualReferenceMissing: 0, outOfRange: 0, suspiciousHtml: 0, duplicateId: 0, duplicateBuiltin: 0, duplicateLegacy: 0, untrustedReview: 0 },
     emojiCleaned: 0,
     templateGroups: 0,
     visual: { pending: 0, verified: 0, textComplete: 0 },
@@ -277,7 +290,16 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
   const raw = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
   const sourceItems = Array.isArray(raw) ? raw : (raw.items || raw.extbank || raw.questions || []);
   const builtin = loadBuiltinQuestions(repoRoot);
-  const { items, pendingVisuals, report } = sanitizeBank(sourceItems, builtin);
+  const trustBlockReason = untrustedReviewSource(raw);
+  const { items, pendingVisuals, report } = trustBlockReason
+    ? (() => {
+      const blocked = sanitizeBank([], builtin);
+      blocked.report.sourceTotal = sourceItems.length;
+      blocked.report.skipped.untrustedReview = sourceItems.length;
+      blocked.report.trustBlockReason = trustBlockReason;
+      return blocked;
+    })()
+    : sanitizeBank(sourceItems, builtin);
   const bySource = new Map();
   for (const q of items) {
     const source = q.src || '未標來源';
@@ -340,4 +362,4 @@ if (require.main === module) {
   console.log(JSON.stringify(manifest, null, 2));
 }
 
-module.exports = { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, buildPrivateBank };
+module.exports = { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, buildPrivateBank };
