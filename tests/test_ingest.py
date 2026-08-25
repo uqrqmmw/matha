@@ -41,7 +41,7 @@ def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=
          non_text_dark=None, printed_dark=0.5):
     regions = [list(b) for b in non_text]
     return {
-        "schema": 10, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
+        "schema": 11, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
         "dpi": 150, "width": WIDTH, "height": HEIGHT, "pdfSha256": "0" * 64,
         "imageSha256": "1" * 64, "ocr": list(ocr), "bannerOcr": list(banner_ocr),
         "layout": {"frameBoxes": [list(b) for b in frame_boxes],
@@ -50,7 +50,8 @@ def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=
                    "nonTextDarkFraction": list(non_text_dark) if non_text_dark is not None
                    else [printed_dark] * len(regions),
                    "printedDarkFraction": printed_dark,
-                   "inkRows": [0] * HEIGHT},
+                   "inkRows": [0] * HEIGHT,
+                   "solidRows": [0] * HEIGHT},
     }
 
 
@@ -154,6 +155,150 @@ class AnswerSeparation(unittest.TestCase):
         self.assertEqual(questions[0]["flags"], ["solution-continues-next-page"])
         self.assertEqual(questions[0]["qaLane"], "clean-candidate")
         self.assertEqual(questions[0]["solutionPdfPage"], 61)
+
+
+class ContentBounds(unittest.TestCase):
+    """OCR line boxes are not where the content is."""
+
+    @staticmethod
+    def with_ink(sample, spans, solid=True):
+        for lo, hi in spans:
+            for y in range(lo, hi):
+                sample["layout"]["inkRows"][y] = 40
+                if solid:
+                    sample["layout"]["solidRows"][y] = 20
+        return sample
+
+    def test_pencil_below_the_printed_question_is_left_out_of_the_crop(self):
+        """Printed page 160 of the trig book has a full pencil solution under
+        the question frame.  OCR read it as text, so bounding the crop by total
+        ink pulled the worked answer in."""
+        sample = self.with_ink(page(162, [
+            line("Ex42. 如圖，扇形之半徑為 10", 82, 126, 900, 154),
+            line("解答", 127, 900, 181, 928),
+        ]), [(124, 400)])
+        self.with_ink(sample, [(430, 700)], solid=False)   # 270 rows of pencil
+        records, _ = segment(sample)
+        content = records[0]["regions"]["contentBox"]
+        self.assertLess(content[3], 430, "the crop must stop at the printed content")
+        self.assertIn("annotation-suspected-in-question", records[0]["flags"])
+
+    def test_scan_speckle_is_not_mistaken_for_pencil(self):
+        """Testing for any ink at all past the printed content flagged five
+        sixths of every book."""
+        sample = self.with_ink(page(163, [
+            line("Ex43. 求下列各式的值", 82, 126, 700, 154),
+            line("解答", 127, 900, 181, 928),
+        ]), [(124, 160)])
+        sample["layout"]["inkRows"][300] = 25          # a speck, one row
+        records, _ = segment(sample)
+        self.assertNotIn("annotation-suspected-in-question", records[0]["flags"])
+
+    def test_a_fraction_denominator_below_the_ocr_box_is_kept(self):
+        """(B)1/√5 came out with its √5 sliced in half: the option row's OCR box
+        ends at the baseline and the denominator hangs below it."""
+        sample = self.with_ink(page(70, [
+            line("4. （ ）兩直線間之距離為何？", 60, 80, 700, 108),
+            line("（A）0 （B）1 （C）√5 （D）2 （E）√5", 150, 120, 800, 148),
+        ]), [(78, 150), (150, 176)])
+        records, _ = segment(sample, in_drill=True, section="drill")
+        content = records[0]["regions"]["contentBox"]
+        self.assertGreaterEqual(content[3], 175)
+        region, refusal = crops.question_region(records[0], WIDTH, HEIGHT)
+        self.assertIsNone(refusal)
+        self.assertGreaterEqual(region[3], 175, "the denominator row must be inside the crop")
+
+    def test_blank_paper_and_the_page_footer_are_trimmed(self):
+        """The page number is ink too, so an ink-bounded crop ran down to
+        "- 173 -" with a hand's width of blank paper above it."""
+        sample = self.with_ink(page(71, [
+            line("Ex57. 設 A(2,3)、B(-2,2)，則外心坐標為", 82, 126, 700, 154),
+            line("- 173 -", 505, 1399, 550, 1420),
+        ]), [(124, 158), (1399, 1421)])
+        self.assertEqual(bookmap.footer_top(sample), 1395)
+        records, _ = segment(sample)
+        region, _ = crops.question_region(records[0], WIDTH, HEIGHT)
+        self.assertLess(region[3], 200, "a crop must not run on into empty paper")
+
+
+class MissingDrillNumbers(unittest.TestCase):
+    """A number the book prints and no candidate claims is reported exactly,
+    because guessing where it starts made 559 false questions and recovered
+    none of the 168 real ones."""
+
+    @staticmethod
+    def drill(number, block=1, qtype="single", page=30):
+        return {"blockIndex": block, "questionType": qtype, "pdfPage": page,
+                "provenance": {"drillNumber": number}}
+
+    def test_a_gap_in_the_printed_numbering_is_listed(self):
+        gaps = bookmap.missing_drill_numbers([
+            self.drill(5), self.drill(6), self.drill(8, page=31), self.drill(9, page=31),
+        ])
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["missingNumbers"], [7])
+        self.assertEqual(gaps[0]["pdfPageRange"], [30, 31])
+
+    def test_a_long_jump_is_reported_apart_from_lost_questions(self):
+        """A stray number in the question text read as a start opened a run to
+        23 and put 14 phantom losses in the data book."""
+        gaps = bookmap.missing_drill_numbers(
+            [self.drill(n) for n in (1, 2, 3, 4, 5, 6, 7, 8, 23)])
+        self.assertEqual(gaps[0]["missingNumbers"], [])
+        self.assertEqual(gaps[0]["numberingJumps"], [[8, 23]])
+
+    def test_separate_runs_do_not_invent_gaps_across_each_other(self):
+        gaps = bookmap.missing_drill_numbers([
+            self.drill(1), self.drill(2),
+            self.drill(1, qtype="fill"), self.drill(2, qtype="fill"),
+            self.drill(1, block=3), self.drill(2, block=3),
+        ])
+        self.assertEqual(gaps, [])
+
+    def test_worked_examples_have_no_drill_number_and_are_ignored(self):
+        self.assertEqual(bookmap.missing_drill_numbers([
+            {"blockIndex": 0, "questionType": "worked-example", "pdfPage": 5,
+             "provenance": {"drillNumber": None}},
+        ]), [])
+
+
+class RecoveringSkippedNumbers(unittest.TestCase):
+    """Only where the printed numbering itself proves a question is missing."""
+
+    def test_a_number_skipped_between_two_detected_starts_is_reopened(self):
+        sample = page(30, [
+            line("6．（ ）設 P，Q 為平面上相異兩點", 56, 410, 728, 439),
+            line("(A)-1（B)0（C)1(D）5（E)無法確定", 151, 474, 639, 502),
+            line("（）（）（））", 58, 741, 871, 770),
+            line("在同一個平面上？", 142, 778, 314, 801),
+            line("8．（ ）若原點在平面 E 上的投影", 58, 1105, 861, 1135),
+        ])
+        records, _ = segment(sample, in_drill=True, section="drill")
+        self.assertEqual([r["provenance"]["drillNumber"] for r in records], [6, 7, 8])
+        self.assertIn("question-number-unreadable", records[1]["flags"])
+        self.assertNotIn("在同一個平面上", records[0]["ocrIndex"]["stem"])
+        self.assertLess(records[0]["regions"]["stem"][3], 741)
+
+    def test_contiguous_numbering_recovers_nothing(self):
+        sample = page(31, [
+            line("6．（ ）設 P，Q 為平面上相異兩點", 56, 410, 728, 439),
+            line("=（q）d（Oz00x）=d", 140, 441, 604, 470),
+            line("7．（ ）在空間中，下列何者", 58, 741, 871, 770),
+        ])
+        records, _ = segment(sample, in_drill=True, section="drill")
+        self.assertEqual([r["provenance"]["drillNumber"] for r in records], [6, 7])
+
+    def test_an_ambiguous_gap_is_left_alone(self):
+        """Two left-margin candidates for one missing number is a guess, and
+        guessing produced 559 false splits."""
+        sample = page(32, [
+            line("6．（ ）設 P，Q 為平面上相異兩點", 56, 410, 728, 439),
+            line("某一行左邊界文字", 58, 600, 500, 628),
+            line("另一行左邊界文字", 58, 700, 500, 728),
+            line("8．（ ）若原點在平面 E 上的投影", 58, 1105, 861, 1135),
+        ])
+        records, _ = segment(sample, in_drill=True, section="drill")
+        self.assertEqual([r["provenance"]["drillNumber"] for r in records], [6, 8])
 
 
 class RuledAnswerTags(unittest.TestCase):
@@ -358,6 +503,20 @@ class DifficultyProvenance(unittest.TestCase):
             line("由題意可得下列各式的結果與其推論過程", 60, 200),
         ])
         self.assertEqual(bookmap.read_type_headers(sample), [])
+
+    def test_a_type_header_ends_the_question_above_it(self):
+        """The last question of a section kept 五、作圖題 and the first line of
+        the next section inside its crop."""
+        headers = [(900, "group", "五、作圖題")]
+        sample = page(103, [
+            line("6. 設函數 f(x)=cos2x-3sinx+1", 60, 80),
+            line("（1）若 x∈R，解方程式 f(x)=0。", 130, 120),
+            line("五、作圖題", 107, 900, 230, 928),
+            line("1. 在 0≤x≤2π 範圍內作出圖形", 60, 940),
+        ])
+        records, _ = segment(sample, in_drill=True, section="drill", type_headers=headers)
+        self.assertLess(records[0]["regions"]["stem"][3], 900)
+        self.assertNotIn("作圖題", records[0]["ocrIndex"]["stem"])
 
     def test_question_type_headers_survive_ocr_garble(self):
         sample = page(69, [

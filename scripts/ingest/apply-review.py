@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Mirrors scripts/build-private-bank.js — a record rejected there would only

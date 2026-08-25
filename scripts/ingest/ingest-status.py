@@ -49,6 +49,8 @@ def read_book(book_dir: Path) -> dict[str, Any] | None:
         "cropsRendered": sum(1 for entry in crops.values() if entry.get("stemRegion")),
         "cropsRefused": sum(1 for entry in crops.values() if entry.get("refused")),
         "notPendingReview": sum(1 for row in rows if row["status"] != "pending-review"),
+        "missingDrillNumbers": sum(len(gap["missingNumbers"])
+                                   for gap in pack.get("missingDrillNumbers") or []),
     }
 
 
@@ -89,6 +91,8 @@ def render(books: list[dict[str, Any]], work_root: Path) -> str:
         f"- 非 `pending-review` 的記錄：{leaked}（必須為 0）",
         f"- 來源 PDF SHA-256 已記錄：{sum(1 for b in books if b['pdfSha256'])} / {len(books)}",
         f"- 越過答案邊界而被拒絕的裁切：{sum(b['cropsRefused'] for b in books)}（必須為 0）",
+        f"- 印刷題號有、候選題沒有的：{sum(b['missingDrillNumbers'] for b in books)}"
+        f"（OCR 把題號讀丟，逐本清單見各書 qa-report.md）",
         "", "## 來源檔雜湊", "", "| bookId | 檔名 | SHA-256 |", "|---|---|---|",
     ]
     out += [f"| `{b['bookId']}` | {b['pdfFileName']} | `{b['pdfSha256']}` |" for b in books]

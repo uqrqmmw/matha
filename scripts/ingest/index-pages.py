@@ -32,7 +32,7 @@ import cv2
 import fitz
 import numpy as np
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REVIEW_DPI = 150
 OCR_ENGINE = "rapidocr-onnxruntime-1.2.3"
@@ -91,6 +91,7 @@ class LayoutResult:
     nontext_dark: list[float]
     printed_dark: float
     ink_rows: list[int]
+    solid_rows: list[int]
 
 
 INK_THRESHOLD = 170
@@ -234,6 +235,10 @@ def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResul
     found.sort(key=lambda pair: (pair[0][1], pair[0][0]))
 
     ink_rows = (ink > 0).sum(axis=1).astype(int).tolist()
+    # Printed ink only.  Pencil almost never goes below this level, so a crop
+    # bounded by these rows stops at the end of the printed question instead of
+    # running down over a previous owner's worked solution.
+    solid_rows = (gray < SOLID_THRESHOLD).sum(axis=1).astype(int).tolist()
     return LayoutResult(
         frame_boxes=sorted(frame_boxes, key=lambda b: (b[1], b[0])),
         label_boxes=sorted(label_boxes, key=lambda b: (b[1], b[0])),
@@ -241,6 +246,7 @@ def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResul
         nontext_dark=[round(value, 4) for _, value in found],
         printed_dark=printed_dark_fraction(gray, text_boxes),
         ink_rows=ink_rows,
+        solid_rows=solid_rows,
     )
 
 
@@ -419,6 +425,7 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
                 "nonTextDarkFraction": layout.nontext_dark,
                 "printedDarkFraction": layout.printed_dark,
                 "inkRows": layout.ink_rows,
+                "solidRows": layout.solid_rows,
             },
         }
         record_path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")

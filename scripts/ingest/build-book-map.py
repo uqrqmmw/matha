@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
@@ -52,7 +52,10 @@ ANSWER_TAG_ANYWHERE_RE = re.compile(r"(解答|解析|詳解|答案)\s*[:：]")
 ANSWER_ITEM_RE = re.compile(r"^\s*(\d{1,3})\s*[.．、]\s*(?:答案|答|案)\s*[:：]?")
 EXAMPLE_RE = re.compile(r"(?:^|[^A-Za-z])Ex\s*[.．]?\s*(\d{1,3})\s*[.．、]")
 NUMBERED_ITEM_RE = re.compile(r"^\s*(\d{1,3})\s*[.．、]")
-TYPE_HEADER_RE = re.compile(r"^\s*([一二三四五六七八])\s*[、,，.．]")
+# OCR reads the enumeration comma 、 as the ideograph 丶 often enough that a
+# whole 五、作圖題 header went unrecognised and its section ran into the
+# question above it.
+TYPE_HEADER_RE = re.compile(r"^\s*([一二三四五六七八])\s*[、丶,，.．·]")
 OPTION_RE = re.compile(r"^\s*[（(]\s*[A-Ea-e]\s*[）)]")
 PAGE_NUMBER_RE = re.compile(r"^\s*[-–—]?\s*(\d{1,4})\s*[-–—]?\s*$")
 PAST_EXAM_RE = re.compile(r"(\d{2,3})\s*(?:學測|指考|分科|模擬考|統測)\s*(?:數\s*[AB])?")
@@ -192,6 +195,23 @@ def read_printed_page(page: dict[str, Any]) -> int | None:
     return None if best is None else best[1]
 
 
+def footer_top(page: dict[str, Any]) -> int:
+    """Where the page's own furniture starts.
+
+    The printed page number is ink like any other, so a crop bounded by the
+    ink profile ran all the way down to "- 173 -" with a hand's width of blank
+    paper above it.  When the number is readable its own box is the bound.
+    """
+    height, width = page["height"], page["width"]
+    for line in page["ocr"]:
+        x0, y0, x1, _ = line["bbox"]
+        if y0 < 0.90 * height:
+            continue
+        if PAGE_NUMBER_RE.match(line["text"].strip()) and abs((x0 + x1) / 2 - width / 2) / width <= 0.25:
+            return max(0, y0 - 4)
+    return int(0.94 * height)
+
+
 def read_tier_banner(page: dict[str, Any]) -> tuple[str | None, str | None]:
     """Difficulty tier, only from the printed grey banner."""
     strip = [line for line in page.get("bannerOcr") or []
@@ -284,6 +304,49 @@ def collect_headings(page: dict[str, Any]) -> tuple[str | None, str | None]:
     return (chapter[1] if chapter else None, heading[1] if heading else None)
 
 
+INK_ROW_MIN = 3
+# A row of pencil carries real width but almost no solid ink.  Measured over
+# six books: a page with a worked pencil solution has a run of 21-25 such rows,
+# a clean page 1-2.  An earlier version tested for any ink at all past the
+# printed content and flagged five sixths of every book, scan speckle included.
+PENCIL_ROW_INK_MIN = 20
+PENCIL_ROW_SOLID_MAX = 3
+PENCIL_RUN_ROWS = 10
+
+
+def pencil_run(page: dict[str, Any], top: int, bottom: int) -> int:
+    """Longest run of rows that carry ink but no solid ink."""
+    ink = page["layout"].get("inkRows") or []
+    solid = page["layout"].get("solidRows") or []
+    if not ink or not solid:
+        return 0
+    best = current = 0
+    for y in range(max(0, top), min(bottom, len(ink), len(solid))):
+        if ink[y] >= PENCIL_ROW_INK_MIN and solid[y] <= PENCIL_ROW_SOLID_MAX:
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
+
+
+def ink_bounds(page: dict[str, Any], top: int, bottom: int) -> list[int] | None:
+    """First and last row of *printed* ink between ``top`` and ``bottom``.
+
+    Deliberately the solid-ink profile, not the total: a previous owner's
+    pencil is ink too, and bounding a crop by it pulled a full worked solution
+    into the question on printed page 160 of the trig book.
+    """
+    rows = page["layout"].get("solidRows") or page["layout"].get("inkRows") or []
+    if not rows:
+        return None
+    lo, hi = max(0, top), min(len(rows), max(top + 1, bottom))
+    inked = [y for y in range(lo, hi) if rows[y] >= INK_ROW_MIN]
+    if not inked:
+        return None
+    return [0, inked[0], page["width"], inked[-1] + 1]
+
+
 def row_top(lines: list[dict[str, Any]], bbox: list[int]) -> int:
     """Top of the printed row that ``bbox`` belongs to."""
     y0, y1 = bbox[1], bbox[3]
@@ -343,6 +406,9 @@ def page_events(page: dict[str, Any], in_drill_block: bool) -> list[dict[str, An
         events.append({"y": box[1], "bbox": box, "kind": "answer-tag", "text": "",
                        "source": "ruled-label-box"})
 
+    events.sort(key=lambda event: event["y"])
+    events.extend(recover_skipped_numbers(page, events, width))
+
     # OCR splits one printed line into several boxes whose tops differ by a few
     # pixels, and the marker is not always the highest of them: on p69 the tail
     # of "3.（ ）點P…" sat 3 px above its own "3.（", so cutting at the marker
@@ -352,6 +418,55 @@ def page_events(page: dict[str, Any], in_drill_block: bool) -> list[dict[str, An
 
     events.sort(key=lambda event: event["y"])
     return events
+
+
+def recover_skipped_numbers(page: dict[str, Any], events: list[dict[str, Any]],
+                            width: int) -> list[dict[str, Any]]:
+    """Re-open a question whose printed number OCR lost.
+
+    OCR reads "7．（ ）" as "（）（）（））" often enough that 168 numbers across six
+    books have no candidate — and the question above each one keeps it inside
+    its own crop.  An earlier attempt scanned every left-margin line for
+    candidates and produced 559 false splits, so this only looks where the
+    printed numbering itself proves a question is missing: between two detected
+    starts on the same page whose numbers skip.  One gap, one candidate, or
+    nothing happens.
+    """
+    starts = [event for event in events
+              if event["kind"] == "question" and event.get("number") is not None
+              and event["origin"] == "numbered"]
+    if len(starts) < 2:
+        return []
+    margin = min(event["bbox"][0] for event in starts) + 8
+    claimed = [event["y"] for event in events]
+    recovered: list[dict[str, Any]] = []
+
+    for before, after in zip(starts, starts[1:]):
+        gap = after["number"] - before["number"] - 1
+        if gap < 1:
+            continue
+        candidates = []
+        for line in page["ocr"]:
+            x0, y0 = line["bbox"][0], line["bbox"][1]
+            text = norm(line["text"]).strip()
+            if not (before["y"] < y0 < after["y"]) or x0 > margin or not text:
+                continue
+            if OPTION_RE.match(text) or ANSWER_TAG_RE.match(text) or ANSWER_ITEM_RE.match(text):
+                continue
+            if any(abs(y0 - y) <= 20 for y in claimed):
+                continue
+            candidates.append(line)
+        if len(candidates) != gap:
+            continue
+        for offset, line in enumerate(candidates):
+            claimed.append(line["bbox"][1])
+            recovered.append({
+                "y": line["bbox"][1], "bbox": line["bbox"], "kind": "question",
+                "marker": f"q{before['number'] + 1 + offset}",
+                "number": before["number"] + 1 + offset,
+                "origin": "numbered", "numberUnreadable": True, "text": line["text"],
+            })
+    return recovered
 
 
 def classify_page(page: dict[str, Any], events: list[dict[str, Any]], in_drill_block: bool) -> str:
@@ -385,7 +500,7 @@ def segment_questions(
 ) -> tuple[list[dict[str, Any]], bool]:
     """Cut one page into question records.  Returns (records, lead_in_solution)."""
     width, height = page["width"], page["height"]
-    footer_y = int(0.94 * height)
+    footer_y = footer_top(page)
     lines = [line for line in page["ocr"] if line["bbox"][1] < footer_y]
     type_headers = context["typeHeaders"]
 
@@ -404,6 +519,14 @@ def segment_questions(
 
         next_tag_event = next((event for event in following
                                if event["kind"] in {"answer-tag", "answer-item"}), None)
+        # A 五、作圖題 header is a section boundary, so it ends the question
+        # above it — otherwise the last question of a section keeps the next
+        # section's heading, and the first line under it, inside its crop.
+        next_header = min((header_y for header_y, _, _ in type_headers if header_y > y_start + 8),
+                          default=None)
+        if next_header is not None:
+            next_question = next_header if next_question is None else min(next_question, next_header)
+
         if next_tag is not None and (next_question is None or next_tag < next_question):
             boundary = next_tag
             span_end = next_tag
@@ -439,6 +562,14 @@ def segment_questions(
                 clipped += 1
             figures.append(grown)
 
+        # OCR line boxes hug the main text row, so a stacked fraction's
+        # denominator falls outside them and got sliced off the crop; the same
+        # boxes also say nothing about where the content stops, so crops ran on
+        # into blank paper and the page footer.  The ink profile knows both.
+        content_box = ink_bounds(page, max(0, y_start - 8), span_end)
+        if pencil_run(page, max(0, y_start - 8), span_end) >= PENCIL_RUN_ROWS:
+            annotated += 1
+
         stem_text = " ".join(norm(line["text"]) for line in stem_lines)
         option_text = [norm(line["text"]) for line in option_lines]
         exam_tag = PAST_EXAM_RE.search(stem_text)
@@ -473,6 +604,8 @@ def segment_questions(
             flags.append("answer-text-inside-stem")
         if not stem_lines:
             flags.append("empty-stem")
+        if start.get("numberUnreadable"):
+            flags.append("question-number-unreadable")
         if question_type in {"single", "multi"} and not option_lines:
             flags.append("choice-question-without-options")
         if question_type == "unclassified" and context["section"] == "drill":
@@ -505,6 +638,7 @@ def segment_questions(
                 "stem": stem_box,
                 "options": [line["bbox"] for line in option_lines],
                 "figures": figures,
+                "contentBox": content_box,
                 "answerBoundaryY": boundary,
                 "answerBoundarySource": (next_tag_event or {}).get("source", "ocr-tag") if boundary is not None else None,
                 "inlineAnswer": [0, boundary, width, answer_end] if boundary is not None else None,
@@ -705,6 +839,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
         "pdfSha256": summary["pdfSha256"], "displayTruth": "original-pdf-crop",
         "ocrIsIndexOnly": True, "allPendingReview": True,
         "questions": questions, "drillAnswers": answers,
+        "missingDrillNumbers": missing_drill_numbers(questions),
     }
     figure_pack = {
         "schema": SCHEMA_VERSION, "kind": "textbook-figure-candidates", "bookId": book_id,
@@ -725,7 +860,57 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
         "needsRepair": sum(1 for q in questions if q["qaLane"] == "needs-repair"),
         "figureQuestions": sum(1 for q in questions if q["regions"]["figures"]),
         "figures": len(figures),
+        "missingDrillNumbers": sum(len(gap["missingNumbers"]) for gap in question_pack["missingDrillNumbers"]),
     }
+
+
+# A lost question shows up as a short skip in an otherwise contiguous run.  A
+# jump of more than this is something else and is reported separately.
+MAX_LOST_IN_A_ROW = 3
+
+
+def missing_drill_numbers(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Numbers the book prints that no candidate claims.
+
+    OCR loses a printed question number outright — "7．（ ）" came back as
+    "（）（）（））" — and then that question is simply absent while its neighbour's
+    crop swallows it.  Guessing where those questions start produced far more
+    false splits than recoveries, so this reports the gap instead: which block,
+    which numbers, which pages to open.  It is an exact worklist, not an
+    estimate.
+    """
+    runs: dict[tuple[Any, Any], dict[str, Any]] = {}
+
+    for question in questions:
+        number = question["provenance"]["drillNumber"]
+        if number is None:
+            continue
+        key = (question["blockIndex"], question["questionType"])
+        run = runs.setdefault(key, {"numbers": set(), "pages": set()})
+        run["numbers"].add(number)
+        run["pages"].add(question["pdfPage"])
+
+    out: list[dict[str, Any]] = []
+    for (block, qtype), run in sorted(runs.items(), key=lambda item: (item[0][0], str(item[0][1]))):
+        numbers = sorted(run["numbers"])
+        pages = sorted(run["pages"])
+        gaps: list[int] = []
+        jumps: list[list[int]] = []
+        for lower, upper in zip(numbers, numbers[1:]):
+            skipped = upper - lower - 1
+            if 1 <= skipped <= MAX_LOST_IN_A_ROW:
+                gaps.extend(range(lower + 1, upper))
+            elif skipped > MAX_LOST_IN_A_ROW:
+                # Not a lost question: a stray number from the question text
+                # read as a start, or the section restarting.  Counting these
+                # as losses put 14 phantom questions in one run of the data
+                # book, so they are reported apart rather than folded in.
+                jumps.append([lower, upper])
+        if not gaps and not jumps:
+            continue
+        out.append({"blockIndex": block, "questionType": qtype, "missingNumbers": gaps,
+                    "numberingJumps": jumps, "pdfPageRange": [pages[0], pages[-1]]})
+    return out
 
 
 def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: list[dict[str, Any]]) -> None:
@@ -852,6 +1037,24 @@ def render_report(section_map: dict[str, Any], questions: dict[str, Any], figure
     out += [f"- `{row['id']}` 印刷頁 {row['printedPage']}：{row['ocrIndex']['stem'][:60]}" for row in missing[:40]]
     if len(missing) > 40:
         out.append(f"- …另有 {len(missing) - 40} 題見 `questions.pending-review.json`")
+
+    gaps = questions.get("missingDrillNumbers") or []
+    lost = [gap for gap in gaps if gap["missingNumbers"]]
+    jumped = [gap for gap in gaps if gap.get("numberingJumps")]
+    out += ["", "## 印刷題號有、候選題沒有的（OCR 把題號讀丟，需人工翻頁補）", "",
+            f"共 {sum(len(gap['missingNumbers']) for gap in lost)} 題，分布在 {len(lost)} 個區段。", "",
+            "| 區塊 | 題型 | 缺號 | PDF 頁 |", "|---:|---|---|---|"]
+    for gap in lost[:40]:
+        out.append(f"| {gap['blockIndex']} | {gap['questionType']} "
+                   f"| {', '.join(str(n) for n in gap['missingNumbers'])} "
+                   f"| {gap['pdfPageRange'][0]}–{gap['pdfPageRange'][1]} |")
+    out += ["", "## 題號不連續（多半是題文裡的數字被讀成題號，不是漏題）", "",
+            f"共 {sum(len(gap['numberingJumps']) for gap in jumped)} 處。", "",
+            "| 區塊 | 題型 | 跳號 | PDF 頁 |", "|---:|---|---|---|"]
+    for gap in jumped[:25]:
+        out.append(f"| {gap['blockIndex']} | {gap['questionType']} "
+                   f"| {'; '.join(f'{a}→{b}' for a, b in gap['numberingJumps'])} "
+                   f"| {gap['pdfPageRange'][0]}–{gap['pdfPageRange'][1]} |")
 
     flagged_pages = [page for page in section_map["pages"] if page["flags"]]
     out += ["", "## 有旗標的頁", "", f"共 {len(flagged_pages)} 頁。", ""]

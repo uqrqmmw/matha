@@ -34,7 +34,7 @@ from typing import Any
 
 import fitz
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CROP_DPI = 300
 PAD = 8          # review-dpi pixels of breathing room around a question band
@@ -78,6 +78,13 @@ def question_region(question: dict[str, Any], width: int, height: int) -> tuple[
         return None, "empty-region"
     top = min(box[1] for box in boxes) - PAD
     bottom = max(box[3] for box in boxes) + PAD
+    # The ink profile is the authority on where content really starts and stops:
+    # OCR boxes clip a fraction's denominator off the bottom and know nothing
+    # about the blank paper and page footer that follow.
+    content = question["regions"].get("contentBox")
+    if content:
+        top = min(top, content[1] - 2)
+        bottom = content[3] + 2
     boundary = question["regions"]["answerBoundaryY"]
     if boundary is not None:
         if top >= boundary - ANSWER_GAP:
