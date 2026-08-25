@@ -828,6 +828,27 @@ class CropSeparation(unittest.TestCase):
         with self.assertRaises(crops.CropError):
             crops.ensure_outside_repo(REPO_ROOT / "crops")
 
+    def test_render_replaces_stale_crop_directories(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            book = Path(tmp) / "book"
+            output = book / "crops.hybrid"
+            stale = output / "old-question"
+            stale.mkdir(parents=True)
+            (stale / "stem.png").write_bytes(b"stale")
+            crops.prepare_output_dir(book, output)
+            self.assertTrue(output.is_dir())
+            self.assertFalse(stale.exists())
+
+    def test_render_refuses_to_clear_a_directory_outside_the_book(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            book = root / "book"
+            book.mkdir()
+            with self.assertRaises(crops.CropError):
+                crops.prepare_output_dir(book, root / "other" / "crops")
+
 
 class ChapterTitles(unittest.TestCase):
     def test_a_chapter_title_opens_its_page(self):

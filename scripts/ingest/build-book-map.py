@@ -171,6 +171,58 @@ def bbox_union(boxes: Iterable[list[int]]) -> list[int] | None:
             max(b[2] for b in boxes), max(b[3] for b in boxes)]
 
 
+ID_TYPE_SLUG = {
+    "single": "single", "multi": "multi", "fill": "fill",
+    "calculation": "calc", "group": "group", "unclassified": "other",
+}
+
+
+def disambiguate_ids(records: list[dict[str, Any]], text_field: str) -> list[dict[str, Any]]:
+    """Collapse duplicate OCR starts and make real same-page numbering resets unique.
+
+    This publisher restarts at question 1 for each type on the same printed
+    page. A page-only ``-q1`` / ``-ans1`` ID silently collided, losing one of
+    two real questions during dictionary joins. Exact duplicate detections are
+    collapsed; distinct records get a deterministic question-type suffix.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for record in records:
+        if record["id"] not in grouped:
+            grouped[record["id"]] = []
+            order.append(record["id"])
+        grouped[record["id"]].append(record)
+
+    out: list[dict[str, Any]] = []
+    for record_id in order:
+        group = grouped[record_id]
+        unique: list[dict[str, Any]] = []
+        signatures: set[tuple[str, str]] = set()
+        for record in group:
+            value = record.get(text_field)
+            if isinstance(value, dict):
+                value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            signature = (str(record.get("questionType")), norm(str(value or "")))
+            if signature in signatures:
+                unique[-1].setdefault("provenance", {})["duplicateOcrStartsCollapsed"] = (
+                    int(unique[-1].get("provenance", {}).get("duplicateOcrStartsCollapsed", 1)) + 1
+                )
+                continue
+            signatures.add(signature)
+            unique.append(record)
+        if len(unique) == 1:
+            out.append(unique[0])
+            continue
+        used: Counter[str] = Counter()
+        for record in unique:
+            slug = ID_TYPE_SLUG.get(str(record.get("questionType")), "other")
+            used[slug] += 1
+            suffix = slug if used[slug] == 1 else f"{slug}-{used[slug]}"
+            record["id"] = f"{record_id}-{suffix}"
+            out.append(record)
+    return out
+
+
 # --------------------------------------------------------------------------
 # page-level reading
 # --------------------------------------------------------------------------
@@ -664,7 +716,7 @@ def segment_questions(
             "qaLane": "needs-repair" if flags else "clean-candidate",
             "flags": flags,
         })
-    return records, lead_in
+    return disambiguate_ids(records, "ocrIndex"), lead_in
 
 
 def collect_answer_items(page: dict[str, Any], events: list[dict[str, Any]],
@@ -696,7 +748,7 @@ def collect_answer_items(page: dict[str, Any], events: list[dict[str, Any]],
             "ocrIndex": " ".join(norm(line["text"]) for line in block)[:400],
             "status": "pending-review",
         })
-    return out
+    return disambiguate_ids(out, "ocrIndex")
 
 
 # --------------------------------------------------------------------------
@@ -723,7 +775,8 @@ def resolve_printed_pages(pages: list[dict[str, Any]]) -> dict[int, tuple[int, s
     return resolved
 
 
-def build(work_root: Path, book_id: str) -> dict[str, Any]:
+def build(work_root: Path, book_id: str, ocr_provider: str = "rapidocr",
+          output_variant: str | None = None) -> dict[str, Any]:
     ensure_outside_repo(work_root)
     book_dir = work_root / book_id
     pages_dir = book_dir / "pages"
@@ -737,6 +790,18 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
     if stale:
         raise MapError(f"{len(stale)} page records are from an older index schema; re-run index-pages.py")
     pages.sort(key=lambda page: page["pdfPage"])
+
+    if ocr_provider == "google":
+        missing = [page["pdfPage"] for page in pages
+                   if "lines" not in (page.get("ocrAlternates") or {}).get("googleDocumentAi", {})]
+        if missing:
+            raise MapError(f"Google Document AI OCR is missing on {len(missing)} pages")
+        for page in pages:
+            alternate = page["ocrAlternates"]["googleDocumentAi"]
+            page["ocr"] = alternate["lines"]
+            page["ocrEngineUsed"] = alternate["engine"]
+    elif ocr_provider != "rapidocr":
+        raise MapError(f"Unsupported OCR provider: {ocr_provider}")
 
     slug = re.sub(r"^matha-\d+-", "", book_id)
     printed_map = resolve_printed_pages(pages)
@@ -865,7 +930,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
     question_pack = {
         "schema": SCHEMA_VERSION, "kind": "textbook-question-candidates", "bookId": book_id,
         "pdfSha256": summary["pdfSha256"], "displayTruth": "original-pdf-crop",
-        "ocrIsIndexOnly": True, "allPendingReview": True,
+        "ocrIsIndexOnly": True, "ocrProviderUsed": ocr_provider, "allPendingReview": True,
         "questions": questions, "drillAnswers": answers,
         "missingDrillNumbers": missing_drill_numbers(questions),
         "unattachedPageTops": unattached_tops,
@@ -877,10 +942,11 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
         "figures": figures,
     }
 
-    (book_dir / "section-map.json").write_text(json.dumps(section_map, ensure_ascii=False, indent=1), encoding="utf-8")
-    (book_dir / "questions.pending-review.json").write_text(json.dumps(question_pack, ensure_ascii=False, indent=1), encoding="utf-8")
-    (book_dir / "figure-candidates.json").write_text(json.dumps(figure_pack, ensure_ascii=False, indent=1), encoding="utf-8")
-    (book_dir / "qa-report.md").write_text(render_report(section_map, question_pack, figure_pack), encoding="utf-8")
+    suffix = f".{output_variant}" if output_variant else ""
+    (book_dir / f"section-map{suffix}.json").write_text(json.dumps(section_map, ensure_ascii=False, indent=1), encoding="utf-8")
+    (book_dir / f"questions.pending-review{suffix}.json").write_text(json.dumps(question_pack, ensure_ascii=False, indent=1), encoding="utf-8")
+    (book_dir / f"figure-candidates{suffix}.json").write_text(json.dumps(figure_pack, ensure_ascii=False, indent=1), encoding="utf-8")
+    (book_dir / f"qa-report{suffix}.md").write_text(render_report(section_map, question_pack, figure_pack), encoding="utf-8")
 
     return {
         "bookId": book_id, "pages": len(pages), "runs": len(runs),
@@ -1278,9 +1344,12 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--book", required=True)
+    parser.add_argument("--ocr-provider", choices=("rapidocr", "google"), default="rapidocr")
+    parser.add_argument("--output-variant", default=None,
+                        help="write .<variant> outputs instead of replacing the default review files")
     args = parser.parse_args(argv)
     try:
-        result = build(args.work, args.book)
+        result = build(args.work, args.book, args.ocr_provider, args.output_variant)
     except MapError as error:
         print(f"build-book-map: {error}", file=sys.stderr)
         return 2

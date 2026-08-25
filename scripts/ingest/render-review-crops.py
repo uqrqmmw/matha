@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,23 @@ def ensure_outside_repo(path: Path) -> None:
     except ValueError:
         return
     raise CropError(f"Scan-derived output must stay outside the Git repository: {resolved}")
+
+
+def prepare_output_dir(book_dir: Path, crops_root: Path) -> None:
+    """Create an empty crop directory without allowing an unsafe deletion.
+
+    Crop IDs can change when segmentation improves.  Leaving the previous
+    directory in place makes stale questions look current in a manual audit,
+    so a render is a replacement rather than an incremental update.
+    """
+    resolved_book = book_dir.resolve()
+    resolved_crops = crops_root.resolve()
+    if resolved_crops.parent != resolved_book:
+        raise CropError(f"Crop output must be a direct child of the book work directory: {resolved_crops}")
+    ensure_outside_repo(resolved_crops)
+    if resolved_crops.exists():
+        shutil.rmtree(resolved_crops)
+    resolved_crops.mkdir(parents=True, exist_ok=False)
 
 
 def to_pdf_rect(bbox: list[int], review_dpi: int) -> fitz.Rect:
@@ -95,10 +113,12 @@ def question_region(question: dict[str, Any], width: int, height: int) -> tuple[
     return clamp([0, int(top), width, int(bottom)], width, height), None
 
 
-def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[str, Any]:
+def render(work_root: Path, book_id: str, pdf: Path, limit: int | None,
+           variant: str | None = None) -> dict[str, Any]:
     ensure_outside_repo(work_root)
     book_dir = work_root / book_id
-    pack_path = book_dir / "questions.pending-review.json"
+    suffix = f".{variant}" if variant else ""
+    pack_path = book_dir / f"questions.pending-review{suffix}.json"
     if not pack_path.is_file():
         raise CropError(f"No question pack at {pack_path}; run build-book-map.py first")
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
@@ -110,8 +130,9 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[
                   (json.loads(path.read_text(encoding="utf-8"))
                    for path in sorted((book_dir / "pages").glob("p*.json")))}
 
-    crops_root = book_dir / "crops"
-    crops_root.mkdir(parents=True, exist_ok=True)
+    crops_name = f"crops{suffix}"
+    crops_root = book_dir / crops_name
+    prepare_output_dir(book_dir, crops_root)
     questions = pack["questions"][:limit] if limit else pack["questions"]
 
     written = 0
@@ -173,19 +194,20 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[
             entry["answerFromNextPage"] = question["solutionPdfPage"]
             answer_crops += 1
 
-    (book_dir / "crops-manifest.json").write_text(json.dumps({
+    (book_dir / f"crops-manifest{suffix}.json").write_text(json.dumps({
         "schema": SCHEMA_VERSION, "kind": "textbook-crop-manifest", "bookId": book_id,
         "pdfSha256": pack["pdfSha256"], "cropDpi": CROP_DPI, "crops": entries,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
-    (book_dir / "review.html").write_text(render_review_html(book_id, questions, entries), encoding="utf-8")
+    review_path = book_dir / f"review{suffix}.html"
+    review_path.write_text(render_review_html(book_id, questions, entries, crops_name), encoding="utf-8")
 
     return {"bookId": book_id, "questions": len(questions), "stemCrops": written,
             "figureCrops": figure_crops, "answerCrops": answer_crops, "refused": refused,
-            "reviewPage": str(book_dir / "review.html")}
+            "reviewPage": str(review_path)}
 
 
 def render_review_html(book_id: str, questions: list[dict[str, Any]],
-                       entries: dict[str, dict[str, Any]]) -> str:
+                       entries: dict[str, dict[str, Any]], crops_name: str = "crops") -> str:
     order = {"needs-repair": 0, "clean-candidate": 1}
     rows = sorted(questions, key=lambda q: (order.get(q["qaLane"], 2), q["pdfPage"]))
     parts = [
@@ -204,7 +226,7 @@ def render_review_html(book_id: str, questions: list[dict[str, Any]],
         "答案區預設收合，複核題幹時不會看到答案。全部 <code>pending-review</code>。</p>",
     ]
     for question in rows:
-        folder = f"crops/{question['id']}"
+        folder = f"{crops_name}/{question['id']}"
         parts.append("<article>")
         parts.append(f"<h2>{html.escape(question['id'])} · {question['qaLane']}</h2>")
         parts.append(
@@ -223,7 +245,11 @@ def render_review_html(book_id: str, questions: list[dict[str, Any]],
             parts.append(f"<img src='{folder}/stem.png' alt='題幹裁切'>")
         for order_index in range(1, len(question["regions"]["figures"]) + 1):
             parts.append(f"<img src='{folder}/figure-{order_index}.png' alt='圖形候選 {order_index}'>")
-        if question["regions"]["inlineAnswer"] or question.get("answerRef"):
+        if (
+            question["regions"]["inlineAnswer"]
+            or question.get("answerRef")
+            or (question.get("solutionRegion") and question.get("solutionPdfPage"))
+        ):
             parts.append("<details class='ans'><summary>展開答案／詳解（複核用）</summary>"
                          f"<img src='{folder}/answer.png' alt='答案與詳解'></details>")
         parts.append("</article>")
@@ -236,9 +262,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--book", required=True)
     parser.add_argument("--pdf", required=True, type=Path)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--variant", default=None,
+                        help="read questions.pending-review.<variant>.json and write matching crop outputs")
     args = parser.parse_args(argv)
     try:
-        result = render(args.work, args.book, args.pdf, args.limit)
+        result = render(args.work, args.book, args.pdf, args.limit, args.variant)
     except CropError as error:
         print(f"render-review-crops: {error}", file=sys.stderr)
         return 2
