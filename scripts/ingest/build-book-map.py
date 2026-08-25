@@ -596,7 +596,10 @@ def segment_questions(
         tier = context["tier"] if context["section"] in {"drill", "drill-answers"} else None
         role = {
             "body": "example",
-            "drill": f"chapter-end-{tier}" if tier else "chapter-end-unclassified",
+            # Keep this field compatible with build-private-bank.js.  The
+            # drill context and tier-unknown flag still preserve why this
+            # cannot yet be treated as a printed easy/medium/hard question.
+            "drill": f"chapter-end-{tier}" if tier else "unclassified",
         }.get(context["section"], "unclassified")
 
         flags: list[str] = []

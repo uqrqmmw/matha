@@ -626,7 +626,7 @@ class DifficultyProvenance(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertIsNone(records[0]["sourceDifficulty"])
         self.assertEqual(records[0]["sourceDifficultyEvidence"], "none")
-        self.assertEqual(records[0]["role"], "chapter-end-unclassified")
+        self.assertEqual(records[0]["role"], "unclassified")
         self.assertIn("tier-unknown", records[0]["flags"])
 
     def test_printed_banner_is_carried_with_its_evidence(self):
