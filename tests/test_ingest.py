@@ -38,18 +38,18 @@ def line(text, x0, y0, x1=None, y1=None, score=0.9, background=255):
 
 
 def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=(),
-         non_text_ink=None, printed_ink=110):
+         non_text_dark=None, printed_dark=0.5):
     regions = [list(b) for b in non_text]
     return {
-        "schema": 7, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
+        "schema": 8, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
         "dpi": 150, "width": WIDTH, "height": HEIGHT, "pdfSha256": "0" * 64,
         "imageSha256": "1" * 64, "ocr": list(ocr), "bannerOcr": list(banner_ocr),
         "layout": {"frameBoxes": [list(b) for b in frame_boxes],
                    "labelBoxes": [list(b) for b in label_boxes],
                    "nonTextRegions": regions,
-                   "nonTextInk": list(non_text_ink) if non_text_ink is not None
-                   else [printed_ink] * len(regions),
-                   "printedInk": printed_ink,
+                   "nonTextDarkFraction": list(non_text_dark) if non_text_dark is not None
+                   else [printed_dark] * len(regions),
+                   "printedDarkFraction": printed_dark,
                    "inkRows": [0] * HEIGHT},
     }
 
@@ -282,18 +282,19 @@ class FigureQuestions(unittest.TestCase):
         sample = page(11, [
             line("Ex12. 在等比數列中，求 a5 的值", 75, 135, 700, 165),
             line("解答", 120, 435, 173, 462),
-        ], non_text=[[320, 185, 600, 440]], non_text_ink=[157], printed_ink=120)
+        ], non_text=[[320, 185, 600, 440]], non_text_dark=[0.00], printed_dark=0.34)
         records, _ = segment(sample)
         self.assertEqual(records[0]["regions"]["figures"], [])
         self.assertIn("annotation-suspected-in-question", records[0]["flags"])
         self.assertEqual(records[0]["qaLane"], "needs-repair")
 
     def test_a_printed_diagram_is_not_mistaken_for_pencil(self):
-        """Printed diagrams measured 0.87-1.12 against their page's text."""
+        """A thin trig graph is as light as pencil but still lays solid ink:
+        printed figures keep 45-120% of the page text's solid-ink share."""
         sample = page(69, [
             line("Ex6. 如圖，設 m1, m2 分別為直線的斜率", 82, 126),
             line("解析", 127, 900, 181, 928),
-        ], non_text=[[150, 200, 500, 700]], non_text_ink=[118], printed_ink=108)
+        ], non_text=[[150, 200, 500, 700]], non_text_dark=[0.43], printed_dark=0.51)
         records, _ = segment(sample)
         self.assertEqual(len(records[0]["regions"]["figures"]), 1)
         self.assertNotIn("annotation-suspected-in-question", records[0]["flags"])

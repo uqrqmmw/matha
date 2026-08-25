@@ -32,7 +32,7 @@ import cv2
 import fitz
 import numpy as np
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REVIEW_DPI = 150
 OCR_ENGINE = "rapidocr-onnxruntime-1.2.3"
@@ -85,31 +85,42 @@ class LayoutResult:
     frame_boxes: list[list[int]]
     label_boxes: list[list[int]]
     nontext_regions: list[list[int]]
-    nontext_ink: list[int]
-    printed_ink: int
+    nontext_dark: list[float]
+    printed_dark: float
     ink_rows: list[int]
 
 
-def median_ink(gray: np.ndarray, box: list[int], threshold: int = 170) -> int | None:
-    """Median darkness of the ink inside ``box``; None when there is too little."""
+INK_THRESHOLD = 170
+SOLID_THRESHOLD = 110
+
+
+def dark_fraction(gray: np.ndarray, box: list[int]) -> float | None:
+    """How much of a region's ink is *solid* rather than faint.
+
+    Printed line art and pencil are both lighter than body text, so median
+    darkness confuses them — it flagged real trig graphs as handwriting.  What
+    separates them is that print lays down solid ink and pencil almost never
+    does: measured across four books, printed figures put 25-61% of their ink
+    below 110, a previous owner's pencil 0-7%.
+    """
     x0, y0, x1, y1 = box
     patch = gray[max(0, y0):y1, max(0, x0):x1]
     if patch.size == 0:
         return None
-    ink = patch[patch < threshold]
-    return int(np.median(ink)) if ink.size > 30 else None
+    ink = int((patch < INK_THRESHOLD).sum())
+    if ink < 40:
+        return None
+    return float((patch < SOLID_THRESHOLD).sum()) / ink
 
 
-def printed_ink_level(gray: np.ndarray, text_boxes: list[list[int]]) -> int:
-    """How dark this page's printed text is, used as the page's own baseline.
+def printed_dark_fraction(gray: np.ndarray, text_boxes: list[list[int]]) -> float:
+    """The same measure over this page's printed text: the page's own baseline.
 
-    Scan exposure varies book to book, so a fixed darkness cut would be wrong
-    somewhere.  Comparing a region against the printed text on the same page
-    is self-calibrating: printed diagrams land within a tenth of it, a previous
-    owner's pencil working lands a third lighter.
+    Scan exposure varies book to book and page to page, so a fixed cut would be
+    wrong somewhere; a ratio against the text on the same sheet is not.
     """
-    levels = [level for level in (median_ink(gray, box) for box in text_boxes) if level is not None]
-    return int(np.median(levels)) if levels else 0
+    values = [value for value in (dark_fraction(gray, box) for box in text_boxes) if value is not None]
+    return round(float(np.median(values)), 4) if values else 0.0
 
 
 def _ocr_fields(line: dict[str, Any]) -> dict[str, Any]:
@@ -216,7 +227,7 @@ def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResul
         w, h = x1 - x0, y1 - y0
         if w >= 0.06 * width and h >= 0.03 * height and int(nontext[y0:y1, x0:x1].sum() // 255) >= 350:
             box = [x0, y0, x1, y1]
-            found.append((box, median_ink(gray, box) or 0))
+            found.append((box, dark_fraction(gray, box) or 0.0))
     found.sort(key=lambda pair: (pair[0][1], pair[0][0]))
 
     ink_rows = (ink > 0).sum(axis=1).astype(int).tolist()
@@ -224,8 +235,8 @@ def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResul
         frame_boxes=sorted(frame_boxes, key=lambda b: (b[1], b[0])),
         label_boxes=sorted(label_boxes, key=lambda b: (b[1], b[0])),
         nontext_regions=[box for box, _ in found],
-        nontext_ink=[level for _, level in found],
-        printed_ink=printed_ink_level(gray, text_boxes),
+        nontext_dark=[round(value, 4) for _, value in found],
+        printed_dark=printed_dark_fraction(gray, text_boxes),
         ink_rows=ink_rows,
     )
 
@@ -394,8 +405,8 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
                 "frameBoxes": layout.frame_boxes,
                 "labelBoxes": layout.label_boxes,
                 "nonTextRegions": layout.nontext_regions,
-                "nonTextInk": layout.nontext_ink,
-                "printedInk": layout.printed_ink,
+                "nonTextDarkFraction": layout.nontext_dark,
+                "printedDarkFraction": layout.printed_dark,
                 "inkRows": layout.ink_rows,
             },
         }

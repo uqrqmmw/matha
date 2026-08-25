@@ -9,6 +9,7 @@
 - **一律 `pending-review`。** 沒有任何一條路徑會產生 `verified: true` 或 `studentUsable: true`。晉級要走既有的 `prepare-figure-review.js` → 人工 → `promote-reviewed-figures.js`。
 - **沒有印刷證據就是 null。** `sourceDifficulty` 只在書上印了難度橫幅時才填，並附上 `sourceDifficultyEvidence` 原字串。猜一個「中等」之後就再也分不出哪個是證據。
 - **有圖的題不准丟。** 圖形超出答案邊界時**裁到邊界**而不是丟棄；題幹提到「如圖」卻真的沒有圖形候選才帶 `figure-referenced-but-missing` 進 `needs-repair`。「圖示…的解」「作出…的圖形」這類**圖就是答案**的題另標 `answer-is-a-drawing`，不算缺陷。
+- **前手寫筆跡只標記、不擦除。** 這批掃描裡有前一手的鉛筆演算，就寫在題目與 `解答` 之間（題幹範圍內），而且常常包含最終答案。判準是**實心墨佔比**：印刷會壓出實心墨、鉛筆不會（印刷圖 0.45–1.2 倍於同頁內文，鉛筆 0–0.21 倍）。命中的區域不當圖形候選，題目標 `annotation-suspected-in-question` 並降到 `needs-repair`；裁切照樣產生，因為「前一手寫了什麼」是人要判的。
 - **一次一本、循序執行。** 這台機器在大量並行處理下當過機，所有程式都沒有多工。
 
 ## 五個階段
@@ -90,13 +91,14 @@ python scripts/ingest/apply-review.py --work "<work>" --book <bookId>     --deci
 | bookId | 頁 | 候選題 | 含圖題 | easy/medium/hard/null | clean/repair |
 |---|---:|---:|---:|---|---|
 | `matha-114-line-inequality` | 206 | 237 | 69 | 44/67/10/116 | 186/51 |
-| `matha-114-polynomial-quadratic` | 246 | 323 | 92 | 88/105/19/111 | 273/50 |
-| `matha-114-trig-graph` | 222 | 227 | 117 | 42/59/17/109 | 178/49 |
+| `matha-114-polynomial-quadratic` | 246 | 323 | 61 | 88/105/19/111 | 249/74 |
+| `matha-114-trig-graph` | 222 | 227 | 92 | 42/59/17/109 | 147/80 |
+| `matha-114-sequence` | 262 | 328 | 105 | 61/106/17/144 | 195/133 |
 
-787 題全部產出裁切，**0 題因越過答案邊界被拒絕**；`figure-referenced-but-missing` 全批只剩 1 題。
+1,115 題全部產出裁切，**0 題因越過答案邊界被拒絕**。`needs-repair` 之所以偏高，主因是 155 題偵測到前手鉛筆演算——那是這批掃描的實況，不是管線的缺陷。
 
 ## 已驗證與尚未驗證
 
-已用實跑驗證：三本 674 頁全數索引；section map 的分章與 easy／medium／hard 分層逐段對照實體書無誤；題幹與圖形裁切目視抽查（題幹不含答案、座標軸與刻度完整、選項不進圖、單位圓標點齊全）；`tests/test_ingest.py` 45 項與既有 `npm test` 214 項全數通過。
+已用實跑驗證：四本 936 頁全數索引；section map 的分章與 easy／medium／hard 分層逐段對照實體書無誤；題幹與圖形裁切目視抽查（題幹不含答案、座標軸與刻度完整、選項不進圖、單位圓標點齊全）；《數列遞迴與級數求和》是第一本完全沒有為它調參就跑出正確分章分層的書；鉛筆判準在乾淨的《直線與二元一次不等式》上數字完全不變（237 題／69 含圖），在有筆跡的頁上保留印刷圖、只標記鉛筆。`tests/test_ingest.py` 57 項與既有 `npm test` 215 項全數通過。
 
 **尚未驗證**：`needs-repair` 佇列裡的每一題仍待人工判讀；`handwritingSafety` 一律 `unknown`（沒有可信的手寫偵測，掃描本身也可能有筆跡）；本管線沒有產生任何可直接匯入正式題庫的 qpack，`build-private-bank.js` 的輸入仍需人工複核後再另行產生。
