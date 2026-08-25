@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
@@ -97,6 +97,8 @@ def _looks_like_choice(text: str) -> bool:
     return any(mark in text for mark in CHOICE_GARBLE)
 
 
+# Measured across both books: banner tags read 219-230, every plain line 255.
+BANNER_BACKGROUND_MAX = 245
 AXIS_LABEL_MAX_CHARS = 8
 AXIS_LABEL_REACH = 25
 
@@ -185,7 +187,8 @@ def read_printed_page(page: dict[str, Any]) -> int | None:
 def read_tier_banner(page: dict[str, Any]) -> tuple[str | None, str | None]:
     """Difficulty tier, only from the printed grey banner."""
     strip = [line for line in page.get("bannerOcr") or []
-             if line["bbox"][0] <= 0.45 * page["width"] and line.get("greyBacked", 0) >= 0.25]
+             if line["bbox"][0] <= 0.45 * page["width"]
+             and line.get("backgroundLevel", 255) <= BANNER_BACKGROUND_MAX]
     for line in strip:
         text = norm(line["text"])
         for tier, printed, test in TIER_PATTERNS:
@@ -209,7 +212,7 @@ def has_banner_box(page: dict[str, Any]) -> bool:
     Without the grey test a 解析 tag high on a continuation page opens a
     phantom drill block; without the geometry, highlighted body text does.
     """
-    return any(line.get("greyBacked", 0) >= 0.25
+    return any(line.get("backgroundLevel", 255) <= BANNER_BACKGROUND_MAX
                and line["bbox"][3] < 0.09 * page["height"]
                and line["bbox"][0] < 0.15 * page["width"]
                and 2 <= len(line["text"].strip()) <= 10

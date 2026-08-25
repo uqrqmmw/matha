@@ -32,9 +32,10 @@ import cv2
 import fitz
 import numpy as np
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REVIEW_DPI = 150
+OCR_ENGINE = "rapidocr-onnxruntime-1.2.3"
 BOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 # The scans are traditional Chinese; the OCR model emits simplified glyphs for
 # some of them.  Marker matching must survive that, so normalise before compare.
@@ -85,6 +86,11 @@ class LayoutResult:
     label_boxes: list[list[int]]
     nontext_regions: list[list[int]]
     ink_rows: list[int]
+
+
+def _ocr_fields(line: dict[str, Any]) -> dict[str, Any]:
+    """Only the fields the OCR pass itself produced; derived ones are redone."""
+    return {"bbox": list(line["bbox"]), "text": str(line["text"]), "score": line["score"]}
 
 
 def _rect_list(contours: Any) -> list[tuple[int, int, int, int]]:
@@ -200,6 +206,11 @@ def detect_layout(image: np.ndarray, text_boxes: list[list[int]]) -> LayoutResul
 # per-page pipeline
 # --------------------------------------------------------------------------
 
+def banner_strip_gray(image: np.ndarray) -> np.ndarray:
+    height, width = image.shape[:2]
+    return cv2.cvtColor(image[0:max(1, int(0.11 * height)), 0:max(1, int(0.50 * width))], cv2.COLOR_BGR2GRAY)
+
+
 def banner_strip_ocr(engine: Any, image: np.ndarray) -> list[dict[str, Any]]:
     """Re-read the top-left banner on a grey highlight.
 
@@ -207,16 +218,12 @@ def banner_strip_ocr(engine: Any, image: np.ndarray) -> list[dict[str, Any]]:
     解題思維挑戰) reversed out of a grey block.  A straight page OCR loses that
     text on roughly half the pages, and the tier is the only printed evidence
     of difficulty there is — guessing it is exactly what must not happen.  So
-    the strip is always normalised, binarised, upscaled and read again, and
-    each line records how much grey sits behind it: an earlier page-wide grey
-    gate skipped four real banners in the second book, and the tier of those
-    blocks silently became whatever the previous block was.
+    the strip is always normalised, binarised, upscaled and read again.  An
+    earlier version gated this on a page-wide grey check, which skipped four
+    real banners in the second book and let those blocks silently inherit the
+    previous block's tier.
     """
-    height, width = image.shape[:2]
-    band_h = max(1, int(0.11 * height))
-    band_w = max(1, int(0.50 * width))
-    gray = cv2.cvtColor(image[0:band_h, 0:band_w], cv2.COLOR_BGR2GRAY)
-
+    gray = banner_strip_gray(image)
     scale = 2.4
     normalised = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
     _, binary = cv2.threshold(normalised, 150, 255, cv2.THRESH_BINARY)
@@ -229,17 +236,31 @@ def banner_strip_ocr(engine: Any, image: np.ndarray) -> list[dict[str, Any]]:
         box, text, score = item[0], item[1], item[2]
         xs = [float(point[0]) / scale for point in box]
         ys = [float(point[1]) / scale for point in box]
-        bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
-        patch = gray[max(0, bbox[1]):bbox[3], max(0, bbox[0]):bbox[2]]
-        grey_backed = float(((patch > 90) & (patch < 205)).mean()) if patch.size else 0.0
         lines.append({
-            "bbox": bbox,
+            "bbox": [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))],
             "text": str(text),
             "score": round(float(score), 4),
-            "greyBacked": round(grey_backed, 3),
         })
     lines.sort(key=lambda line: (line["bbox"][1], line["bbox"][0]))
     return lines
+
+
+def annotate_banner_backgrounds(image: np.ndarray, lines: list[dict[str, Any]]) -> None:
+    """Record the paper level behind each banner line, in place.
+
+    The 90th percentile is the background between the glyphs: it saturates at
+    255 on white paper and caps around 225 inside a grey banner.  Measuring the
+    *fraction* of mid-grey pixels instead did not separate the two — dense
+    black text on white scored 0.18 against a banner's 0.22.
+
+    Kept apart from the OCR pass so that changing this metric does not mean
+    re-reading three thousand pages.
+    """
+    gray = banner_strip_gray(image)
+    for line in lines:
+        x0, y0, x1, y1 = line["bbox"]
+        patch = gray[max(0, y0):y1, max(0, x0):x1]
+        line["backgroundLevel"] = int(np.percentile(patch, 90)) if patch.size else 255
 
 
 def ocr_page(engine: Any, image_path: Path) -> list[dict[str, Any]]:
@@ -281,6 +302,7 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
     started = time.time()
     written = 0
     skipped = 0
+    reused = 0
     for number in range(1, total + 1):
         image_path = images_dir / f"p{number:04d}.png"
         record_path = pages_dir / f"p{number:04d}.json"
@@ -290,6 +312,7 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
             pixmap.save(str(image_path))
         image_sha = sha256_file(image_path)
 
+        existing: dict[str, Any] = {}
         if record_path.exists() and not force:
             try:
                 existing = json.loads(record_path.read_text(encoding="utf-8"))
@@ -299,11 +322,29 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
                 skipped += 1
                 continue
 
+        # The OCR pass costs about 2 s a page; the layout scan and the banner
+        # background level cost a fraction of that.  Keeping the two apart means
+        # changing a derived rule re-reads nothing — over the remaining eleven
+        # books that is hours rather than minutes.
+        reusable = (
+            not force
+            and existing.get("imageSha256") == image_sha
+            and existing.get("ocrEngine") == OCR_ENGINE
+            and isinstance(existing.get("ocr"), list)
+            and isinstance(existing.get("bannerOcr"), list)
+        )
+
         image = cv2.imdecode(np.fromfile(str(image_path), dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise IngestError(f"Cannot decode rendered page: {image_path}")
-        lines = ocr_page(engine, image_path)
-        banner = banner_strip_ocr(engine, image)
+        if reusable:
+            lines = [_ocr_fields(line) for line in existing["ocr"]]
+            banner = [_ocr_fields(line) for line in existing["bannerOcr"]]
+            reused += 1
+        else:
+            lines = ocr_page(engine, image_path)
+            banner = banner_strip_ocr(engine, image)
+        annotate_banner_backgrounds(image, banner)
         layout = detect_layout(image, [line["bbox"] for line in lines])
 
         record = {
@@ -316,6 +357,7 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
             "width": int(image.shape[1]),
             "height": int(image.shape[0]),
             "imageSha256": image_sha,
+            "ocrEngine": OCR_ENGINE,
             "displayTruth": "original-pdf-crop",
             "ocrIsIndexOnly": True,
             "ocr": lines,
@@ -331,7 +373,8 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
         written += 1
         if number % 10 == 0 or number == total:
             rate = (time.time() - started) / max(1, written) if written else 0.0
-            print(f"  page {number}/{total}  written={written} skipped={skipped}  {rate:.1f}s/page", flush=True)
+            print(f"  page {number}/{total}  written={written} reusedOcr={reused} "
+                  f"skipped={skipped}  {rate:.1f}s/page", flush=True)
 
     summary = {
         "schema": SCHEMA_VERSION,
@@ -343,6 +386,7 @@ def index_book(pdf: Path, book_id: str, work_root: Path, dpi: int, force: bool, 
         "indexedPages": total,
         "dpi": dpi,
         "pagesWritten": written,
+        "pagesReusedOcr": reused,
         "pagesSkipped": skipped,
         "elapsedSeconds": round(time.time() - started, 1),
     }
