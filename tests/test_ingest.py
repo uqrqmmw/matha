@@ -26,6 +26,7 @@ def _load(name: str):
 bookmap = _load("build-book-map")
 crops = _load("render-review-crops")
 indexer = _load("index-pages")
+status = _load("ingest-status")
 
 WIDTH, HEIGHT = 1038, 1500
 
@@ -498,6 +499,48 @@ class TierBannerGeometry(unittest.TestCase):
         block inherit the previous block's easy tier."""
         sample = page(91, [], banner_ocr=[line("試题演", 63, 76, 256, 106, grey=0.5)])
         self.assertEqual(bookmap.read_tier_banner(sample)[0], "medium")
+
+
+class StatusRollup(unittest.TestCase):
+    """The roll-up is what says whether anything escaped review."""
+
+    def _book(self, tmp, rows):
+        import json
+        book = Path(tmp) / "matha-114-line-inequality"
+        book.mkdir()
+        (book / "section-map.json").write_text(json.dumps({
+            "bookId": "matha-114-line-inequality", "pdfFileName": "x.pdf",
+            "pdfSha256": "a" * 64, "pageCount": 206, "indexedPages": 206,
+        }), encoding="utf-8")
+        (book / "questions.pending-review.json").write_text(json.dumps({
+            "questions": rows, "drillAnswers": [],
+        }), encoding="utf-8")
+        return book
+
+    def test_a_record_that_left_pending_review_is_counted(self):
+        import tempfile
+        rows = [
+            {"sourceDifficulty": "easy", "qaLane": "clean-candidate", "status": "pending-review",
+             "flags": [], "regions": {"figures": []}},
+            {"sourceDifficulty": None, "qaLane": "needs-repair", "status": "ready",
+             "flags": ["empty-stem"], "regions": {"figures": [[1, 2, 3, 4]]}},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = status.read_book(self._book(tmp, rows))
+        self.assertEqual(summary["questions"], 2)
+        self.assertEqual(summary["figureQuestions"], 1)
+        self.assertEqual(summary["cleanCandidates"], 1)
+        self.assertEqual(summary["needsRepair"], 1)
+        self.assertEqual(summary["notPendingReview"], 1)
+        self.assertEqual(summary["tiers"]["easy"], 1)
+        self.assertEqual(summary["tiers"]["None"], 1)
+
+    def test_a_book_without_a_map_is_skipped_not_guessed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "matha-114-trig-graph"
+            empty.mkdir()
+            self.assertIsNone(status.read_book(empty))
 
 
 class RepoSafety(unittest.TestCase):
