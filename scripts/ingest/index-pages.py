@@ -32,7 +32,7 @@ import cv2
 import fitz
 import numpy as np
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REVIEW_DPI = 150
 BOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
@@ -207,17 +207,15 @@ def banner_strip_ocr(engine: Any, image: np.ndarray) -> list[dict[str, Any]]:
     解題思維挑戰) reversed out of a grey block.  A straight page OCR loses that
     text on roughly half the pages, and the tier is the only printed evidence
     of difficulty there is — guessing it is exactly what must not happen.  So
-    when a grey band is present the strip is normalised, binarised, upscaled
-    and read again.
+    the strip is always normalised, binarised, upscaled and read again, and
+    each line records how much grey sits behind it: an earlier page-wide grey
+    gate skipped four real banners in the second book, and the tier of those
+    blocks silently became whatever the previous block was.
     """
     height, width = image.shape[:2]
     band_h = max(1, int(0.11 * height))
     band_w = max(1, int(0.50 * width))
     gray = cv2.cvtColor(image[0:band_h, 0:band_w], cv2.COLOR_BGR2GRAY)
-
-    grey_fill = ((gray > 90) & (gray < 205)).sum(axis=1)
-    if int(grey_fill.max(initial=0)) < 0.20 * band_w:
-        return []
 
     scale = 2.4
     normalised = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
@@ -231,10 +229,14 @@ def banner_strip_ocr(engine: Any, image: np.ndarray) -> list[dict[str, Any]]:
         box, text, score = item[0], item[1], item[2]
         xs = [float(point[0]) / scale for point in box]
         ys = [float(point[1]) / scale for point in box]
+        bbox = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
+        patch = gray[max(0, bbox[1]):bbox[3], max(0, bbox[0]):bbox[2]]
+        grey_backed = float(((patch > 90) & (patch < 205)).mean()) if patch.size else 0.0
         lines.append({
-            "bbox": [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))],
+            "bbox": bbox,
             "text": str(text),
             "score": round(float(score), 4),
+            "greyBacked": round(grey_backed, 3),
         })
     lines.sort(key=lambda line: (line["bbox"][1], line["bbox"][0]))
     return lines

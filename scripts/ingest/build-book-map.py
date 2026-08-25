@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
@@ -60,9 +60,13 @@ PAST_EXAM_RE = re.compile(r"(\d{2,3})\s*(?:學測|指考|分科|模擬考|統測
 # The grey tier banner survives OCR badly.  Match on the characters that do
 # survive rather than on the full phrase; an unmatched banner stays unknown.
 TierTest = tuple[str, str, Callable[[str], bool]]
+# Observed OCR of the three banners across two books: 基宝力餐成 / 基宝力养成 /
+# 基實力成, 進試题演鍊 / 進試題演 / 試题演, 解题思维挑.  The 進 of 進階 is
+# dropped often enough that requiring it silently carried the previous tier
+# forward, so each tier keys on a character that actually survives.
 TIER_PATTERNS: tuple[TierTest, ...] = (
     ("hard", "解題思維挑戰", lambda t: "挑" in t or "戰" in t or ("思" in t and "維" in t)),
-    ("medium", "進階試題演練", lambda t: "進" in t and ("演" in t or "練" in t or "鍊" in t)),
+    ("medium", "進階試題演練", lambda t: "演" in t or ("進" in t and "階" in t)),
     ("easy", "基礎實力養成", lambda t: "基" in t and ("成" in t or "礎" in t or "養" in t)),
 )
 TYPE_PATTERNS: tuple[tuple[str, Callable[[str], bool]], ...] = (
@@ -180,7 +184,8 @@ def read_printed_page(page: dict[str, Any]) -> int | None:
 
 def read_tier_banner(page: dict[str, Any]) -> tuple[str | None, str | None]:
     """Difficulty tier, only from the printed grey banner."""
-    strip = [line for line in page.get("bannerOcr") or [] if line["bbox"][0] <= 0.45 * page["width"]]
+    strip = [line for line in page.get("bannerOcr") or []
+             if line["bbox"][0] <= 0.45 * page["width"] and line.get("greyBacked", 0) >= 0.25]
     for line in strip:
         text = norm(line["text"])
         for tier, printed, test in TIER_PATTERNS:
@@ -199,11 +204,13 @@ def read_tier_banner(page: dict[str, Any]) -> tuple[str | None, str | None]:
 def has_banner_box(page: dict[str, Any]) -> bool:
     """A tier banner was printed here even if its text did not survive OCR.
 
-    Geometry matters: the banner is a grey tag flush to the top-left corner.
-    Accepting any grey ink in the top strip turned highlighted body text into
-    phantom drill blocks in the middle of a chapter.
+    Two things separate it from ordinary text at the top of a page: it is
+    reversed out of a grey block, and it sits flush in the top-left corner.
+    Without the grey test a 解析 tag high on a continuation page opens a
+    phantom drill block; without the geometry, highlighted body text does.
     """
-    return any(line["bbox"][3] < 0.09 * page["height"]
+    return any(line.get("greyBacked", 0) >= 0.25
+               and line["bbox"][3] < 0.09 * page["height"]
                and line["bbox"][0] < 0.15 * page["width"]
                and 2 <= len(line["text"].strip()) <= 10
                for line in page.get("bannerOcr") or [])
@@ -571,12 +578,15 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
         type_headers = read_type_headers(page)
 
         page_flags: list[str] = []
-        if banner_tier:
+        if has_banner_box(page):
+            # The grey banner is what starts a drill block.  When its text is
+            # unreadable the tier stays unknown rather than inheriting the
+            # previous block's — a carried-over tier is a guessed difficulty.
             tier, tier_evidence, in_drill_block = banner_tier, banner_evidence, True
             block_index += 1
             carried_type = ("unclassified", "none")
-        elif has_banner_box(page) and not in_drill_block:
-            page_flags.append("tier-banner-unreadable")
+            if not banner_tier:
+                page_flags.append("tier-banner-unreadable")
         elif page_chapter and not type_headers:
             # A fresh centred chapter title means the drill block is over.
             tier, tier_evidence, in_drill_block = None, None, False

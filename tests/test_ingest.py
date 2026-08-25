@@ -30,14 +30,14 @@ indexer = _load("index-pages")
 WIDTH, HEIGHT = 1038, 1500
 
 
-def line(text, x0, y0, x1=None, y1=None, score=0.9):
+def line(text, x0, y0, x1=None, y1=None, score=0.9, grey=0.0):
     return {"bbox": [x0, y0, x1 if x1 is not None else x0 + 400, y1 if y1 is not None else y0 + 26],
-            "text": text, "score": score}
+            "text": text, "score": score, "greyBacked": grey}
 
 
 def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=()):
     return {
-        "schema": 4, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
+        "schema": 5, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
         "dpi": 150, "width": WIDTH, "height": HEIGHT, "pdfSha256": "0" * 64,
         "imageSha256": "1" * 64, "ocr": list(ocr), "bannerOcr": list(banner_ocr),
         "layout": {"frameBoxes": [list(b) for b in frame_boxes],
@@ -282,7 +282,7 @@ class FigureQuestions(unittest.TestCase):
 class DifficultyProvenance(unittest.TestCase):
     def test_tier_is_read_from_the_printed_grey_banner(self):
         for text, expected in [("基實力成", "easy"), ("進試题演鍊", "medium"), ("解题思维挑", "hard")]:
-            sample = page(69, [], banner_ocr=[line(text, 60, 70, 300, 100)])
+            sample = page(69, [], banner_ocr=[line(text, 60, 70, 300, 100, grey=0.5)])
             tier, evidence = bookmap.read_tier_banner(sample)
             self.assertEqual(tier, expected, text)
             self.assertIn(text, evidence)
@@ -475,12 +475,29 @@ class TierBannerGeometry(unittest.TestCase):
     def test_grey_ink_lower_down_the_page_is_not_a_banner(self):
         """Body pages carry grey-highlighted boxes; accepting any grey ink in
         the top strip opened phantom drill blocks in mid-chapter."""
-        body = page(10, [], banner_ocr=[line("Enlightenment example", 75, 234, 327, 264)])
+        body = page(10, [], banner_ocr=[line("Enlightenment example", 75, 234, 327, 264, grey=0.6)])
         self.assertFalse(bookmap.has_banner_box(body))
 
-    def test_a_tag_in_the_top_left_corner_counts_as_a_banner(self):
-        drill = page(69, [], banner_ocr=[line("基實力成", 67, 70, 300, 103)])
+    def test_a_grey_backed_tag_in_the_top_left_corner_counts_as_a_banner(self):
+        drill = page(69, [], banner_ocr=[line("基實力成", 67, 70, 300, 103, grey=0.5)])
         self.assertTrue(bookmap.has_banner_box(drill))
+
+    def test_plain_text_at_the_top_left_is_not_a_banner(self):
+        """A 解析 tag high on a continuation page sits in the same corner but
+        on white paper; without the grey test it opened a phantom block."""
+        continuation = page(70, [], banner_ocr=[line("解析", 127, 80, 181, 110, grey=0.02)])
+        self.assertFalse(bookmap.has_banner_box(continuation))
+
+    def test_a_banner_whose_text_is_unreadable_leaves_the_tier_unknown(self):
+        unreadable = page(91, [], banner_ocr=[line("|||", 60, 72, 250, 104, grey=0.5)])
+        self.assertTrue(bookmap.has_banner_box(unreadable))
+        self.assertEqual(bookmap.read_tier_banner(unreadable), (None, None))
+
+    def test_the_medium_banner_survives_losing_its_first_character(self):
+        """p91 of the polynomial book OCRs as 試题演 — requiring 進 made the
+        block inherit the previous block's easy tier."""
+        sample = page(91, [], banner_ocr=[line("試题演", 63, 76, 256, 106, grey=0.5)])
+        self.assertEqual(bookmap.read_tier_banner(sample)[0], "medium")
 
 
 class RepoSafety(unittest.TestCase):
