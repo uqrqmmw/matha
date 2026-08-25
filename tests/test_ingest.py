@@ -381,6 +381,60 @@ class CrossPageRecovery(unittest.TestCase):
         self.assertEqual(bookmap.recover_cross_page_gaps(questions, state), 0)
 
 
+class PageTopContent(unittest.TestCase):
+    """A drill question's tail at the top of the next page is reported for a
+    human, never glued: three attach heuristics all failed verification
+    against this book's fraction-heavy typography."""
+
+    @staticmethod
+    def build(top_lines, same_block=True, next_headers=()):
+        page1 = page(71, [
+            line("2. 已知 A 與 L 交於 P 點的直線為", 68, 843, 767, 870),
+        ])
+        page2 = page(72, [
+            *top_lines,
+            line("3. 已知 A（-3，5），B（2，7）", 68, 561, 873, 588),
+        ])
+        ctx1 = context(section="drill", block_index=1, tier="easy",
+                       tier_evidence="banner", type_headers=[(10, "fill", "hdr")])
+        ctx2 = context(section="drill", block_index=1 if same_block else 2,
+                       tier="easy", tier_evidence="banner",
+                       type_headers=list(next_headers))
+        ctx2["carriedType"] = ("fill", "hdr")
+        ev1 = bookmap.page_events(page1, True)
+        ev2 = bookmap.page_events(page2, True)
+        bookmap.segment_questions(page1, ev1, ctx1)
+        bookmap.segment_questions(page2, ev2, ctx2)
+        return bookmap.collect_page_top_content(
+            {71: (page1, ev1, ctx1), 72: (page2, ev2, ctx2)})
+
+    def test_substantial_top_content_is_reported(self):
+        tops = self.build([
+            line("若 AB 與 L 交於 P 點，則下列選項哪些正確？", 153, 116, 584, 139),
+            line("(A)點A到直線L的距離為", 163, 157, 431, 180),
+        ])
+        self.assertEqual(len(tops), 1)
+        self.assertEqual(tops[0]["pdfPage"], 72)
+        self.assertLess(tops[0]["region"][3], 561)
+        self.assertGreaterEqual(tops[0]["region"][3], 180)
+
+    def test_a_new_block_banner_page_is_not_reported(self):
+        self.assertEqual(self.build([line("基礎實力養成", 57, 85, 251, 115)],
+                                    same_block=False), [])
+
+    def test_a_sliver_of_the_next_questions_tall_line_is_not_reported(self):
+        """A fraction bar of question 3 pokes above its own detected start."""
+        self.assertEqual(self.build([line("x-2", 640, 530, 700, 555)]), [])
+
+    def test_a_type_header_bounds_the_report(self):
+        tops = self.build(
+            [line("(A)點A到直線L的距離為", 163, 116, 431, 139),
+             line("三、填充題", 65, 300, 200, 323)],
+            next_headers=[(300, "fill", "三、填充題")])
+        self.assertEqual(len(tops), 1)
+        self.assertLess(tops[0]["region"][3], 300)
+
+
 class RuledAnswerTags(unittest.TestCase):
     """OCR loses the word inside a 解答 box often enough that the box itself
     has to count — but only when it really is a box."""

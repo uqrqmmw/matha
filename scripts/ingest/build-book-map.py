@@ -824,6 +824,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
         })
 
     recover_cross_page_gaps(questions, page_state)
+    unattached_tops = collect_page_top_content(page_state)
     link_cross_page_solutions(page_records, questions)
     pair_drill_answers(questions, answers)
 
@@ -855,6 +856,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
         "ocrIsIndexOnly": True, "allPendingReview": True,
         "questions": questions, "drillAnswers": answers,
         "missingDrillNumbers": missing_drill_numbers(questions),
+        "unattachedPageTops": unattached_tops,
     }
     figure_pack = {
         "schema": SCHEMA_VERSION, "kind": "textbook-figure-candidates", "bookId": book_id,
@@ -1049,6 +1051,47 @@ def recover_cross_page_gaps(questions: list[dict[str, Any]],
     return recovered
 
 
+def collect_page_top_content(page_state: dict[int, tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Report drill-page tops whose content no question span covers.
+
+    A drill question that wraps across a page turn leaves its tail above the
+    next page's first detected start — on pdf 72 of the line book that region
+    held the previous question's clause and all five options, silently
+    dropped.  Three attempts to attach such regions to the previous question
+    automatically all failed verification: this book's fraction-heavy first
+    lines fragment upward past any gap threshold, so every heuristic ended up
+    gluing a piece of the *next* question — once an entire question whose
+    printed number OCR had lost — onto the wrong stem.  So this reports and
+    never attaches: which page, how far down, for a human with the page open.
+    """
+    out: list[dict[str, Any]] = []
+    for pdf_page in sorted(page_state):
+        previous = pdf_page - 1
+        if previous not in page_state:
+            continue
+        page, events, context = page_state[pdf_page]
+        _, _, prev_context = page_state[previous]
+        if context["section"] != "drill" or prev_context["section"] != "drill":
+            continue
+        if context["blockIndex"] != prev_context["blockIndex"]:
+            continue  # a new block's page opens with its banner
+        starts = [event for event in events if event["kind"] == "question"]
+        if not starts:
+            continue
+        first_y = min(event["y"] for event in starts)
+        cutoff = min([first_y] + [y for y, _, _ in context["typeHeaders"] if y < first_y])
+        # Anything within arm's reach of the first question is its own tall
+        # fraction or brace poking above the detected start row, and a sliver
+        # of one says nothing.
+        content = [line for line in page["ocr"] if line["bbox"][3] < cutoff - 40]
+        if not content or sum(len(norm(line["text"]).strip()) for line in content) < 8:
+            continue
+        bottom = max(line["bbox"][3] for line in content)
+        out.append({"pdfPage": pdf_page, "printedPage": context["printedPage"],
+                    "region": [0, 0, page["width"], min(cutoff - 4, bottom + 6)]})
+    return out
+
+
 def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: list[dict[str, Any]]) -> None:
     """A question whose solution starts on the next page is fine, not broken."""
     lead_in_by_page = {record["pdfPage"]: record["leadInSolution"] for record in page_records}
@@ -1067,9 +1110,10 @@ def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: lis
             # where it ends, or 300 questions across six books keep a page
             # number and no rendered answer for a reviewer to read.
             question["solutionRegion"] = lead_in_region.get(pdf_page + 1)
+    handled = {"solution-continues-next-page"}
     for question in questions:
         question["qaLane"] = "needs-repair" if [
-            flag for flag in question["flags"] if flag != "solution-continues-next-page"
+            flag for flag in question["flags"] if flag not in handled
         ] else "clean-candidate"
 
 
@@ -1191,6 +1235,12 @@ def render_report(section_map: dict[str, Any], questions: dict[str, Any], figure
         out.append(f"| {gap['blockIndex']} | {gap['questionType']} "
                    f"| {'; '.join(f'{a}→{b}' for a, b in gap['numberingJumps'])} "
                    f"| {gap['pdfPageRange'][0]}–{gap['pdfPageRange'][1]} |")
+
+    tops = questions.get("unattachedPageTops") or []
+    out += ["", "## 頁頂有內容但無法安全掛接的（可能是題號讀丟的整題，需人工看）", "",
+            f"共 {len(tops)} 頁。", ""]
+    out += [f"- PDF {top['pdfPage']}（印刷 {top['printedPage']}）y 0–{top['region'][3]}"
+            for top in tops[:30]]
 
     flagged_pages = [page for page in section_map["pages"] if page["flags"]]
     out += ["", "## 有旗標的頁", "", f"共 {len(flagged_pages)} 頁。", ""]
