@@ -248,6 +248,19 @@ def collect_headings(page: dict[str, Any]) -> tuple[str | None, str | None]:
     return (chapter[1] if chapter else None, heading[1] if heading else None)
 
 
+def row_top(lines: list[dict[str, Any]], bbox: list[int]) -> int:
+    """Top of the printed row that ``bbox`` belongs to."""
+    y0, y1 = bbox[1], bbox[3]
+    height = max(1, y1 - y0)
+    top = y0
+    for line in lines:
+        other = line["bbox"]
+        overlap = min(y1, other[3]) - max(y0, other[1])
+        if overlap >= 0.5 * min(height, max(1, other[3] - other[1])):
+            top = min(top, other[1])
+    return top
+
+
 def page_events(page: dict[str, Any], in_drill_block: bool) -> list[dict[str, Any]]:
     """Question starts and answer tags in reading order.
 
@@ -263,23 +276,25 @@ def page_events(page: dict[str, Any], in_drill_block: bool) -> list[dict[str, An
         text = norm(line["text"]).strip()
 
         if x0 <= 0.42 * width and ANSWER_ITEM_RE.match(text):
-            events.append({"y": y0, "kind": "answer-item",
+            events.append({"y": y0, "bbox": line["bbox"], "kind": "answer-item",
                            "number": int(ANSWER_ITEM_RE.match(text).group(1)), "text": text})
             continue
         if x0 <= 0.42 * width and ANSWER_TAG_RE.match(text):
-            events.append({"y": y0, "kind": "answer-tag", "text": text})
+            events.append({"y": y0, "bbox": line["bbox"], "kind": "answer-tag", "text": text})
             continue
 
         match = EXAMPLE_RE.search(text)
         if match and x0 < 0.30 * width:
-            events.append({"y": y0, "kind": "question", "marker": f"ex{int(match.group(1))}",
-                           "number": int(match.group(1)), "origin": "example", "text": text})
+            events.append({"y": y0, "bbox": line["bbox"], "kind": "question",
+                           "marker": f"ex{int(match.group(1))}", "number": int(match.group(1)),
+                           "origin": "example", "text": text})
             continue
         if in_drill_block and x0 < 0.16 * width:
             match = NUMBERED_ITEM_RE.match(text)
             if match and not OPTION_RE.match(text):
-                events.append({"y": y0, "kind": "question", "marker": f"q{int(match.group(1))}",
-                               "number": int(match.group(1)), "origin": "numbered", "text": text})
+                events.append({"y": y0, "bbox": line["bbox"], "kind": "question",
+                               "marker": f"q{int(match.group(1))}", "number": int(match.group(1)),
+                               "origin": "numbered", "text": text})
 
     # A ruled 解答 / 解析 tag whose word OCR lost is still a hard boundary.
     # Losing it once left "解答 (1)(3)(5)" sitting inside a rendered question.
@@ -289,7 +304,15 @@ def page_events(page: dict[str, Any], in_drill_block: bool) -> list[dict[str, An
             continue
         if any(abs(box[1] - y) <= 14 for y in tag_ys):
             continue
-        events.append({"y": box[1], "kind": "answer-tag", "text": "", "source": "ruled-label-box"})
+        events.append({"y": box[1], "bbox": box, "kind": "answer-tag", "text": "",
+                       "source": "ruled-label-box"})
+
+    # OCR splits one printed line into several boxes whose tops differ by a few
+    # pixels, and the marker is not always the highest of them: on p69 the tail
+    # of "3.（ ）點P…" sat 3 px above its own "3.（", so cutting at the marker
+    # left that tail inside question 2's crop.  Cut at the row instead.
+    for event in events:
+        event["y"] = row_top(page["ocr"], event.get("bbox") or [0, event["y"], 0, event["y"] + 26])
 
     events.sort(key=lambda event: event["y"])
     return events

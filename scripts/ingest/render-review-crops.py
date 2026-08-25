@@ -31,8 +31,11 @@ import fitz
 SCHEMA_VERSION = 4
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CROP_DPI = 300
-PAD = 8          # review-dpi pixels of breathing room around a region
+PAD = 8          # review-dpi pixels of breathing room around a question band
 ANSWER_GAP = 4   # review-dpi pixels kept clear of the answer boundary
+# Figure boxes arrive already grown to their labels and clamped off the option
+# rows, so padding them again only drags neighbouring text back into the crop.
+FIGURE_PAD = 0
 
 
 class CropError(RuntimeError):
@@ -126,7 +129,8 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[
         written += 1
 
         for order, box in enumerate(question["regions"]["figures"], start=1):
-            padded = clamp([box[0] - PAD, box[1] - PAD, box[2] + PAD, box[3] + PAD], width, height)
+            padded = clamp([box[0] - FIGURE_PAD, box[1] - FIGURE_PAD,
+                            box[2] + FIGURE_PAD, box[3] + FIGURE_PAD], width, height)
             source.get_pixmap(dpi=CROP_DPI, clip=to_pdf_rect(padded, review_dpi)).save(
                 str(out_dir / f"figure-{order}.png"))
             figure_crops += 1

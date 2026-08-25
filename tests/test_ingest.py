@@ -105,6 +105,22 @@ class AnswerSeparation(unittest.TestCase):
         self.assertIsNone(records[1]["regions"]["answerBoundaryY"])
         self.assertIn("solution-not-on-this-page", records[1]["flags"])
 
+    def test_a_split_ocr_row_does_not_leak_into_the_previous_question(self):
+        """OCR splits one printed line into boxes whose tops differ slightly,
+        and the marker is not always the highest: on p69 the tail of
+        "3.（ ）點P…" sat 3 px above its own "3.（"."""
+        sample = page(69, [
+            line("2. （ ）已知 ABCDEFG 為正七邊形", 58, 729, 780, 754),
+            line("（A）EF", 152, 977, 232, 1005),
+            line(")點P（3，4）到直線L：12x-5y+10=0的距離", 132, 1171, 620, 1199),
+            line("3. （", 59, 1174, 120, 1198),
+        ])
+        records, _ = segment(sample, in_drill=True, section="drill")
+        self.assertEqual([r["id"] for r in records],
+                         ["line-inequality-p058-q2", "line-inequality-p058-q3"])
+        self.assertNotIn("點P", records[0]["ocrIndex"]["stem"])
+        self.assertLess(records[0]["regions"]["stem"][3], 1171)
+
     def test_answer_text_indented_past_the_margin_still_gets_flagged(self):
         """The tag scan only sees the left margin.  An answer indented to the
         right slips past it, so the stem text is checked a second time."""
