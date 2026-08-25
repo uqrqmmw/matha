@@ -138,3 +138,31 @@ test('完整文字化表格只由建置期逐題白名單產生可信 evidence�
   assert.equal(questionMissingVisualAsset(verified), false);
   assert.equal(questionMissingVisualAsset(selfClaimed), true);
 });
+
+/* 掃描教材匯入管線（scripts/ingest/apply-review.py）產出的記錄必須被這裡接受，
+   否則人工複核的時間會在最後一步才發現白花。這條測試釘住兩邊的契約。 */
+test('掃描教材複核後產出的題目通過私有題庫驗證，且圖題仍被隔離到裁圖複核完成', () => {
+  const reviewed = {
+    id:'line-inequality-p067-q1',
+    topic:'line', type:'single', diff:1,
+    diffEvidence:'基礎實力養成（OCR：基實力成）',
+    q:'在坐標平面上，根據方程式 x+5y-7=0，2x+y+4=0，x-y-1=0 畫出三條直線 L₁，L₂，L₃，如圖所示，試選出方程式與直線間的正確配置？',
+    opts:[
+      'L₁: x+5y-7=0，L₂: 2x+y+4=0，L₃: x-y-1=0',
+      'L₁: x-y-1=0，L₂: x+5y-7=0，L₃: 2x+y+4=0',
+      'L₁: 2x+y+4=0，L₂: x+5y-7=0，L₃: x-y-1=0',
+      'L₁: x-y-1=0，L₂: 2x+y+4=0，L₃: x+5y-7=0',
+      'L₁: 2x+y+4=0，L₂: x-y-1=0，L₃: x+5y-7=0',
+    ],
+    ans:[3],
+    bookId:'matha-114-line-inequality', page:69, printedPage:67,
+    role:'chapter-end-easy', src:'matha-114-line-inequality p67',
+    needsFigure:true,
+  };
+  assert.equal(validateQuestion(enrichQuestionMetadata(reviewed)), null);
+  assert.equal(questionMissingVisualAsset(reviewed), true);
+
+  /* 沒有 figureAsset 就不准自稱已備圖：needsFigure 是隔離旗標，不是通行證。 */
+  const pretending = { ...reviewed, needsFigure:false };
+  assert.equal(questionMissingVisualAsset(pretending), true, '題幹提到「如圖」時仍須隔離');
+});

@@ -27,6 +27,7 @@ bookmap = _load("build-book-map")
 crops = _load("render-review-crops")
 indexer = _load("index-pages")
 status = _load("ingest-status")
+review = _load("apply-review")
 
 WIDTH, HEIGHT = 1038, 1500
 
@@ -541,6 +542,100 @@ class StatusRollup(unittest.TestCase):
             empty = Path(tmp) / "matha-114-trig-graph"
             empty.mkdir()
             self.assertIsNone(status.read_book(empty))
+
+
+class ReviewGate(unittest.TestCase):
+    """The only door out of review-only, so every refusal matters."""
+
+    @staticmethod
+    def candidate(**overrides):
+        base = {
+            "id": "line-inequality-p067-q1", "bookId": "matha-114-line-inequality",
+            "pdfPage": 69, "printedPage": 67, "role": "chapter-end-easy",
+            "questionType": "single", "sourceDifficulty": "easy",
+            "sourceDifficultyEvidence": "基礎實力養成（OCR：基實力成）",
+            "regions": {"figures": []}, "flags": [],
+            "ocrIndex": {"stem": "1.（）在坐標平面上，根方程式x+5y-7=0"},
+        }
+        base.update(overrides)
+        return base
+
+    @staticmethod
+    def decision(**overrides):
+        base = {"decision": "approve", "type": "single",
+                "q": "在坐標平面上，根據方程式 x+5y-7=0 畫出三條直線，試選出正確配置？",
+                "opts": ["(A)", "(B)", "(C)", "(D)", "(E)"], "ans": [3]}
+        base.update(overrides)
+        return base
+
+    def test_an_approved_choice_question_converts(self):
+        record = review.convert(self.candidate(), self.decision(), "line")
+        self.assertEqual(record["topic"], "line")
+        self.assertEqual(record["diff"], 1)
+        self.assertIn("基礎實力養成", record["diffEvidence"])
+        self.assertEqual(record["ans"], [3])
+        self.assertEqual(record["page"], 69)
+        self.assertNotIn("needsFigure", record)
+
+    def test_ocr_text_cannot_be_used_as_the_question(self):
+        """OCR here garbles 選擇 into 遥挥 and drops signs; pasting it into q
+        would ship wrong mathematics that still reads plausibly."""
+        candidate = self.candidate()
+        with self.assertRaises(review.ReviewError):
+            review.convert(candidate, self.decision(q=candidate["ocrIndex"]["stem"]), "line")
+        with self.assertRaises(review.ReviewError):
+            review.convert(candidate, self.decision(q="   "), "line")
+
+    def test_anything_short_of_approve_is_refused(self):
+        for value in ("", "repair", "reject", None, "APPROVE"):
+            with self.assertRaises(review.ReviewError):
+                review.convert(self.candidate(), self.decision(decision=value), "line")
+
+    def test_an_outstanding_flag_blocks_the_question(self):
+        candidate = self.candidate(flags=["figure-referenced-but-missing"])
+        with self.assertRaises(review.ReviewError):
+            review.convert(candidate, self.decision(), "line")
+        record = review.convert(
+            candidate, self.decision(acceptedFlags=["figure-referenced-but-missing"]), "line")
+        self.assertEqual(record["id"], candidate["id"])
+
+    def test_a_book_without_a_printed_tier_needs_a_stated_basis(self):
+        candidate = self.candidate(sourceDifficulty=None, sourceDifficultyEvidence="none")
+        with self.assertRaises(review.ReviewError):
+            review.convert(candidate, self.decision(), "line")
+        with self.assertRaises(review.ReviewError):
+            review.convert(candidate, self.decision(diff=2), "line")
+        record = review.convert(candidate, self.decision(diff=2, diffEvidence="與 112 學測第 8 題同型"), "line")
+        self.assertEqual(record["diff"], 2)
+
+    def test_answers_must_index_into_the_options(self):
+        for bad in ([5], [-1], ["B"], [], [0, 1]):
+            with self.assertRaises(review.ReviewError):
+                review.convert(self.candidate(), self.decision(ans=bad), "line")
+
+    def test_a_fill_question_takes_string_answers(self):
+        record = review.convert(self.candidate(questionType="fill"),
+                                self.decision(type="fill", opts=[], ans=["√3"]), "line")
+        self.assertEqual(record["ans"], ["√3"])
+        self.assertNotIn("opts", record)
+
+    def test_a_figure_question_leaves_quarantined_without_an_asset(self):
+        candidate = self.candidate(regions={"figures": [[150, 200, 500, 700]]})
+        record = review.convert(candidate, self.decision(), "line")
+        self.assertTrue(record["needsFigure"])
+        self.assertNotIn("figureAsset", record)
+
+    def test_an_unknown_unit_is_refused(self):
+        with self.assertRaises(review.ReviewError):
+            review.convert(self.candidate(), self.decision(topic="geometry"), None)
+        with self.assertRaises(review.ReviewError):
+            review.convert(self.candidate(), self.decision(), None)
+
+    def test_the_catalog_reader_finds_each_book_single_unit(self):
+        catalog = review.read_catalog(REPO_ROOT / "textbook-catalog.js")
+        by_id = {book["id"]: book["topics"] for book in catalog["books"]}
+        self.assertEqual(by_id["matha-114-line-inequality"], ["line"])
+        self.assertEqual(by_id["matha-114-trig-graph"], ["trig2"])
 
 
 class RepoSafety(unittest.TestCase):

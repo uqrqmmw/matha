@@ -1,6 +1,6 @@
 # 掃描教材匯入管線（review-only）
 
-`textbook-catalog.js` 裡 14 本 `ingestion:'pending-qa'` 的教材是**每頁單張約 300 dpi 掃描、沒有文字層**，共 3,786 頁。這個目錄的四支程式把一本書變成可人工複核的 section map、題目候選、圖形候選與裁切。
+`textbook-catalog.js` 裡 14 本 `ingestion:'pending-qa'` 的教材是**每頁單張約 300 dpi 掃描、沒有文字層**，共 3,786 頁。這個目錄的五支程式把一本書變成可人工複核的 section map、題目候選、圖形候選與裁切，並在人工複核後轉成正式題包格式。
 
 ## 硬規則
 
@@ -11,7 +11,7 @@
 - **有圖的題不准丟。** 圖形超出答案邊界時**裁到邊界**而不是丟棄；題幹提到「如圖」卻真的沒有圖形候選才帶 `figure-referenced-but-missing` 進 `needs-repair`。「圖示…的解」「作出…的圖形」這類**圖就是答案**的題另標 `answer-is-a-drawing`，不算缺陷。
 - **一次一本、循序執行。** 這台機器在大量並行處理下當過機，所有程式都沒有多工。
 
-## 四個階段
+## 五個階段
 
 環境（一次性，建在 repo 外）：
 
@@ -52,6 +52,23 @@ python scripts/ingest/ingest-status.py --work "<work>"
 ```
 
 輸出 `<work>/INGEST_STATUS.md`：各書頁數／候選題／含圖題／難度階梯／QA 旗標，以及「非 `pending-review` 的記錄必須為 0」這條不變條件。只有統計，沒有題目內容。
+
+### 5. `apply-review.py` — 複核結果轉正式題包
+
+```bash
+python scripts/ingest/apply-review.py --work "<work>" --book <bookId> --template
+python scripts/ingest/apply-review.py --work "<work>" --book <bookId>     --decisions "<work>/<bookId>/review-decisions.json" --out "<repo 外>/qpack.json"
+```
+
+這是離開 review-only 的**唯一出口**，刻意窄：
+
+- 只有明確 `"decision": "approve"` 才會輸出，沒填或填錯一律拒絕。
+- **題幹文字必須由複核者自己填**；貼上 `ocrIndex` 會被擋下。OCR 在這份掃描裡會把「選擇」讀成「遥挥」、把式子的正負號吃掉，抄進 `q` 就是出一題看起來很合理但數學是錯的題。
+- 還帶著 QA 旗標的題，必須把那些旗標逐一列進 `acceptedFlags` 才放行。
+- 難度優先採印刷分層；書上沒印就必須同時提供 `diff` 與 `diffEvidence`。
+- 有圖的題一律帶 `needsFigure: true` 且**不產生** `figureAsset`。前端會把這種題隔離，直到裁圖走完既有的獨立複核與晉級流程——這就是「有圖題不會缺圖上線」的保證。
+
+輸出的記錄已用 `build-private-bank.js` 的 `validateQuestion` 實跑驗證通過，`tests/private-bank.test.js` 有一條測試釘住這個契約。本程式**不碰**正式題庫 manifest。
 
 ## 這套書實際印了什麼
 
