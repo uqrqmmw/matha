@@ -312,6 +312,18 @@ INK_ROW_MIN = 3
 PENCIL_ROW_INK_MIN = 20
 PENCIL_ROW_SOLID_MAX = 3
 PENCIL_RUN_ROWS = 10
+# Sub-parts of one stem: （1）… （2）….  Never question starts.
+SUB_PART_RE = re.compile(r"^[（(]\s*[0-9１-９]\s*[）)]")
+# The cross-page windows may use a wider margin than in-page recovery: the
+# lost question's own text survives with its number sheared off, indented to
+# x 93-150 where the strict margin never looks — "4.（ ）下列哪一個聯立不等式
+# 無解？" came back as ")下列哪一個聯立不等式無解？" at x=135.  The width is
+# safe there and only there because the window is already bounded by a proven
+# missing number and a one-candidate requirement.
+CROSS_PAGE_MARGIN_RATIO = 0.16
+# Rows of one question sit 10-35 px apart; separate questions a hundred or
+# more.  A gap beyond this ends the previous question's contiguous run.
+CONTIGUOUS_ROW_GAP = 50
 
 
 def pencil_run(page: dict[str, Any], top: int, bottom: int) -> int:
@@ -727,6 +739,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
     printed_map = resolve_printed_pages(pages)
 
     page_records: list[dict[str, Any]] = []
+    page_state: dict[int, tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]] = {}
     questions: list[dict[str, Any]] = []
     answers: list[dict[str, Any]] = []
     chapter: str | None = None
@@ -772,6 +785,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
             "typeHeaders": type_headers, "blockIndex": block_index,
             "carriedType": carried_type,
         }
+        page_state[pdf_page] = (page, events, context)
         records, lead_in = segment_questions(page, events, context)
         if type_headers:
             carried_type = (type_headers[-1][1], type_headers[-1][2])
@@ -809,6 +823,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
             "flags": page_flags,
         })
 
+    recover_cross_page_gaps(questions, page_state)
     link_cross_page_solutions(page_records, questions)
     pair_drill_answers(questions, answers)
 
@@ -911,6 +926,127 @@ def missing_drill_numbers(questions: list[dict[str, Any]]) -> list[dict[str, Any
         out.append({"blockIndex": block, "questionType": qtype, "missingNumbers": gaps,
                     "numberingJumps": jumps, "pdfPageRange": [pages[0], pages[-1]]})
     return out
+
+
+def recover_cross_page_gaps(questions: list[dict[str, Any]],
+                            page_state: dict[int, tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]]) -> int:
+    """Recover a drill question that fell off the edge of a page.
+
+    Half of the surviving losses — 45 of 91 — sit exactly on a page turn:
+    question n-1 is the last detected start on one page, n+1 the first on the
+    next, and the lost number's garbled line is at the bottom of the first
+    page or the top of the second.  The in-page recovery never looked there.
+
+    Same discipline as recover_skipped_numbers: the printed numbering must
+    prove a question is missing, and exactly one unclaimed left-margin line
+    may exist across both windows, or nothing happens.
+    """
+    def start_y(pdf_page: int, number: int) -> int | None:
+        _, events, _ = page_state[pdf_page]
+        for event in events:
+            if event["kind"] == "question" and event.get("number") == number:
+                return event["y"]
+        return None
+
+    pos: dict[tuple[Any, Any, int], dict[str, Any]] = {}
+    runs: dict[tuple[Any, Any], set[int]] = {}
+    for question in questions:
+        number = question["provenance"]["drillNumber"]
+        if number is None:
+            continue
+        pos[(question["blockIndex"], question["questionType"], number)] = question
+        runs.setdefault((question["blockIndex"], question["questionType"]), set()).add(number)
+
+    injections: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for (block, qtype), numbers in sorted(runs.items(), key=lambda item: (item[0][0], str(item[0][1]))):
+        ordered = sorted(numbers)
+        for lower, upper in zip(ordered, ordered[1:]):
+            if upper - lower != 2:
+                continue
+            before = pos[(block, qtype, lower)]
+            after = pos[(block, qtype, upper)]
+            first, second = before["pdfPage"], after["pdfPage"]
+            if second - first != 1 or first not in page_state or second not in page_state:
+                continue
+            low_edge, high_edge = start_y(first, lower), start_y(second, upper)
+            if low_edge is None or high_edge is None:
+                continue
+
+            # Two passes.  The strict margin finds a garbled number line that
+            # still sits where numbers sit, even when indented continuations
+            # follow it.  Only when nothing lives at the margin does the wide
+            # pass look for the question's sheared-off remnant at x 93-150.
+            strict: list[tuple[int, dict[str, Any]]] = []
+            wide: list[tuple[int, dict[str, Any]]] = []
+            for pdf_page, above, below in ((first, low_edge, None), (second, None, high_edge)):
+                page, events, context = page_state[pdf_page]
+                if context["section"] != "drill":
+                    continue
+                if above is not None:
+                    # On the first page the window opens below question n-1,
+                    # whose own wrapped lines sit at the same indents as a lost
+                    # question's remnant.  What separates them is layout: rows
+                    # of one question run 10-35 px apart, questions are set a
+                    # hundred or more apart.  So the window really starts at
+                    # the first vertical break after n-1's start; without this,
+                    # n-1's continuations made every bottom window ambiguous.
+                    trailing = sorted((line["bbox"] for line in page["ocr"]
+                                       if line["bbox"][1] > above), key=lambda box: box[1])
+                    break_y = None
+                    previous_bottom = None
+                    for box in trailing:
+                        if previous_bottom is not None and box[1] - previous_bottom > CONTIGUOUS_ROW_GAP:
+                            break_y = box[1]
+                            break
+                        previous_bottom = max(previous_bottom or 0, box[3])
+                    if break_y is None:
+                        continue
+                    # -11 keeps the break line itself inside the window past
+                    # the +10 slack applied below.
+                    above = break_y - 11
+                starts = [event for event in events if event["kind"] == "question"]
+                strict_margin = (min(event["bbox"][0] for event in starts) + 8) if starts else int(0.09 * page["width"])
+                wide_margin = int(CROSS_PAGE_MARGIN_RATIO * page["width"])
+                claimed = ([event["y"] for event in events]
+                           + [line["bbox"][1] for _, line in injections.get(pdf_page, [])])
+                for line in page["ocr"]:
+                    x0, y0 = line["bbox"][0], line["bbox"][1]
+                    text = norm(line["text"]).strip()
+                    if x0 > wide_margin or not text:
+                        continue
+                    if above is not None and y0 <= above + 10:
+                        continue
+                    if below is not None and y0 >= below - 10:
+                        continue
+                    if OPTION_RE.match(text) or ANSWER_TAG_RE.match(text) or ANSWER_ITEM_RE.match(text):
+                        continue
+                    if SUB_PART_RE.match(text):
+                        continue
+                    if any(abs(y0 - y) <= 20 for y in claimed):
+                        continue
+                    wide.append((pdf_page, line))
+                    if x0 <= strict_margin:
+                        strict.append((pdf_page, line))
+            if len(strict) == 1:
+                pdf_page, line = strict[0]
+            elif len(wide) == 1:
+                pdf_page, line = wide[0]
+            else:
+                continue
+            injections.setdefault(pdf_page, []).append((lower + 1, line))
+
+    recovered = 0
+    for pdf_page, found in injections.items():
+        page, events, context = page_state[pdf_page]
+        for number, line in found:
+            events.append({"y": line["bbox"][1], "bbox": line["bbox"], "kind": "question",
+                           "marker": f"q{number}", "number": number, "origin": "numbered",
+                           "numberUnreadable": True, "text": line["text"]})
+        events.sort(key=lambda event: event["y"])
+        replacement, _ = segment_questions(page, events, context)
+        questions[:] = [q for q in questions if q["pdfPage"] != pdf_page] + replacement
+        recovered += len(found)
+    return recovered
 
 
 def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: list[dict[str, Any]]) -> None:

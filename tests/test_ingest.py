@@ -301,6 +301,86 @@ class RecoveringSkippedNumbers(unittest.TestCase):
         self.assertEqual([r["provenance"]["drillNumber"] for r in records], [6, 8])
 
 
+class CrossPageRecovery(unittest.TestCase):
+    """Half the lost questions sit exactly on a page turn."""
+
+    @staticmethod
+    def two_pages(bottom_lines, top_lines):
+        page1 = page(30, [
+            line("5．（ ）第五題題幹在此", 56, 1000, 728, 1028),
+            line("(A)1（B)2（C)3", 151, 1040, 639, 1066),
+            *bottom_lines,
+        ])
+        page2 = page(31, [
+            *top_lines,
+            line("7．（ ）第七題題幹在此", 58, 400, 861, 428),
+        ])
+        ctx1 = context(section="drill", block_index=1)
+        ctx2 = context(section="drill", block_index=1)
+        ev1 = bookmap.page_events(page1, True)
+        ev2 = bookmap.page_events(page2, True)
+        q1, _ = bookmap.segment_questions(page1, ev1, ctx1)
+        q2, _ = bookmap.segment_questions(page2, ev2, ctx2)
+        return q1 + q2, {30: (page1, ev1, ctx1), 31: (page2, ev2, ctx2)}
+
+    def test_a_question_lost_at_the_bottom_of_a_page_is_recovered(self):
+        questions, state = self.two_pages(
+            [line("（）（）（））", 58, 1200, 871, 1228),
+             line("其後續行縮排在右邊", 142, 1240, 314, 1266)], [])
+        self.assertEqual(bookmap.recover_cross_page_gaps(questions, state), 1)
+        numbers = sorted(q["provenance"]["drillNumber"] for q in questions)
+        self.assertEqual(numbers, [5, 6, 7])
+        six = next(q for q in questions if q["provenance"]["drillNumber"] == 6)
+        self.assertIn("question-number-unreadable", six["flags"])
+        five = next(q for q in questions if q["provenance"]["drillNumber"] == 5)
+        self.assertLess(five["regions"]["stem"][3], 1200,
+                        "question 5 must stop swallowing question 6")
+
+    def test_a_question_lost_at_the_top_of_the_next_page_is_recovered(self):
+        questions, state = self.two_pages(
+            [], [line("（）（ ）遺失的第六題", 58, 100, 871, 128)])
+        self.assertEqual(bookmap.recover_cross_page_gaps(questions, state), 1)
+        six = next(q for q in questions if q["provenance"]["drillNumber"] == 6)
+        self.assertEqual(six["pdfPage"], 31)
+
+    def test_an_indented_remnant_of_the_lost_question_is_found(self):
+        """The lost question's own text survives with its number sheared off,
+        indented past the strict margin: "4.（ ）下列哪一個聯立不等式無解？"
+        came back as ")下列哪一個…" at x=135."""
+        questions, state = self.two_pages(
+            [], [line(")下列哪一個聯立不等式無解？", 135, 79, 700, 107)])
+        self.assertEqual(bookmap.recover_cross_page_gaps(questions, state), 1)
+        six = next(q for q in questions if q["provenance"]["drillNumber"] == 6)
+        self.assertEqual(six["pdfPage"], 31)
+        self.assertIn("下列哪一個", six["ocrIndex"]["stem"])
+
+    def test_a_sub_part_line_is_not_mistaken_for_the_lost_question(self):
+        """（1）… lines are sub-parts of the previous stem; splitting one off
+        would mutilate the question above it."""
+        questions, state = self.two_pages(
+            [line("（1）求 f(0) 的值。", 130, 1200, 500, 1228)], [])
+        self.assertEqual(bookmap.recover_cross_page_gaps(questions, state), 0)
+
+    def test_two_candidates_recover_nothing(self):
+        questions, state = self.two_pages(
+            [line("（）（）（））", 58, 1200, 871, 1228)],
+            [line("（）（ ）另一個候選", 58, 100, 871, 128)])
+        self.assertEqual(bookmap.recover_cross_page_gaps(questions, state), 0)
+        numbers = sorted(q["provenance"]["drillNumber"] for q in questions)
+        self.assertEqual(numbers, [5, 7])
+
+    def test_a_contiguous_run_recovers_nothing(self):
+        page1 = page(30, [line("5．（ ）第五題", 56, 1000, 728, 1028)])
+        page2 = page(31, [line("6．（ ）第六題", 58, 400, 861, 428)])
+        ctx1, ctx2 = context(section="drill"), context(section="drill")
+        ev1, ev2 = bookmap.page_events(page1, True), bookmap.page_events(page2, True)
+        q1, _ = bookmap.segment_questions(page1, ev1, ctx1)
+        q2, _ = bookmap.segment_questions(page2, ev2, ctx2)
+        questions = q1 + q2
+        state = {30: (page1, ev1, ctx1), 31: (page2, ev2, ctx2)}
+        self.assertEqual(bookmap.recover_cross_page_gaps(questions, state), 0)
+
+
 class RuledAnswerTags(unittest.TestCase):
     """OCR loses the word inside a 解答 box often enough that the box itself
     has to count — but only when it really is a box."""
