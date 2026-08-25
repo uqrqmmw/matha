@@ -581,6 +581,24 @@ class StatusRollup(unittest.TestCase):
         self.assertEqual(summary["tiers"]["easy"], 1)
         self.assertEqual(summary["tiers"]["None"], 1)
 
+    def test_crop_counts_come_from_the_crop_manifest(self):
+        """The crop step used to write back into the question pack, and the
+        next map rebuild regenerated that file and lost every record of the
+        crops — the images were on disk with nothing pointing at them."""
+        import json, tempfile
+        rows = [{"sourceDifficulty": "easy", "qaLane": "clean-candidate",
+                 "status": "pending-review", "flags": [], "regions": {"figures": []}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            book = self._book(tmp, rows)
+            self.assertEqual(status.read_book(book)["cropsRendered"], 0)
+            (book / "crops-manifest.json").write_text(json.dumps({"crops": {
+                "a": {"stemRegion": [0, 1, 2, 3]},
+                "b": {"refused": "crop-refused-crosses-answer-boundary"},
+            }}), encoding="utf-8")
+            summary = status.read_book(book)
+        self.assertEqual(summary["cropsRendered"], 1)
+        self.assertEqual(summary["cropsRefused"], 1)
+
     def test_a_book_without_a_map_is_skipped_not_guessed(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:

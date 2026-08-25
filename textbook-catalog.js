@@ -7,7 +7,7 @@ const TEXTBOOK_LIBRARY = {
   series: '114 學測課程主題練習教材',
   verifiedCount: 24,
   books: [
-    { id:'matha-114-data', title:'一維二維數據分析', file:'114學測班一維二為數據分析.pdf', pages:282, kind:'chapter', topics:['data'], ingestion:'pending-qa', eligibility:'core' },
+    { id:'matha-114-data', title:'一維二維數據分析', file:'114學測班一維二為數據分析.pdf', pages:282, pdfSha256:'d72c5741de114ee486f18eb4473885d6fbc722a8ef0359e6d276502d4dd9c7d7', kind:'chapter', topics:['data'], ingestion:'pending-qa', eligibility:'core' },
     { id:'matha-114-cubic-ineq', title:'三次函數與多項式不等式', file:'114學測班三次函數與多項式不等式.pdf', pages:198, pdfSha256:'e87ad8f0e0b0d26c5bd934770686e10a168fd326a9486e90cac72ee57419b5c1', kind:'chapter', topics:['poly'], ingestion:'ready', eligibility:'core', sourceNames:['114班·三次函數與多項式'] },
     { id:'matha-114-trig-radian', title:'三角比與弧度量', file:'114學測班三角比與弧度量.pdf', pages:206, pdfSha256:'7d59504e9a4c7dc113db72b1d5e26b5dc478f8a576714952e96f1eee9af540bf', kind:'chapter', topics:['trig1'], ingestion:'ready', eligibility:'core', sourceNames:['114班·三角比與弧度量'] },
     { id:'matha-114-trig-graph', title:'三角函數的圖形與應用', file:'114學測班三角函數的圖形與應用.pdf', pages:222, pdfSha256:'caa5665528006ccec20c2703767970ff1388750cb4c9c7a65dd909bfbdd7acf8', kind:'chapter', topics:['trig2'], ingestion:'pending-qa', eligibility:'core' },
@@ -19,7 +19,7 @@ const TEXTBOOK_LIBRARY = {
     { id:'matha-114-polynomial-quadratic', title:'多項式運算與一次二次函數', file:'114學測班多項式運算與一次二次函數.pdf', pages:246, pdfSha256:'afa1a19d10f5232c1453739487902c39c79d826a814c9c54bea802ab04d6bc4a', kind:'chapter', topics:['poly'], ingestion:'pending-qa', eligibility:'core' },
     { id:'matha-114-cramer-circle', title:'克拉瑪公式與圓線幾何', file:'114學測班克拉瑪公式與圓線幾何.pdf', pages:304, pdfSha256:'92acde764f180e8974f14aef8a916ecb74e904284814f4e2bd0bc74e726fea1c', kind:'chapter', topics:['line','mat'], ingestion:'ready', eligibility:'core', sourceNames:['114班·克拉瑪與圓線'] },
     { id:'matha-114-line-inequality', title:'直線與二元一次不等式', file:'114學測班直線與二元一次不等式.pdf', pages:206, pdfSha256:'b397480cc3ace0b6c062d253c331ee28dd72daba3faa62feb0c7ce50d6bc7656', kind:'chapter', topics:['line'], ingestion:'pending-qa', eligibility:'core' },
-    { id:'matha-114-space-plane-line', title:'空間中的平面與直線', file:'114學測班空間中的平面與直線.pdf', pages:292, kind:'chapter', topics:['splane'], ingestion:'pending-qa', eligibility:'core' },
+    { id:'matha-114-space-plane-line', title:'空間中的平面與直線', file:'114學測班空間中的平面與直線.pdf', pages:292, pdfSha256:'c945b38507db453e72a8b9555ff87ee756276996512a8a06cbb391d913046d08', kind:'chapter', topics:['splane'], ingestion:'pending-qa', eligibility:'core' },
     { id:'matha-114-space-vector', title:'空間向量與三階行列式', file:'114學測班空間向量與三階行列式.pdf', pages:248, kind:'chapter', topics:['svec','splane'], ingestion:'pending-qa', eligibility:'core' },
     { id:'matha-114-exp-log', title:'指數函數與常用對數', file:'114學測班指數函數與常用對數.pdf', pages:262, pdfSha256:'babfcd9154b586af4f208699f72dc196dc7579b656599580e75d7c68b1b00d61', kind:'chapter', topics:['exp'], ingestion:'ready', eligibility:'core', sourceNames:['114班·指數與常用對數'] },
     { id:'matha-114-permutation', title:'排列組合與二項式定理', file:'114學測班排列組合與二項式定理.pdf', pages:298, pdfSha256:'7e682880679363a5f20d4520d81964c7d3b57ae54ef97735f4c91fd052e4da70', kind:'chapter', topics:['comb'], ingestion:'ready', eligibility:'core', sourceNames:['114班·排列組合'] },

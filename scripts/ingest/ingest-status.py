@@ -29,6 +29,9 @@ def read_book(book_dir: Path) -> dict[str, Any] | None:
     mapping = json.loads(section_map.read_text(encoding="utf-8"))
     pack = json.loads(questions.read_text(encoding="utf-8"))
     rows = pack["questions"]
+    manifest_path = book_dir / "crops-manifest.json"
+    crops = (json.loads(manifest_path.read_text(encoding="utf-8")).get("crops") or {}
+             if manifest_path.is_file() else {})
     tiers = Counter(str(row["sourceDifficulty"]) for row in rows)
     return {
         "bookId": mapping["bookId"],
@@ -43,7 +46,8 @@ def read_book(book_dir: Path) -> dict[str, Any] | None:
         "needsRepair": sum(1 for row in rows if row["qaLane"] == "needs-repair"),
         "tiers": tiers,
         "flags": Counter(flag for row in rows for flag in row["flags"]),
-        "cropsRendered": sum(1 for row in rows if row.get("cropStemRegion")),
+        "cropsRendered": sum(1 for entry in crops.values() if entry.get("stemRegion")),
+        "cropsRefused": sum(1 for entry in crops.values() if entry.get("refused")),
         "notPendingReview": sum(1 for row in rows if row["status"] != "pending-review"),
     }
 
@@ -84,6 +88,7 @@ def render(books: list[dict[str, Any]], work_root: Path) -> str:
         "", "## 不變條件檢查", "",
         f"- 非 `pending-review` 的記錄：{leaked}（必須為 0）",
         f"- 來源 PDF SHA-256 已記錄：{sum(1 for b in books if b['pdfSha256'])} / {len(books)}",
+        f"- 越過答案邊界而被拒絕的裁切：{sum(b['cropsRefused'] for b in books)}（必須為 0）",
         "", "## 來源檔雜湊", "", "| bookId | 檔名 | SHA-256 |", "|---|---|---|",
     ]
     out += [f"| `{b['bookId']}` | {b['pdfFileName']} | `{b['pdfSha256']}` |" for b in books]

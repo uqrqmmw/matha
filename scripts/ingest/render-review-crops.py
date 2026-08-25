@@ -11,9 +11,15 @@ The separation is asserted here, not assumed.  A crop that would reach past
 its question's answer boundary is refused and the question is marked
 ``crop-refused-crosses-answer-boundary`` instead of being written out.
 
+This step never writes back into ``questions.pending-review.json``.  It used
+to, and a later ``build-book-map`` run regenerated that file and silently
+dropped every record that crops existed — the images were still on disk but
+nothing knew.  What it produces goes in its own manifest instead.
+
 Outputs (all outside the Git repository, all review-only):
 
     <work>/<bookId>/crops/<questionId>/stem.png · figure-N.png · answer.png
+    <work>/<bookId>/crops-manifest.json
     <work>/<bookId>/review.html
 """
 
@@ -105,10 +111,11 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[
     refused = 0
     figure_crops = 0
     answer_crops = 0
+    entries: dict[str, dict[str, Any]] = {}
     for question in questions:
         indexed = page_index.get(question["pdfPage"])
         if indexed is None:
-            question.setdefault("cropFlags", []).append("page-index-missing")
+            entries[question["id"]] = {"refused": "page-index-missing"}
             continue
         review_dpi, width, height = indexed["dpi"], indexed["width"], indexed["height"]
         source = document[question["pdfPage"] - 1]
@@ -116,16 +123,14 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[
 
         region, refusal = question_region(question, width, height)
         if refusal:
-            question.setdefault("cropFlags", []).append(refusal)
-            if refusal not in question["flags"]:
-                question["flags"].append(refusal)
-            question["qaLane"] = "needs-repair"
+            entries[question["id"]] = {"refused": refusal}
             refused += 1
             continue
 
         out_dir.mkdir(parents=True, exist_ok=True)
         source.get_pixmap(dpi=CROP_DPI, clip=to_pdf_rect(region, review_dpi)).save(str(out_dir / "stem.png"))
-        question["cropStemRegion"] = region
+        entry: dict[str, Any] = {"stemRegion": region, "figures": 0, "answer": False}
+        entries[question["id"]] = entry
         written += 1
 
         for order, box in enumerate(question["regions"]["figures"], start=1):
@@ -133,6 +138,7 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[
                             box[2] + FIGURE_PAD, box[3] + FIGURE_PAD], width, height)
             source.get_pixmap(dpi=CROP_DPI, clip=to_pdf_rect(padded, review_dpi)).save(
                 str(out_dir / f"figure-{order}.png"))
+            entry["figures"] += 1
             figure_crops += 1
 
         inline = question["regions"]["inlineAnswer"]
@@ -140,22 +146,39 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None) -> dict[
         if inline:
             source.get_pixmap(dpi=CROP_DPI, clip=to_pdf_rect(clamp(inline, width, height), review_dpi)).save(
                 str(out_dir / "answer.png"))
+            entry["answer"] = True
             answer_crops += 1
         elif answer_ref and answer_ref.get("region"):
             answer_page = document[answer_ref["pdfPage"] - 1]
             answer_page.get_pixmap(dpi=CROP_DPI, clip=to_pdf_rect(answer_ref["region"], review_dpi)).save(
                 str(out_dir / "answer.png"))
+            entry["answer"] = True
+            answer_crops += 1
+        elif question.get("solutionRegion") and question.get("solutionPdfPage"):
+            # The 解答 tag opens the next page; that page's lead-in is this
+            # question's solution.
+            following = document[question["solutionPdfPage"] - 1]
+            following.get_pixmap(
+                dpi=CROP_DPI,
+                clip=to_pdf_rect(clamp(question["solutionRegion"], width, height), review_dpi),
+            ).save(str(out_dir / "answer.png"))
+            entry["answer"] = True
+            entry["answerFromNextPage"] = question["solutionPdfPage"]
             answer_crops += 1
 
-    pack_path.write_text(json.dumps(pack, ensure_ascii=False, indent=1), encoding="utf-8")
-    (book_dir / "review.html").write_text(render_review_html(book_id, questions), encoding="utf-8")
+    (book_dir / "crops-manifest.json").write_text(json.dumps({
+        "schema": SCHEMA_VERSION, "kind": "textbook-crop-manifest", "bookId": book_id,
+        "pdfSha256": pack["pdfSha256"], "cropDpi": CROP_DPI, "crops": entries,
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    (book_dir / "review.html").write_text(render_review_html(book_id, questions, entries), encoding="utf-8")
 
     return {"bookId": book_id, "questions": len(questions), "stemCrops": written,
             "figureCrops": figure_crops, "answerCrops": answer_crops, "refused": refused,
             "reviewPage": str(book_dir / "review.html")}
 
 
-def render_review_html(book_id: str, questions: list[dict[str, Any]]) -> str:
+def render_review_html(book_id: str, questions: list[dict[str, Any]],
+                       entries: dict[str, dict[str, Any]]) -> str:
     order = {"needs-repair": 0, "clean-candidate": 1}
     rows = sorted(questions, key=lambda q: (order.get(q["qaLane"], 2), q["pdfPage"]))
     parts = [
@@ -186,7 +209,10 @@ def render_review_html(book_id: str, questions: list[dict[str, Any]]) -> str:
         if question["flags"]:
             parts.append("<p>" + "".join(
                 f"<span class='flag'>{html.escape(flag)}</span>" for flag in question["flags"]) + "</p>")
-        if question.get("cropStemRegion"):
+        entry = entries.get(question["id"]) or {}
+        if entry.get("refused"):
+            parts.append(f"<p><span class='flag'>{html.escape(entry['refused'])}</span></p>")
+        if entry.get("stemRegion"):
             parts.append(f"<img src='{folder}/stem.png' alt='題幹裁切'>")
         for order_index in range(1, len(question["regions"]["figures"]) + 1):
             parts.append(f"<img src='{folder}/figure-{order_index}.png' alt='圖形候選 {order_index}'>")

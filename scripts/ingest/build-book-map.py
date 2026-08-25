@@ -216,14 +216,20 @@ def has_banner_box(page: dict[str, Any]) -> bool:
     """A tier banner was printed here even if its text did not survive OCR.
 
     Two things separate it from ordinary text at the top of a page: it is
-    reversed out of a grey block, and it sits flush in the top-left corner.
+    printed on a grey block, and it sits flush in the top-left corner.
     Without the grey test a 解析 tag high on a continuation page opens a
     phantom drill block; without the geometry, highlighted body text does.
+
+    There is deliberately no upper bound on the text length.  One existed, and
+    it cost the sequences book a whole answer block: OCR merged the tag with
+    the chapter title into an eleven-character line, one over the cap, so a
+    correctly measured banner was thrown away by a check that was doing no work
+    the background level was not already doing.
     """
     return any(line.get("backgroundLevel", 255) <= BANNER_BACKGROUND_MAX
                and line["bbox"][3] < 0.09 * page["height"]
                and line["bbox"][0] < 0.15 * page["width"]
-               and 2 <= len(line["text"].strip()) <= 10
+               and len(line["text"].strip()) >= 2
                for line in page.get("bannerOcr") or [])
 
 
@@ -659,6 +665,10 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
             "questionStarts": [event["marker"] for event in events if event["kind"] == "question"],
             "answerTagYs": [event["y"] for event in events if event["kind"] in {"answer-tag", "answer-item"}],
             "leadInSolution": lead_in,
+            "leadInRegion": ([0, 0, page["width"],
+                              min([event["y"] for event in events if event["kind"] == "question"],
+                                  default=int(0.94 * page["height"]))]
+                             if lead_in else None),
             "ocrLineCount": len(page["ocr"]),
             "frameBoxCount": len(page["layout"]["frameBoxes"]),
             "figureCandidateCount": len(page["layout"]["nonTextRegions"]),
@@ -721,6 +731,7 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
 def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: list[dict[str, Any]]) -> None:
     """A question whose solution starts on the next page is fine, not broken."""
     lead_in_by_page = {record["pdfPage"]: record["leadInSolution"] for record in page_records}
+    lead_in_region = {record["pdfPage"]: record.get("leadInRegion") for record in page_records}
     last_on_page: dict[int, dict[str, Any]] = {}
     for question in questions:
         last_on_page[question["pdfPage"]] = question
@@ -731,6 +742,10 @@ def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: lis
             question["flags"] = [f for f in question["flags"] if f != "solution-not-on-this-page"]
             question["flags"].append("solution-continues-next-page")
             question["solutionPdfPage"] = pdf_page + 1
+            # The solution is on the next page and the crop step needs to know
+            # where it ends, or 300 questions across six books keep a page
+            # number and no rendered answer for a reviewer to read.
+            question["solutionRegion"] = lead_in_region.get(pdf_page + 1)
     for question in questions:
         question["qaLane"] = "needs-repair" if [
             flag for flag in question["flags"] if flag != "solution-continues-next-page"
