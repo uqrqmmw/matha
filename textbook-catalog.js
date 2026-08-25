@@ -27,10 +27,10 @@ const TEXTBOOK_LIBRARY = {
     { id:'matha-114-real-number-line', title:'實數與數線上的幾何', file:'114學測班實數與數線上的幾何.pdf', pages:182, pdfSha256:'018659d0af52c6464863f5088c29fe8ce0638193faddd2c361a3695687bd5f7b', kind:'chapter', topics:['num'], ingestion:'ready', eligibility:'core', sourceNames:['114班·實數與數線'] },
     { id:'matha-114-log-function', title:'對數運算與對數函數', file:'114學測班對數運算與對數函數.pdf', pages:270, pdfSha256:'0efa325621fb36fa4f1e5109083853790fc284457b458e363d874772a71fd95b', kind:'chapter', topics:['exp'], ingestion:'ready', eligibility:'core', sourceNames:['114班·對數運算與函數'] },
     { id:'matha-114-sequence', title:'數列遞迴與級數求和', file:'114學測班數列遞迴與級數求和.pdf', pages:262, pdfSha256:'12c52c89d4ea465aaae58eaefc08bb8744044d9ee9dde4de6f0b5a746da723d9', kind:'chapter', topics:['seq'], ingestion:'pending-qa', eligibility:'core' },
-    { id:'mathb-114-read-write', title:'數 B 滿分讀寫教材', file:'114學測班數B滿分讀寫教材.pdf', pages:160, kind:'read-write', topics:[], ingestion:'pending-qa', eligibility:'supplement' },
+    { id:'mathb-114-read-write', title:'數 B 滿分讀寫教材', file:'114學測班數B滿分讀寫教材.pdf', pages:160, pdfSha256:'6d471ebca6426d023fdeb4d7ff2897f2d35f2030ab265d31e0ec9ab456c0e38a', kind:'read-write', topics:[], ingestion:'pending-qa', eligibility:'supplement' },
     { id:'matha-114-logic-set', title:'邏輯集合與計數原理', file:'114學測班邏輯集合與計數原理.pdf', pages:192, pdfSha256:'deb5333322574126912c690271937a5c8b55e62172e803197a87ee263bc8ab3e', kind:'chapter', topics:['num','comb'], ingestion:'ready', eligibility:'core', sourceNames:['114班·邏輯集合與計數'] },
-    { id:'matha-114-review-upper', title:'數學 A 滿級分寶典（上）', file:'114學測數學A滿級分寶典(上).pdf', pages:414, kind:'comprehensive-review', topics:[], ingestion:'pending-qa', eligibility:'core' },
-    { id:'matha-114-review-lower', title:'數學 A 滿級分寶典（下）', file:'114學測數學A滿級分寶典(下).pdf', pages:392, kind:'comprehensive-review', topics:[], ingestion:'pending-qa', eligibility:'core' },
+    { id:'matha-114-review-upper', title:'數學 A 滿級分寶典（上）', file:'114學測數學A滿級分寶典(上).pdf', pages:414, pdfSha256:'c2cb10ebd2c789840a85b25f8e15d6bca0c0c7b87263c684d87ed4858298a869', kind:'comprehensive-review', topics:[], ingestion:'pending-qa', eligibility:'core' },
+    { id:'matha-114-review-lower', title:'數學 A 滿級分寶典（下）', file:'114學測數學A滿級分寶典(下).pdf', pages:392, pdfSha256:'1c5f21afdb171b76cf303cd693b1d1af47230b5583815880e45ecee12769d1e2', kind:'comprehensive-review', topics:[], ingestion:'pending-qa', eligibility:'core' },
   ],
   supplemental: [
     { id:'matha-weekly-review', title:'週攻略數學 A', file:'週攻略數學A.pdf', pages:510, kind:'supplemental-review', ingestion:'not-planned' },
