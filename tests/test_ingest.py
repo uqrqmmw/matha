@@ -143,13 +143,32 @@ class AnswerSeparation(unittest.TestCase):
         self.assertEqual(records[0]["qaLane"], "needs-repair")
         self.assertEqual(records[0]["status"], "pending-review")
 
+    def test_an_example_without_a_printed_solution_is_not_a_defect(self):
+        """The book deliberately leaves some examples unanswered — the teacher
+        works them in class (owner-confirmed).  Drills are different: their
+        answers are printed, so an unpaired drill stays a repair item."""
+        questions = [
+            {"pdfPage": 60, "roleEvidence": "printed-Ex-marker",
+             "flags": ["solution-not-on-this-page"], "qaLane": "needs-repair"},
+            {"pdfPage": 61, "roleEvidence": "printed-numbered-item",
+             "flags": ["solution-not-on-this-page", "drill-answer-not-found"],
+             "qaLane": "needs-repair"},
+        ]
+        bookmap.link_cross_page_solutions(
+            [{"pdfPage": 60, "leadInSolution": False},
+             {"pdfPage": 61, "leadInSolution": False}], questions)
+        self.assertEqual(questions[0]["flags"], ["no-printed-solution-teacher-covered"])
+        self.assertEqual(questions[0]["qaLane"], "clean-candidate")
+        self.assertEqual(questions[1]["qaLane"], "needs-repair")
+
     def test_solution_continuing_on_the_next_page_is_not_a_repair_item(self):
         pages = [
             {"pdfPage": 60, "leadInSolution": False},
             {"pdfPage": 61, "leadInSolution": True},
         ]
         questions = [{
-            "pdfPage": 60, "flags": ["solution-not-on-this-page"], "qaLane": "needs-repair",
+            "pdfPage": 60, "roleEvidence": "printed-numbered-item",
+            "flags": ["solution-not-on-this-page"], "qaLane": "needs-repair",
         }]
         bookmap.link_cross_page_solutions(pages, questions)
         self.assertEqual(questions[0]["flags"], ["solution-continues-next-page"])
@@ -728,6 +747,27 @@ class PageClassification(unittest.TestCase):
         ])
         events = bookmap.page_events(sample, True)
         self.assertEqual(bookmap.classify_page(sample, events, True), "drill-answers")
+
+    def test_a_garbled_answer_item_does_not_become_a_question(self):
+        """On an answers page a numbered line whose 答案 keyword OCR garbled
+        is still an answer; as a question it was a phantom in the block and a
+        hole in the pairing."""
+        sample = page(79, [
+            line("1.答案：（D）", 55, 180),
+            line("2.（C） 由樹狀圖可得所求機率", 55, 540),
+            line("3.答案：（A）（B）", 55, 900),
+        ])
+        events = bookmap.page_events(sample, True)
+        section = bookmap.classify_page(sample, events, True)
+        self.assertEqual(section, "drill-answers")
+        if section == "drill-answers":
+            for event in events:
+                if event["kind"] == "question" and event["origin"] == "numbered":
+                    event["kind"] = "answer-item"
+        items = bookmap.collect_answer_items(sample, events, context(section="drill-answers"))
+        self.assertEqual([item["drillNumber"] for item in items], [1, 2, 3])
+        records, _ = bookmap.segment_questions(sample, events, context(section="drill-answers"))
+        self.assertEqual(records, [])
 
     def test_divider_page_is_not_mistaken_for_content(self):
         sample = page(170, [

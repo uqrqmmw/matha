@@ -775,6 +775,15 @@ def build(work_root: Path, book_id: str) -> dict[str, Any]:
 
         events = page_events(page, in_drill_block)
         section = classify_page(page, events, in_drill_block)
+        if section == "drill-answers":
+            # A numbered line on an answers page is an answer whose 答案
+            # keyword OCR garbled, not a question.  Left as questions they
+            # became phantoms inside the answer block — 30 of them in the
+            # conditional-probability book — each also a hole in the answer
+            # list its real question needed to pair with.
+            for event in events:
+                if event["kind"] == "question" and event["origin"] == "numbered":
+                    event["kind"] = "answer-item"
         if section == "body" and any(event["origin"] == "example"
                                      for event in events if event["kind"] == "question"):
             in_drill_block, tier, tier_evidence = False, None, None
@@ -1110,7 +1119,18 @@ def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: lis
             # where it ends, or 300 questions across six books keep a page
             # number and no rendered answer for a reviewer to read.
             question["solutionRegion"] = lead_in_region.get(pdf_page + 1)
-    handled = {"solution-continues-next-page"}
+    # A worked example with no printed solution anywhere is not a defect:
+    # the owner confirms the book leaves those for the teacher to work in
+    # class.  Chapter-end drills are different — their answers are printed,
+    # so an unpaired one stays a repair item.
+    for question in questions:
+        if (question.get("roleEvidence") == "printed-Ex-marker"
+                and "solution-not-on-this-page" in question["flags"]):
+            question["flags"] = [flag for flag in question["flags"]
+                                 if flag != "solution-not-on-this-page"]
+            question["flags"].append("no-printed-solution-teacher-covered")
+
+    handled = {"solution-continues-next-page", "no-printed-solution-teacher-covered"}
     for question in questions:
         question["qaLane"] = "needs-repair" if [
             flag for flag in question["flags"] if flag not in handled
