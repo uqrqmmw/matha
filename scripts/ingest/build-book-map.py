@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
@@ -235,10 +235,16 @@ def read_type_headers(page: dict[str, Any]) -> list[tuple[int, str, str]]:
         if x0 > 0.14 * page["width"]:
             continue
         text = norm(line["text"]).strip()
-        if not TYPE_HEADER_RE.match(text) or len(text) > 12:
+        if len(text) > 12 or len(text) < 3:
             continue
-        matched = next((name for name, test in TYPE_PATTERNS if test(text)), "unclassified")
-        out.append((y0, matched, line["text"]))
+        matched = next((name for name, test in TYPE_PATTERNS if test(text)), None)
+        if TYPE_HEADER_RE.match(text):
+            out.append((y0, matched or "unclassified", line["text"]))
+        elif matched and text.endswith("題"):
+            # OCR drops the 一、 prefix often enough that requiring it lost the
+            # 單一選擇題 and 多重選擇題 headers of a whole block, leaving its
+            # questions typeless and unable to pair with their answers.
+            out.append((y0, matched, line["text"]))
     return out
 
 

@@ -41,7 +41,7 @@ def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=
          non_text_dark=None, printed_dark=0.5):
     regions = [list(b) for b in non_text]
     return {
-        "schema": 8, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
+        "schema": 9, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
         "dpi": 150, "width": WIDTH, "height": HEIGHT, "pdfSha256": "0" * 64,
         "imageSha256": "1" * 64, "ocr": list(ocr), "bannerOcr": list(banner_ocr),
         "layout": {"frameBoxes": [list(b) for b in frame_boxes],
@@ -343,6 +343,21 @@ class DifficultyProvenance(unittest.TestCase):
         self.assertIn("解題思維挑戰", records[0]["sourceDifficultyEvidence"])
         self.assertEqual(records[0]["questionType"], "multi")
         self.assertEqual(records[0]["questionTypeEvidence"], "二、多重選擇題")
+
+    def test_a_type_header_without_its_numeral_still_counts(self):
+        """OCR dropped the 一、 of 一、單一選擇題 on the medium block of the
+        sequences book, leaving 13 questions typeless and unable to find their
+        printed answers."""
+        sample = page(91, [line("罩一遥挥题", 82, 154, 208, 180)])
+        found = bookmap.read_type_headers(sample)
+        self.assertEqual([name for _, name, _ in found], ["single"])
+
+    def test_ordinary_left_margin_text_is_not_a_type_header(self):
+        sample = page(92, [
+            line("解析：", 62, 151, 126, 175),
+            line("由題意可得下列各式的結果與其推論過程", 60, 200),
+        ])
+        self.assertEqual(bookmap.read_type_headers(sample), [])
 
     def test_question_type_headers_survive_ocr_garble(self):
         sample = page(69, [
