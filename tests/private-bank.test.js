@@ -28,6 +28,38 @@ test('私有題包檔名包含內容雜湊，更新內容不會被同名 Storage
   assert.match(manifest.packs[0].file, new RegExp(`${manifest.packs[0].sha256.slice(0, 10)}\\.json$`));
 });
 
+test('掃描教材 apply-review envelope 的 questions 會被正式建置器接住', (t) => {
+  const root = path.resolve(__dirname, '..');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'matha-review-envelope-'));
+  t.after(() => fs.rmSync(temp, { recursive:true, force:true }));
+  const source = path.join(temp, 'reviewed-qpack.json');
+  const output = path.join(temp, 'out');
+  fs.writeFileSync(source, JSON.stringify({
+    schema: 1,
+    kind: 'private-question-source',
+    bookId: 'matha-114-line-inequality',
+    pdfSha256: 'b'.repeat(64),
+    reviewedBy: 'unit-test',
+    questions: [
+      {
+        id: 'line-inequality-p067-q3',
+        topic: 'line',
+        type: 'single',
+        diff: 1,
+        q: '點 P(3,4) 到直線 L: 12x - 5y + 10 = 0 的距離為多少？',
+        opts: ['1', '26/17', '20/13', '2', '26/7'],
+        ans: [3],
+        src: 'matha-114-line-inequality p67',
+      },
+    ],
+  }), 'utf8');
+  const manifest = buildPrivateBank(source, output, root);
+  assert.equal(manifest.report.sourceTotal, 1);
+  assert.equal(manifest.report.accepted, 1);
+  assert.equal(manifest.packs.length, 1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(output, manifest.packs[0].file), 'utf8')).items[0].id, 'line-inequality-p067-q3');
+});
+
 test('私有題庫保留缺圖題為可追蹤佇列，並拒絕超範圍、危險與完全重複內容', () => {
   const source = [
     q('ok-1', '求 \\(x=1\\)'),

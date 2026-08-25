@@ -275,7 +275,7 @@ function sanitizeBank(items, builtinQuestions) {
 
 function buildPrivateBank(sourceFile, outputDir, repoRoot) {
   const raw = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
-  const sourceItems = Array.isArray(raw) ? raw : (raw.items || raw.extbank || []);
+  const sourceItems = Array.isArray(raw) ? raw : (raw.items || raw.extbank || raw.questions || []);
   const builtin = loadBuiltinQuestions(repoRoot);
   const { items, pendingVisuals, report } = sanitizeBank(sourceItems, builtin);
   const bySource = new Map();
