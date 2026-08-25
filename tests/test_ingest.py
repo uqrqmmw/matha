@@ -41,7 +41,7 @@ def page(pdf_page, ocr, frame_boxes=(), label_boxes=(), non_text=(), banner_ocr=
          non_text_dark=None, printed_dark=0.5):
     regions = [list(b) for b in non_text]
     return {
-        "schema": 9, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
+        "schema": 10, "bookId": "matha-114-line-inequality", "pdfPage": pdf_page,
         "dpi": 150, "width": WIDTH, "height": HEIGHT, "pdfSha256": "0" * 64,
         "imageSha256": "1" * 64, "ocr": list(ocr), "bannerOcr": list(banner_ocr),
         "layout": {"frameBoxes": [list(b) for b in frame_boxes],

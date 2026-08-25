@@ -32,12 +32,13 @@ import cv2
 import fitz
 import numpy as np
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REVIEW_DPI = 150
 OCR_ENGINE = "rapidocr-onnxruntime-1.2.3"
-# The grey tier tag sits in this fraction of the page width, flush left.
-BANNER_TAG_WIDTH_RATIO = 0.26
+# Width of the sample taken from a line's start, as a fraction of page width
+# (about one inch at the 150 dpi review render).
+BANNER_TAG_SAMPLE_RATIO = 0.145
 BOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 # The scans are traditional Chinese; the OCR model emits simplified glyphs for
 # some of them.  Marker matching must survive that, so normalise before compare.
@@ -298,16 +299,17 @@ def annotate_banner_backgrounds(image: np.ndarray, lines: list[dict[str, Any]]) 
     re-reading three thousand pages.
     """
     gray = banner_strip_gray(image)
-    # Measure over the corner the tag occupies, not the whole line.  OCR
-    # sometimes merges the banner and the chapter title beside it into one box;
-    # averaged over that box the white paper wins and a real banner reads 255,
-    # which is how a whole answer block failed to start and its questions ended
-    # up with nowhere to find their printed answers.
-    corner = int(BANNER_TAG_WIDTH_RATIO * image.shape[1])
+    # Sample a fixed window from where the line starts, because that is where
+    # the filled grey rectangle begins.  Measuring across the whole line failed:
+    # OCR merges the banner with the chapter title beside it, and thirty pixels
+    # of white paper are enough to pull the 90th percentile to 255 — which is
+    # how a whole answer block failed to start and left its questions with
+    # nowhere to find their printed answers.  Over four books this window reads
+    # 224-230 inside a banner and 254-255 everywhere else.
+    window = max(40, int(BANNER_TAG_SAMPLE_RATIO * image.shape[1]))
     for line in lines:
         x0, y0, x1, y1 = line["bbox"]
-        clipped = min(x1, corner)
-        patch = gray[max(0, y0):y1, max(0, x0):clipped if clipped > x0 else x1]
+        patch = gray[max(0, y0):y1, max(0, x0):min(x1, max(0, x0) + window)]
         line["backgroundLevel"] = int(np.percentile(patch, 90)) if patch.size else 255
 
 

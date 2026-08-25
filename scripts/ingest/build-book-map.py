@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
