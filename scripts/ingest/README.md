@@ -117,7 +117,21 @@ python scripts/ingest/apply-review.py --work "<work>" --book <bookId>     --deci
 
 輸出的記錄已用 `build-private-bank.js` 的 `validateQuestion` 實跑驗證通過，`tests/private-bank.test.js` 有一條測試釘住這個契約。本程式**不碰**正式題庫 manifest。
 
-### 6. `promote-reviewed-stems.py` — 原題裁圖獨立複核與晉級
+### 6. `prepare-stem-review.py` — 產生離線原卷審核頁
+
+```bash
+python scripts/ingest/prepare-stem-review.py \
+  --source "<repo 外>/qpack.json" \
+  --book-dir "<work>/<bookId>" \
+  --pdf "<原始 PDF>" \
+  --crop-manifest "<work>/<bookId>/crops-manifest.json" \
+  --output "<repo 外>/stem-review" \
+  --catalog textbook-catalog.js
+```
+
+輸出的 `review.html` 不顯示 OCR 或轉錄題文，只顯示原 PDF 裁圖。審核者逐題確認題幹／公式／圖表完整、選項完整、沒有答案／詳解、沒有前手筆跡、沒有鄰題，再下載雜湊綁定的 `independent-stem-review.json`。產生審核頁前也會先把每張 crop 與原 PDF 重渲染結果逐像素比對。
+
+### 7. `promote-reviewed-stems.py` — 原題裁圖獨立複核與晉級
 
 ```bash
 python scripts/ingest/promote-reviewed-stems.py \

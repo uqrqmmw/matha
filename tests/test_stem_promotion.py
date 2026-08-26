@@ -13,6 +13,11 @@ SPEC = importlib.util.spec_from_file_location(
 promotion = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
 SPEC.loader.exec_module(promotion)
+PREP_SPEC = importlib.util.spec_from_file_location(
+    "prepare_stem_review", ROOT / "scripts" / "ingest" / "prepare-stem-review.py")
+preparation = importlib.util.module_from_spec(PREP_SPEC)
+assert PREP_SPEC.loader
+PREP_SPEC.loader.exec_module(preparation)
 
 
 def sha(path: Path) -> str:
@@ -99,6 +104,25 @@ class StemPromotionTests(unittest.TestCase):
         self.assertEqual(asset["producer"], "question-reviewer")
         self.assertEqual(asset["verifier"]["reviewer"], "independent-auditor")
         self.assertEqual(sha(Path(result["assetRoot"]) / asset["path"]), asset["sha256"])
+
+    def test_offline_review_page_uses_original_pixels_and_omits_index_text(self):
+        fx = self.fixture()
+        result = preparation.prepare(fx["source"], fx["book_dir"], fx["pdf"], fx["manifest"],
+                                     fx["root"] / "review-preparation", fx["catalog"])
+        self.assertEqual(result["questions"], 1)
+        template = json.loads(Path(result["template"]).read_text(encoding="utf-8"))
+        self.assertEqual(template["questions"][0]["decision"], "")
+        self.assertEqual(template["questions"][0]["cropSha256"], sha(fx["crop"]))
+        self.assertTrue(template["questions"][0]["integrity"]["cropPixelsMatchPdf"])
+        page = Path(result["reviewPage"]).read_text(encoding="utf-8")
+        self.assertIn("原卷題面審核", page)
+        self.assertIn("q1", page)
+        self.assertNotIn("index only", page)
+        self.assertIn(fx["crop"].resolve().as_uri(), page)
+
+        with self.assertRaises(preparation.stem.PromotionError):
+            preparation.prepare(fx["source"], fx["book_dir"], fx["pdf"], fx["manifest"],
+                                fx["root"] / "review-preparation", fx["catalog"])
 
     def test_incomplete_visual_review_is_rejected(self):
         fx = self.fixture()

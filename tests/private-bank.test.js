@@ -72,7 +72,22 @@ test('只有新版來源清冊與三項人工校驗都齊全時才產生可發�
   assert.equal(manifest.schema, 3);
   assert.equal(manifest.corpusGeneration, 'mistral-ocr4-verified-v1');
   assert.equal(manifest.releaseChecks.originalStemAssets, true);
+  assert.equal(manifest.releaseChecks.noPendingVisuals, true);
   assert.equal(Object.values(manifest.releaseChecks).every(Boolean), true);
+
+  const withPending = JSON.parse(fs.readFileSync(source, 'utf8'));
+  withPending.reviewAudit.sourceQuestionCount = 2;
+  withPending.reviewAudit.approvedQuestionCount = 2;
+  withPending.questions.push(q('release-contract-2', '仍缺原卷裁圖的測試題', {
+    bookId:'matha-114-real-number-line', page:13, src:'matha-114-real-number-line p13',
+    displayTruth:'original-pdf-crop', needsStemAsset:true,
+  }));
+  fs.writeFileSync(source, JSON.stringify(withPending), 'utf8');
+  const pendingManifest = buildPrivateBank(source, path.join(temp, 'out-pending'), root);
+  assert.equal(pendingManifest.pendingVisuals.count, 1);
+  assert.equal(pendingManifest.releaseChecks.noPendingVisuals, false);
+  assert.equal(pendingManifest.releaseReady, false,
+    '同批只要還有一題缺原卷裁圖，就不能把部分題目誤標成正式發布');
 });
 
 test('掃描教材 apply-review envelope 只有附完整原卷題幹裁圖後才會進正式題包', (t) => {

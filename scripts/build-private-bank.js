@@ -347,6 +347,7 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
       && Number.isInteger(Number(q.page)) && Number(q.page) >= 1 && typeof q.src === 'string' && q.src.trim()),
     originalStemAssets: items.length > 0 && items.every((q) => q.displayTruth === 'original-pdf-crop'
       && !!verifiedStemAsset(q)),
+    noPendingVisuals: pendingVisuals.length === 0 && items.length === sourceItems.length,
     reviewAudit: Number(reviewAudit.sourceQuestionCount) === sourceItems.length
       && Number(reviewAudit.approvedQuestionCount) === items.length + pendingVisuals.length
       && typeof reviewAudit.completedAt === 'string' && !Number.isNaN(Date.parse(reviewAudit.completedAt)),
