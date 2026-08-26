@@ -53,6 +53,17 @@ test('只有新版來源清冊與三項人工校驗都齊全時才產生可發�
     reviewAudit: { sourceQuestionCount:1, approvedQuestionCount:1, completedAt:'2026-08-26T12:00:00+08:00' },
     questions: [q('release-contract-1', '已對照原卷與答案的測試題', {
       bookId:'matha-114-real-number-line', page:12, src:'matha-114-real-number-line p12',
+      displayTruth:'original-pdf-crop',
+      stemAsset:{
+        path:'matha-114-real-number-line/release-contract-1.png', sha256:'a'.repeat(64),
+        sourcePdfSha256:'018659d0af52c6464863f5088c29fe8ce0638193faddd2c361a3695687bd5f7b',
+        pageIndex:12, bbox:[0,.1,1,.2], role:'question-stem', assetStatus:'verified', mime:'image/png',
+        width:1200, height:300, containsAnswer:false, containsSolution:false, containsHandwriting:false,
+        questionIds:['release-contract-1'], bookId:'matha-114-real-number-line', producer:'stem-crop-reviewer',
+        verifier:{ reviewer:'independent-stem-auditor', reviewVersion:1, questionRoleVerified:true,
+          safetyVerified:true, assetHashVerified:true, fullStemVerified:true, optionsVerified:true,
+          verifiedAt:'2026-08-26T12:00:00+08:00' },
+      },
     })],
   }), 'utf8');
 
@@ -60,10 +71,11 @@ test('只有新版來源清冊與三項人工校驗都齊全時才產生可發�
   assert.equal(manifest.releaseReady, true);
   assert.equal(manifest.schema, 3);
   assert.equal(manifest.corpusGeneration, 'mistral-ocr4-verified-v1');
+  assert.equal(manifest.releaseChecks.originalStemAssets, true);
   assert.equal(Object.values(manifest.releaseChecks).every(Boolean), true);
 });
 
-test('掃描教材 apply-review envelope 的 questions 會被正式建置器接住', (t) => {
+test('掃描教材 apply-review envelope 只有附完整原卷題幹裁圖後才會進正式題包', (t) => {
   const root = path.resolve(__dirname, '..');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'matha-review-envelope-'));
   t.after(() => fs.rmSync(temp, { recursive:true, force:true }));
@@ -85,14 +97,18 @@ test('掃描教材 apply-review envelope 的 questions 會被正式建置器接�
         opts: ['1', '26/17', '20/13', '2', '26/7'],
         ans: [3],
         src: 'matha-114-line-inequality p67',
+        displayTruth: 'original-pdf-crop',
+        needsStemAsset: true,
       },
     ],
   }), 'utf8');
   const manifest = buildPrivateBank(source, output, root);
   assert.equal(manifest.report.sourceTotal, 1);
-  assert.equal(manifest.report.accepted, 1);
-  assert.equal(manifest.packs.length, 1);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(output, manifest.packs[0].file), 'utf8')).items[0].id, 'line-inequality-p067-q3');
+  assert.equal(manifest.report.accepted, 0);
+  assert.equal(manifest.report.skipped.missingStem, 1);
+  assert.equal(manifest.packs.length, 0);
+  const pending = JSON.parse(fs.readFileSync(path.join(output, manifest.pendingVisuals.file), 'utf8'));
+  assert.equal(pending.items[0].visualPendingReason, 'missing-verified-original-stem-crop');
 });
 
 test('掃描教材草稿或 smoke 題包即使 schema 像正式題也不能進正式建置', (t) => {
@@ -264,6 +280,7 @@ test('掃描教材複核後產出的題目通過私有題庫驗證，且圖題�
     ans:[3],
     bookId:'matha-114-line-inequality', page:69, printedPage:67,
     role:'chapter-end-easy', src:'matha-114-line-inequality p67',
+    displayTruth:'original-pdf-crop', needsStemAsset:true,
     needsFigure:true,
   };
   assert.equal(validateQuestion(enrichQuestionMetadata(reviewed)), null);

@@ -16,19 +16,21 @@ test('同版型私有教材清冊固定為 24 本，週攻略另列補充題源'
   const { run } = loadApp();
   const result = plain(run(`({
     total:TEXTBOOK_LIBRARY.books.length,
-    ready:TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion === 'ready').length,
+    ready:TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion === 'released').length,
     reviews:TEXTBOOK_LIBRARY.books.filter((book) => book.kind === 'comprehensive-review').map((book) => book.title),
-    supplemental:TEXTBOOK_LIBRARY.supplemental.map((book) => book.title),
+    supplemental:TEXTBOOK_LIBRARY.supplemental.map((book) => ({ title:book.title, sha:book.pdfSha256 })),
     pages:TEXTBOOK_LIBRARY.books.reduce((sum, book) => sum + book.pages, 0),
     html:textbookLibraryCard(),
   })`));
   assert.equal(result.total, 24);
-  assert.equal(result.ready, 10);
+  assert.equal(result.ready, 0);
   assert.deepEqual(result.reviews, ['數學 A 滿級分寶典（上）', '數學 A 滿級分寶典（下）']);
-  assert.deepEqual(result.supplemental, ['週攻略數學 A']);
+  assert.deepEqual(result.supplemental, [{ title:'週攻略數學 A', sha:'ebf646b89f10f3fac4458289985dd1c50b575f06dfb5391d4d2fb749d61d4efe' }]);
   assert.equal(result.pages, 6210);
-  assert.match(result.html, /22 本主題教材＋2 本總複習/);
-  assert.match(result.html, /待 OCR／圖形 QA <b>14<\/b>/);
+  assert.match(result.html, /25 份教材、6,720 頁已完成 OCR 清冊/);
+  assert.match(result.html, /逐題原卷校驗中 <b>24<\/b>/);
+  assert.match(result.html, /含週攻略 <b>6720<\/b>/);
+  assert.match(result.html, /已可安全出題 <b>0<\/b>/);
 });
 
 test('答案正規化支援分數、多根不拘順序，但不交換座標', () => {
@@ -71,6 +73,27 @@ test('有圖題只有完整私有裁圖證據通過時才可進題庫，路徑�
   assert.doesNotMatch(result.html, /books\/matha/);
 });
 
+test('掃描教材實際顯示原 PDF 題幹裁圖，索引文字與選項不會冒充題面', () => {
+  const { context, run } = loadApp();
+  context.__stem = {
+    path:'books/matha/stems/q1.png', sha256:'b'.repeat(64), sourcePdfSha256:'afa1a19d10f5232c1453739487902c39c79d826a814c9c54bea802ab04d6bc4a',
+    pageIndex:185, bbox:[0,.04,1,.2], role:'question-stem', assetStatus:'verified', mime:'image/png', width:1600, height:400,
+    containsAnswer:false, containsSolution:false, containsHandwriting:false, includesOptions:true,
+    questionIds:['scan-stem-q'], bookId:'matha-114-polynomial-quadratic', producer:'crop-agent',
+    verifier:{ reviewer:'audit-agent', reviewVersion:1, questionRoleVerified:true, safetyVerified:true, assetHashVerified:true, fullStemVerified:true, optionsVerified:true, verifiedAt:'2026-08-26T00:00:00Z' },
+  };
+  const result = plain(run(`(() => {
+    const q = { id:'scan-stem-q', topic:'poly', type:'single', diff:2, q:'OCR錯誤：-5≤x≤1', opts:['錯誤選項甲','錯誤選項乙'], ans:[0], bookId:'matha-114-polynomial-quadratic', page:185, displayTruth:'original-pdf-crop', needsStemAsset:true, stemAsset:__stem };
+    trustedCuratedQuestions.add(q);
+    return { valid:validateQ(q), missing:questionMissingVisualAsset(q), html:textbookQuestionBodyHTML(q, 'qSubmit') };
+  })()`));
+  assert.equal(result.valid, null);
+  assert.equal(result.missing, false);
+  assert.match(result.html, /data-private-stem="scan-stem-q"/);
+  assert.doesNotMatch(result.html, /OCR錯誤|錯誤選項甲|錯誤選項乙/);
+  assert.match(result.html, /第 1 個選項/);
+});
+
 test('常見側邊圖形與座標平面措辭都會 fail closed，題庫數字分開顯示可用與待補圖', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
@@ -98,7 +121,7 @@ test('整回開始前會先驗證所有必要題圖；下載失敗時不執行�
     syncState.user = { id:'approved-user' };
     const q = { id:'preflight-q', topic:'line', type:'fill', diff:2, q:'如右圖，求 x', ans:['1'], needsFigure:true, bookId:'matha-114-cramer-circle', page:37, figureAsset:__figure };
     trustedCuratedQuestions.add(q);
-    privateFigureURL = async () => { throw new Error('offline'); };
+    privateAssetURL = async () => { throw new Error('offline'); };
     const task = preflightQuestionFigures([q]);
     const ok = await task;
     afterFigurePreflight([q], () => { began++; });
@@ -108,7 +131,7 @@ test('整回開始前會先驗證所有必要題圖；下載失敗時不執行�
   assert.equal(result.ok, false);
   assert.equal(result.alerts, 2);
   assert.equal(result.began, 0);
-  assert.match(result.msg, /1 張題圖尚未安全載入/);
+  assert.match(result.msg, /1 張原題裁圖尚未安全載入/);
 });
 
 test('答案正規化能判斷 AI 常見 LaTeX、Unicode 根式與隱含乘法的等價形式', () => {

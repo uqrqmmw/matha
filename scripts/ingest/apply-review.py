@@ -171,6 +171,8 @@ def convert(question: dict[str, Any], decision: dict[str, Any], default_topic: s
         "printedPage": question["printedPage"],
         "role": question["role"] if question["role"] in ROLES else "unclassified",
         "src": f"{question['bookId']} p{question['printedPage']}",
+        "displayTruth": "original-pdf-crop",
+        "needsStemAsset": True,
     }
     if not ID_RE.match(qid):
         raise ReviewError(f"{qid}: id has characters the private bank rejects")

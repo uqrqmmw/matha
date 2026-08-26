@@ -17,8 +17,9 @@ const OUT_OF_RANGE_RE = [/\\(?:cot|sec|csc)\b/, /(?:餘切|正割|餘割)\s*函�
 const SUSPICIOUS_HTML_RE = /<\s*(?:script|iframe|object|embed|style)\b|\bon\w+\s*=|javascript\s*:/i;
 const VISUAL_REFERENCE_RE = /(?:如|由|見|依|根據)(?:下|上|左|右|附)?圖(?:所示|可知|中)?|(?:下|上|左|右|附)圖(?:所示|中)?|圖中|圖示(?:如下)?|示意圖|依圖作答|(?:左|右|上|下)(?:側|方)(?:的)?(?:函數|座標|坐標|幾何|統計)?(?:圖|圖形|圖像|座標平面|坐標平面)|(?:座標|坐標)平面(?:中|上)?(?:繪有|畫有|標有|標示|如下|如附).{0,12}(?:曲線|圖形|直線|圓|點)|(?:曲線|圖形|座標平面|坐標平面)(?:如下|如附|如右|如左|如上|如下方|如右側)|(?:根據|依據|參照|參考)(?:附|下|上|左|右)?表|(?:附|下|上|左|右)表(?:中|所示|可知)?/;
 const QUESTION_ROLES = new Set(['example', 'chapter-end-easy', 'chapter-end-medium', 'chapter-end-hard', 'comprehensive-review', 'unclassified']);
-const BOOK_BY_SOURCE = new Map(TEXTBOOK_LIBRARY.books.flatMap((book) => (book.sourceNames || []).map((name) => [name, book])));
-const BOOK_BY_ID = new Map(TEXTBOOK_LIBRARY.books.map((book) => [book.id, book]));
+const CATALOG_BOOKS = [...(TEXTBOOK_LIBRARY.books || []), ...(TEXTBOOK_LIBRARY.supplemental || [])];
+const BOOK_BY_SOURCE = new Map(CATALOG_BOOKS.flatMap((book) => (book.sourceNames || []).map((name) => [name, book])));
+const BOOK_BY_ID = new Map(CATALOG_BOOKS.map((book) => [book.id, book]));
 const UNTRUSTED_REVIEWER_RE = /(?:draft|smoke|not[-_\s]*a[-_\s]*human|not[-_\s]*human|not[-_\s]*importable|qa[-_\s]*only|forced|unsigned)/i;
 const RELEASE_NON_HUMAN_RE = /(?:claude|codex|chatgpt|gpt|gemini|agent|bot|automation|自動|模型|人工智慧|\bai\b)/i;
 /* 逐頁核對後確認：題文已把印刷表格的全部欄列與數值完整序列化，位置/顏色/合併格不影響解題。
@@ -91,6 +92,7 @@ function validateQuestion(q) {
   if (q.bookId != null && (typeof q.bookId !== 'string' || !/^[\w.-]+$/.test(q.bookId))) return 'book-id-invalid';
   if (q.page != null && (!Number.isInteger(Number(q.page)) || Number(q.page) < 1)) return 'page-invalid';
   if (q.role != null && !QUESTION_ROLES.has(q.role)) return 'role-invalid';
+  if (q.stemAsset != null && !verifiedStemAsset(q)) return 'stem-asset-unverified';
   if (q.figureAsset != null && !verifiedFigureAsset(q)) return 'figure-asset-unverified';
   if (q.visualEvidence != null && !verifiedVisualEvidence(q)) return 'visual-evidence-unverified';
   for (const key of ['skills', 'methods', 'prerequisites']) {
@@ -111,8 +113,7 @@ function verifiedVisualEvidence(q) {
     && typeof evidence.verifiedAt === 'string' ? evidence : null;
 }
 
-function verifiedFigureAsset(q) {
-  const asset = q && q.figureAsset;
+function verifiedQuestionImageAsset(q, asset, role) {
   if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return null;
   const book = q && BOOK_BY_ID.get(q.bookId);
   const safePath = typeof asset.path === 'string' && asset.path.length <= 240
@@ -134,15 +135,20 @@ function verifiedFigureAsset(q) {
     && typeof verifier.reviewer === 'string' && verifier.reviewer.length >= 3 && verifier.reviewer !== asset.producer
     && verifier.questionRoleVerified === true && verifier.safetyVerified === true && verifier.assetHashVerified === true
     && typeof verifier.verifiedAt === 'string';
-  return asset.assetStatus === 'verified' && asset.role === 'question-figure'
+  const stemCoverage = role !== 'question-stem' || (verifier.fullStemVerified === true
+    && (q.type === 'fill' || (asset.includesOptions === true && verifier.optionsVerified === true)));
+  return asset.assetStatus === 'verified' && asset.role === role
     && asset.containsAnswer === false && asset.containsSolution === false && asset.containsHandwriting === false
-    && safePath && safeHashes && safeBox && safeRendition && boundToQuestion && independentlyReviewed
+    && safePath && safeHashes && safeBox && safeRendition && boundToQuestion && independentlyReviewed && stemCoverage
     && Number.isInteger(page) && page >= 1 ? asset : null;
 }
+function verifiedStemAsset(q) { return verifiedQuestionImageAsset(q, q && q.stemAsset, 'question-stem'); }
+function verifiedFigureAsset(q) { return verifiedQuestionImageAsset(q, q && q.figureAsset, 'question-figure'); }
 
 function questionMissingVisualAsset(q) {
   if (!q) return false;
-  if (verifiedFigureAsset(q) || verifiedVisualEvidence(q)) return false;
+  if (verifiedStemAsset(q) || verifiedFigureAsset(q) || verifiedVisualEvidence(q)) return false;
+  if (q.needsStemAsset || q.displayTruth === 'original-pdf-crop') return true;
   if (q.needsFigure) return true;
   const stem = `${String(q.stem || '')}\n${String(q.q || '')}`.replace(/<[^>]+>/g, ' ');
   return VISUAL_REFERENCE_RE.test(stem);
@@ -151,6 +157,7 @@ function questionMissingVisualAsset(q) {
 function sanitizeQuestion(input) {
   const q = { ...input };
   for (const key of ['q', 'stem', 'sol', 'tip', 'src', 'bookId', 'bookTitle', 'chapterId', 'sectionId', 'role', 'canonicalProblemId', 'variantGroup']) if (typeof q[key] === 'string') q[key] = cleanText(q[key]);
+  if (q.stemAsset && typeof q.stemAsset === 'object' && !Array.isArray(q.stemAsset)) q.stemAsset = { ...q.stemAsset };
   if (q.figureAsset && typeof q.figureAsset === 'object' && !Array.isArray(q.figureAsset)) q.figureAsset = { ...q.figureAsset };
   if (q.visualEvidence && typeof q.visualEvidence === 'object' && !Array.isArray(q.visualEvidence)) q.visualEvidence = { ...q.visualEvidence };
   if (Array.isArray(q.opts)) q.opts = q.opts.map((v) => typeof v === 'string' ? cleanText(v) : v);
@@ -228,7 +235,7 @@ function sanitizeBank(items, builtinQuestions) {
   const report = {
     sourceTotal: items.length,
     accepted: 0,
-    skipped: { schema: 0, missingFigure: 0, visualReferenceMissing: 0, outOfRange: 0, suspiciousHtml: 0, duplicateId: 0, duplicateBuiltin: 0, duplicateLegacy: 0, untrustedReview: 0 },
+    skipped: { schema: 0, missingStem: 0, missingFigure: 0, visualReferenceMissing: 0, outOfRange: 0, suspiciousHtml: 0, duplicateId: 0, duplicateBuiltin: 0, duplicateLegacy: 0, untrustedReview: 0 },
     emojiCleaned: 0,
     templateGroups: 0,
     visual: { pending: 0, verified: 0, textComplete: 0 },
@@ -259,10 +266,13 @@ function sanitizeBank(items, builtinQuestions) {
     legacyText.add(exact);
     if (visualMissing) {
       q.visualStatus = 'pending-asset-qa';
-      q.visualPendingReason = q.needsFigure && !q.fig ? 'missing-explicit-figure' : 'visual-reference-without-verified-asset';
+      q.visualPendingReason = q.needsStemAsset || q.displayTruth === 'original-pdf-crop'
+        ? 'missing-verified-original-stem-crop'
+        : q.needsFigure && !q.fig ? 'missing-explicit-figure' : 'visual-reference-without-verified-asset';
       pendingVisuals.push(q);
       report.visual.pending++;
-      if (q.needsFigure && !q.fig) report.skipped.missingFigure++;
+      if (q.needsStemAsset || q.displayTruth === 'original-pdf-crop') report.skipped.missingStem++;
+      else if (q.needsFigure && !q.fig) report.skipped.missingFigure++;
       else report.skipped.visualReferenceMissing++;
       continue;
     }
@@ -335,6 +345,8 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
     mathematicalCorrectnessVerified: raw.mathematicalCorrectnessVerified === true,
     questionProvenance: items.length > 0 && items.every((q) => BOOK_BY_ID.has(q.bookId)
       && Number.isInteger(Number(q.page)) && Number(q.page) >= 1 && typeof q.src === 'string' && q.src.trim()),
+    originalStemAssets: items.length > 0 && items.every((q) => q.displayTruth === 'original-pdf-crop'
+      && !!verifiedStemAsset(q)),
     reviewAudit: Number(reviewAudit.sourceQuestionCount) === sourceItems.length
       && Number(reviewAudit.approvedQuestionCount) === items.length + pendingVisuals.length
       && typeof reviewAudit.completedAt === 'string' && !Number.isNaN(Date.parse(reviewAudit.completedAt)),
@@ -368,8 +380,8 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
     library: {
       schema: TEXTBOOK_LIBRARY.schema,
       verifiedBooks: TEXTBOOK_LIBRARY.verifiedCount,
-      readyBooks: TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion === 'ready').length,
-      pendingBooks: TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion !== 'ready').length,
+      readyBooks: TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion === 'released').length,
+      pendingBooks: TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion !== 'released').length,
     },
     pendingVisuals: { file: 'pending-visuals.json', count: pendingVisuals.length, sha256: sha(pendingVisualJson) },
     packs,
@@ -400,4 +412,4 @@ if (require.main === module) {
   console.log(JSON.stringify(manifest, null, 2));
 }
 
-module.exports = { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, buildPrivateBank };
+module.exports = { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedStemAsset, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, buildPrivateBank };

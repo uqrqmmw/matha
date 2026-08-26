@@ -1062,6 +1062,8 @@ class ReviewGate(unittest.TestCase):
         self.assertIn("基礎實力養成", record["diffEvidence"])
         self.assertEqual(record["ans"], [3])
         self.assertEqual(record["page"], 69)
+        self.assertEqual(record["displayTruth"], "original-pdf-crop")
+        self.assertTrue(record["needsStemAsset"])
         self.assertNotIn("needsFigure", record)
 
     def test_ocr_text_cannot_be_used_as_the_question(self):

@@ -290,6 +290,14 @@ button.bk-opt { appearance: none; border: 0; background: transparent; color: inh
   color: var(--dim); background: rgba(255,255,255,.72); border: 1px dashed var(--paper-border);
 }
 .private-qfig-actions { position: relative; z-index: 4; display: flex; justify-content: center; margin-top: 8px; }
+.private-qstem { margin: 0; min-height: 100px; }
+.private-qstem > img {
+  display: block; width: 100%; height: auto; max-height: none; object-fit: contain; object-position: left top;
+  background: #fff; border: 1px solid var(--paper-border); touch-action: pan-x pan-y pinch-zoom;
+}
+.crop-answer-grid { flex-direction: row; flex-wrap: wrap; gap: 8px 14px; }
+.crop-answer-grid .bk-opt { min-width: 72px; justify-content: center; padding-right: 8px; }
+.sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .private-figure-overlay {
   position: fixed; inset: 0; z-index: 1000; overflow: auto; padding: 68px 24px 40px;
   background: rgba(31,29,27,.92); touch-action: pan-x pan-y pinch-zoom; overscroll-behavior: contain;

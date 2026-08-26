@@ -1,13 +1,13 @@
 # 掃描教材匯入管線（review-only）
 
-來源資料夾目前確認有 **24 本同版數學教材、6,210 頁**（22 本章節教材＋《滿級分寶典》上、下）。`textbook-catalog.js` 先前只登錄其中 14 本、3,786 頁；那是舊的本機索引基線，不是完整藏書數。這個目錄的工具把一本書變成可人工複核的 section map、題目候選、圖形候選與原卷裁切，並在人工複核後轉成正式題包格式。
+來源資料夾目前確認有 **25 份數學 PDF、6,720 頁**：24 本主教材共 6,210 頁，另含 510 頁《週攻略數學 A》。`textbook-catalog.js` 已逐份固定檔名、頁數與 PDF SHA-256；舊的 14 本／3,786 頁本機索引只是早期製作基線，不是完整藏書數。這個目錄的工具把一本書變成可人工複核的 section map、題目候選、圖形候選與原卷裁切，並在人工複核後轉成正式題包格式。
 
 ## 硬規則
 
 - **OCR 只作索引。** 題目顯示真值一律是原 PDF 的裁切像素；OCR 文字只用來切段、配對與搜尋，記錄裡的欄位名稱就叫 `ocrIndex`。
 - **成熟 OCR 也不能自證正確。** Google Enterprise Document OCR＋Math OCR 是第二套獨立索引；它與 RapidOCR 一致只能提高信心，不等於題目或答案獲准。兩者不一致、或只有一方找到的題，一律進 `needs-repair`。
 - **產物不得進 Git。** 所有程式都會拒絕寫入 repo 內任何路徑（`ensure_outside_repo`）。掃描圖、裁切圖、頁面 JSON 全部留在 repo 外的工作目錄。
-- **一律 `pending-review`。** 沒有任何一條路徑會產生 `verified: true` 或 `studentUsable: true`。晉級要走既有的 `prepare-figure-review.js` → 人工 → `promote-reviewed-figures.js`。
+- **一律 `pending-review`。** `apply-review.py` 只校驗題目 metadata 與正解，產物仍帶 `needsStemAsset`；必須再走 `promote-reviewed-stems.py` 的原 PDF 像素比對與獨立視覺複核才可能上線。OCR 完成、兩套 OCR 一致、或只有 `figureAsset` 都不能解除這道閘門。
 - **沒有印刷證據就是 null。** `sourceDifficulty` 只在書上印了難度橫幅時才填，並附上 `sourceDifficultyEvidence` 原字串。猜一個「中等」之後就再也分不出哪個是證據。
 - **有圖的題不准丟。** 圖形超出答案邊界時**裁到邊界**而不是丟棄；題幹提到「如圖」卻真的沒有圖形候選才帶 `figure-referenced-but-missing` 進 `needs-repair`。「圖示…的解」「作出…的圖形」這類**圖就是答案**的題另標 `answer-is-a-drawing`，不算缺陷。
 - **前手寫筆跡只標記、不擦除。** 這批掃描裡有前一手的鉛筆演算，就寫在題目與 `解答` 之間（題幹範圍內），而且常常包含最終答案。判準是**實心墨佔比**：印刷會壓出實心墨、鉛筆不會（印刷圖 0.45–1.2 倍於同頁內文，鉛筆 0–0.21 倍）。命中的區域不當圖形候選，題目標 `annotation-suspected-in-question` 並降到 `needs-repair`；裁切照樣產生，因為「前一手寫了什麼」是人要判的。
@@ -31,7 +31,11 @@ python scripts/ingest/index-pages.py --pdf "<scan>.pdf" --book <bookId> --work "
 
 輸出 `<work>/<bookId>/pages/pNNNN.json`：`ocr[]`（bbox + 文字 + 信心）、`bannerOcr[]`（灰底橫幅加強對比後重讀）、`layout.frameBoxes` / `labelBoxes` / `nonTextRegions` / `inkRows`。
 
-### 1b. Google Document AI Math OCR — 成熟服務的獨立第二讀
+### 1b. 成熟 OCR 服務 — 只建立索引
+
+25 份來源已於 2026-08-26 用 `mistral-ocr-latest` 完成 6,720／6,720 頁索引。完整輸出留在 repo 外的 `ocr-full-20260826`，費用估計 USD 26.88。Mistral 的角色與下述 Google 第二讀相同：協助搜尋、切段和找候選，不是學生題面。
+
+Google Enterprise Document OCR 的 Math OCR 曾作為獨立第二讀；若要針對局部頁重跑，流程如下：
 
 目前採用 Google Enterprise Document OCR 的 Math OCR，不再要求本機 OCR 獨力扛數學式與繁體中文。先在 Google Cloud 建立 Enterprise Document OCR processor，再對 `pages/*.png` 執行：
 
@@ -109,8 +113,24 @@ python scripts/ingest/apply-review.py --work "<work>" --book <bookId>     --deci
 - 還帶著 QA 旗標的題，必須把那些旗標逐一列進 `acceptedFlags` 才放行。
 - 難度優先採印刷分層；書上沒印就必須同時提供 `diff` 與 `diffEvidence`。
 - 有圖的題一律帶 `needsFigure: true` 且**不產生** `figureAsset`。前端會把這種題隔離，直到裁圖走完既有的獨立複核與晉級流程——這就是「有圖題不會缺圖上線」的保證。
+- 每一題都另外帶 `displayTruth: original-pdf-crop` 與 `needsStemAsset: true`。人工轉錄只用於搜尋、作答型態與批改；沒有完整原題裁圖仍是待處理題。
 
 輸出的記錄已用 `build-private-bank.js` 的 `validateQuestion` 實跑驗證通過，`tests/private-bank.test.js` 有一條測試釘住這個契約。本程式**不碰**正式題庫 manifest。
+
+### 6. `promote-reviewed-stems.py` — 原題裁圖獨立複核與晉級
+
+```bash
+python scripts/ingest/promote-reviewed-stems.py \
+  --source "<repo 外>/qpack.json" \
+  --book-dir "<work>/<bookId>" \
+  --pdf "<原始 PDF>" \
+  --crop-manifest "<work>/<bookId>/crops-manifest.json" \
+  --review "<repo 外>/independent-stem-review.json" \
+  --output "<repo 外>/promoted" \
+  --catalog textbook-catalog.js
+```
+
+它會逐題重新由原 PDF 渲染相同 bbox，要求像素與 `stem.png` 完全一致，再核對 PDF／qpack／catalog 雜湊、題號與頁碼、完整題幹和全部選項、無答案、無詳解、無前手筆跡、無鄰題，且獨立複核者不得與 qpack 製作者相同。任一項不符就整批失敗；成功也只在 repo 外產生含 `stemAsset` 的 qpack 與待上傳素材，**不會自動上傳或發布**。
 
 ## 這套書實際印了什麼
 
@@ -140,15 +160,17 @@ python scripts/ingest/apply-review.py --work "<work>" --book <bookId>     --deci
 - **滿級分寶典(上)(下)**(806 頁):前 ~290 頁是「課程重點回顧」(編號項目是定義與定理,不是題目),p293 起是「精選模考試題」(題目區/詳解區分開)。這是另一個版面家族;**逐頁索引已完成並快取**(未來加模考版面支援時零 OCR 成本),題目抽取尚未進行,現有輸出裡的 0 題是誠實結果不是失敗。
 - **數B滿分讀寫**(160 頁,supplement):用章節書偵測器跑出 154 題候選留待審,優先度低。
 
-這 14 本的雜湊皆已記入 `textbook-catalog.js`，`ingestion` 維持 `pending-qa`。
+完整 25 份來源的雜湊皆已記入 `textbook-catalog.js`；`ingestion` 維持 `ocr-complete-review-pending`，目前安全發布數為 0。
 
 無法自動處理而**明列給人工**的清單(所有書合計):漏題缺號 65 題(各書 qa-report 有區塊/題型/頁碼)、頁頂無主內容 21 處、前手鉛筆 481 題、章末缺配 110 題。三次自動掛接嘗試與一次全頁回收嘗試都因目視驗證失敗而撤除——**回收與掛接只在印刷證據自己能證明的地方發生**。
 
 ## 已驗證與尚未驗證
 
-已用實跑驗證：十四本 3,786 頁全數索引；11 本章節教材的 section map 分章與 easy／medium／hard 分層有逐段 QA 報告；題幹與圖形裁切有抽查（題幹不含答案、座標軸與刻度完整、選項不進圖、單位圓標點齊全）；鉛筆判準在乾淨的《直線與二元一次不等式》上數字穩定，在有筆跡的頁上保留印刷圖、只標記鉛筆。`tests/test_ingest.py` 與既有 `npm test` 全數通過。
+已用實跑驗證：Mistral 25 份／6,720 頁索引完整；嚴格 QA 為 6,439 頁通過、281 頁待複核，其中 3 頁確認是原卷空白／封面，10 頁確認漏掉來源內容並已另行重跑。十四本舊製作基線的 3,786 頁也有本機頁索引；11 本章節教材的 section map、難度分層與原卷裁圖仍可作候選材料。
 
-**尚未驗證**：`needs-repair` 佇列裡的每一題仍待人工判讀；`handwritingSafety` 一律 `unknown`（沒有可信的手寫偵測，掃描本身也可能有筆跡）；本管線沒有產生任何可直接匯入正式題庫的 qpack，`build-private-bank.js` 的輸入仍需人工複核後再另行產生。
+**已證明不能信任 OCR 題面：**針對漏頁重跑後，仍目視發現三列方程組漏掉整列，以及原題 `-5≤x<1` 被讀成 `-5≤x≤1`。後者在兩套 OCR 都一致讀錯，證明「雙引擎同意」也不能取代原卷。這就是正式 app 只顯示經獨立複核的原 PDF 題幹裁圖，而不顯示 OCR／轉錄文字的原因。
+
+**尚未驗證**：`needs-repair` 佇列裡的每一題仍待人工判讀；`handwritingSafety` 一律 `unknown`（沒有可信的手寫偵測，掃描本身也可能有筆跡）；目前沒有任何掃描題通過完整 stem promotion，因此安全發布數仍是 0。
 
 ## 2026-08-26 成熟服務首本實跑
 

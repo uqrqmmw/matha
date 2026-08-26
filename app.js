@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0826a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0826b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -160,6 +160,7 @@ function validateQ(q) {
   if (q.bookId != null && (typeof q.bookId !== 'string' || !/^[\w.-]+$/.test(q.bookId))) return 'bookId 不合法';
   if (q.page != null && (!Number.isInteger(Number(q.page)) || Number(q.page) < 1)) return 'page 不合法';
   if (q.role != null && !QUESTION_ROLES.has(q.role)) return 'role 不合法';
+  if (q.stemAsset != null && !verifiedStemAsset(q, false)) return 'stemAsset 尚未通過完整原題裁圖驗證';
   if (q.figureAsset != null && !verifiedFigureAsset(q, false)) return 'figureAsset 尚未通過完整圖資驗證';
   if (q.visualEvidence != null && !verifiedVisualEvidence(q, false)) return 'visualEvidence 尚未通過完整文字證據驗證';
   for (const key of ['skills', 'methods', 'prerequisites']) {
@@ -936,18 +937,20 @@ function trustedVisualQuestion(q) {
   const canonical = bankById(q.id);
   if (!canonical || !trustedCuratedQuestions.has(canonical)) return false;
   if (canonical.q !== q.q || String(canonical.stem || '') !== String(q.stem || '')) return false;
-  if (q.figureAsset) return !!(canonical.figureAsset
-    && canonical.figureAsset.sha256 === q.figureAsset.sha256 && canonical.figureAsset.path === q.figureAsset.path);
-  if (q.visualEvidence) return !!(canonical.visualEvidence
+  if (q.stemAsset && !(canonical.stemAsset
+    && canonical.stemAsset.sha256 === q.stemAsset.sha256 && canonical.stemAsset.path === q.stemAsset.path)) return false;
+  if (q.figureAsset && !(canonical.figureAsset
+    && canonical.figureAsset.sha256 === q.figureAsset.sha256 && canonical.figureAsset.path === q.figureAsset.path)) return false;
+  if (q.visualEvidence && !(canonical.visualEvidence
     && canonical.visualEvidence.status === q.visualEvidence.status
-    && canonical.visualEvidence.sourcePdfSha256 === q.visualEvidence.sourcePdfSha256);
-  return false;
+    && canonical.visualEvidence.sourcePdfSha256 === q.visualEvidence.sourcePdfSha256)) return false;
+  return !!(q.stemAsset || q.figureAsset || q.visualEvidence);
 }
-function verifiedFigureAsset(q, requireTrusted = true) {
-  const asset = q && q.figureAsset;
+function verifiedQuestionImageAsset(q, asset, role, requireTrusted = true) {
   if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return null;
   if (requireTrusted && !trustedVisualQuestion(q)) return null;
-  const book = q && q.bookId && TEXTBOOK_LIBRARY.books.find((item) => item.id === q.bookId);
+  const book = q && q.bookId && [...(TEXTBOOK_LIBRARY.books || []), ...(TEXTBOOK_LIBRARY.supplemental || [])]
+    .find((item) => item.id === q.bookId);
   const safePath = typeof asset.path === 'string' && asset.path.length <= 240
     && !asset.path.startsWith('/') && !asset.path.includes('..') && /^[\w./-]+\.(?:png|webp|jpe?g)$/i.test(asset.path);
   const safeHashes = /^[a-f0-9]{64}$/.test(String(asset.sha256 || '')) && /^[a-f0-9]{64}$/.test(String(asset.sourcePdfSha256 || ''));
@@ -958,7 +961,7 @@ function verifiedFigureAsset(q, requireTrusted = true) {
   const verifier = asset.verifier;
   const safeRendition = ['image/webp', 'image/png', 'image/jpeg'].includes(asset.mime)
     && Number.isInteger(Number(asset.width)) && Number(asset.width) >= 80
-    && Number.isInteger(Number(asset.height)) && Number(asset.height) >= 80;
+    && Number.isInteger(Number(asset.height)) && Number(asset.height) >= 40;
   const boundToQuestion = Array.isArray(asset.questionIds) && asset.questionIds.includes(q.id)
     && asset.bookId === q.bookId && page === Number(q.page)
     && !!book && book.pdfSha256 === asset.sourcePdfSha256;
@@ -967,16 +970,25 @@ function verifiedFigureAsset(q, requireTrusted = true) {
     && typeof verifier.reviewer === 'string' && verifier.reviewer.length >= 3 && verifier.reviewer !== asset.producer
     && verifier.questionRoleVerified === true && verifier.safetyVerified === true && verifier.assetHashVerified === true
     && typeof verifier.verifiedAt === 'string';
-  return asset.assetStatus === 'verified' && asset.role === 'question-figure'
+  const stemCoverage = role !== 'question-stem' || (verifier.fullStemVerified === true
+    && (q.type === 'fill' || (asset.includesOptions === true && verifier.optionsVerified === true)));
+  return asset.assetStatus === 'verified' && asset.role === role
     && asset.containsAnswer === false && asset.containsSolution === false && asset.containsHandwriting === false
-    && safePath && safeHashes && safeBox && safeRendition && boundToQuestion && independentlyReviewed
+    && safePath && safeHashes && safeBox && safeRendition && boundToQuestion && independentlyReviewed && stemCoverage
     && Number.isInteger(page) && page >= 1 ? asset : null;
+}
+function verifiedStemAsset(q, requireTrusted = true) {
+  return verifiedQuestionImageAsset(q, q && q.stemAsset, 'question-stem', requireTrusted);
+}
+function verifiedFigureAsset(q, requireTrusted = true) {
+  return verifiedQuestionImageAsset(q, q && q.figureAsset, 'question-figure', requireTrusted);
 }
 function verifiedVisualEvidence(q, requireTrusted = true) {
   const evidence = q && q.visualEvidence;
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return null;
   if (requireTrusted && !trustedVisualQuestion(q)) return null;
-  const book = q && q.bookId && TEXTBOOK_LIBRARY.books.find((item) => item.id === q.bookId);
+  const book = q && q.bookId && [...(TEXTBOOK_LIBRARY.books || []), ...(TEXTBOOK_LIBRARY.supplemental || [])]
+    .find((item) => item.id === q.bookId);
   return evidence.status === 'verified-text-complete'
     && evidence.questionId === q.id && evidence.bookId === q.bookId
     && Number(evidence.pageIndex) === Number(q.page)
@@ -986,7 +998,8 @@ function verifiedVisualEvidence(q, requireTrusted = true) {
 }
 function questionMissingVisualAsset(q) {
   if (!q) return false;
-  if (verifiedFigureAsset(q) || verifiedVisualEvidence(q)) return false;
+  if (verifiedStemAsset(q) || verifiedFigureAsset(q) || verifiedVisualEvidence(q)) return false;
+  if (q.needsStemAsset || q.displayTruth === 'original-pdf-crop') return true;
   if (q.needsFigure) return true;
   const stem = `${String(q.stem || '')}\n${String(q.q || '')}`.replace(/<[^>]+>/g, ' ');
   return VISUAL_REFERENCE_RE.test(stem);
@@ -1001,10 +1014,9 @@ function revokePrivateFigureURLs() {
   }
   privateFigureURLs.clear(); privateFigureLoads.clear();
 }
-async function privateFigureURL(q) {
-  const asset = verifiedFigureAsset(q);
+async function privateAssetURL(q, asset) {
   const userId = syncState && syncState.user && syncState.user.id;
-  if (!asset || !userId) throw new Error('登入後才能載入私有題圖');
+  if (!asset || !userId) throw new Error('登入後才能載入私有原題圖');
   const generation = privateFigureGeneration;
   const key = `${userId}|${asset.path}|${asset.sha256}`;
   const stillSameUser = () => privateFigureGeneration === generation
@@ -1049,19 +1061,30 @@ async function privateFigureURL(q) {
   privateFigureLoads.set(key, task);
   return task;
 }
+async function privateFigureURL(q) { return privateAssetURL(q, verifiedFigureAsset(q)); }
+async function privateStemURL(q) { return privateAssetURL(q, verifiedStemAsset(q)); }
 function preflightQuestionFigures(questions) {
-  const visual = [...new Map((questions || []).filter((q) => verifiedFigureAsset(q)).map((q) => [q.id, q])).values()];
+  const visual = [];
+  const seen = new Set();
+  for (const q of questions || []) {
+    for (const asset of [verifiedStemAsset(q), verifiedFigureAsset(q)]) {
+      if (!asset) continue;
+      const key = `${q.id}|${asset.sha256}`;
+      if (seen.has(key)) continue;
+      seen.add(key); visual.push({ q, asset });
+    }
+  }
   if (!visual.length) return null;
   return (async () => {
-    syncState.msg = `正在預載並驗證 ${visual.length} 張私有題圖`; syncPill();
-    const results = await Promise.allSettled(visual.map((q) => privateFigureURL(q)));
+    syncState.msg = `正在預載並驗證 ${visual.length} 張原題裁圖`; syncPill();
+    const results = await Promise.allSettled(visual.map((entry) => privateAssetURL(entry.q, entry.asset)));
     const failed = results.map((result, index) => result.status === 'rejected' ? visual[index] : null).filter(Boolean);
     if (failed.length) {
-      syncState.msg = `${failed.length} 張題圖尚未安全載入`; syncPill();
-      alert(`有 ${failed.length} 題的必要圖形尚未安全載入，因此這回尚未開始、也不會計時或留下成績。請確認網路後重試。`);
+      syncState.msg = `${failed.length} 張原題裁圖尚未安全載入`; syncPill();
+      alert(`有 ${failed.length} 張必要原題裁圖尚未安全載入，因此這回尚未開始、也不會計時或留下成績。請確認網路後重試。`);
       return false;
     }
-    syncState.msg = `題圖已驗證 ${visual.length} 張`; syncPill();
+    syncState.msg = `原題裁圖已驗證 ${visual.length} 張`; syncPill();
     return true;
   })();
 }
@@ -1073,6 +1096,33 @@ function afterFigurePreflight(questions, begin) {
 function questionFigureHTML(q) {
   if (!verifiedFigureAsset(q)) return '';
   return `<figure class="qfig private-qfig" data-private-figure="${escH(q.id)}" aria-label="題目圖形"><div class="private-qfig-status">題圖載入中</div></figure>`;
+}
+function questionStemHTML(q) {
+  if (!verifiedStemAsset(q)) return '';
+  return `<figure class="private-qstem" data-private-stem="${escH(q.id)}" aria-label="原 PDF 題目裁圖"><div class="private-qfig-status">原題載入中</div></figure>`;
+}
+async function hydratePrivateStems(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return;
+  for (const host of root.querySelectorAll('[data-private-stem]')) {
+    if (host.dataset.stemReady === '1' || host.dataset.stemLoading === '1') continue;
+    const q = bankById(host.dataset.privateStem);
+    if (!q || !verifiedStemAsset(q)) { host.textContent = '原題裁圖尚未通過內容檢查'; continue; }
+    if (!supa || !syncState.user) { host.innerHTML = '<div class="private-qfig-status">登入後載入原題裁圖</div>'; continue; }
+    host.dataset.stemLoading = '1';
+    try {
+      const url = await privateStemURL(q);
+      if (!host.isConnected) continue;
+      host.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = url; img.alt = '從原 PDF 裁出的完整題目'; img.decoding = 'async';
+      const actions = document.createElement('div'); actions.className = 'private-qfig-actions';
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'btn sm';
+      button.innerHTML = `${uiIcon('expand')}放大原題`; button.addEventListener('click', () => openPrivateStem(q.id));
+      actions.appendChild(button); host.append(img, actions); host.dataset.stemReady = '1';
+    } catch (error) {
+      host.innerHTML = `<div class="private-qfig-status badc">原題載入失敗：${escH((error && error.message) || '請確認網路後重試')}</div>`;
+    } finally { delete host.dataset.stemLoading; }
+  }
 }
 async function hydratePrivateFigures(root) {
   if (!root || typeof root.querySelectorAll !== 'function') return;
@@ -1096,6 +1146,18 @@ async function hydratePrivateFigures(root) {
       host.innerHTML = `<div class="private-qfig-status badc">題圖載入失敗：${escH((error && error.message) || '請確認網路後重試')}</div>`;
     } finally { delete host.dataset.figureLoading; }
   }
+}
+async function openPrivateStem(qid) {
+  const q = bankById(qid); if (!q || !verifiedStemAsset(q)) return;
+  try {
+    const url = await privateStemURL(q);
+    const overlay = document.createElement('div'); overlay.className = 'private-figure-overlay'; overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', '放大原 PDF 題目');
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'private-figure-close'; close.textContent = '關閉';
+    const img = document.createElement('img'); img.src = url; img.alt = '放大的原 PDF 題目';
+    close.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) overlay.remove(); });
+    overlay.append(close, img); document.body.appendChild(overlay); close.focus();
+  } catch (error) { alert((error && error.message) || '原題載入失敗'); }
 }
 async function openPrivateFigure(qid) {
   const q = bankById(qid); if (!q || !verifiedFigureAsset(q)) return;
@@ -4090,6 +4152,7 @@ function typesetIn(el) {
       renderMathInElement(el, { delimiters: [{ left: '\\(', right: '\\)', display: false }, { left: '$$', right: '$$', display: true }], throwOnError: false });
     } catch (e) {}
   }
+  void hydratePrivateStems(el);
   void hydratePrivateFigures(el);
 }
 
@@ -4679,18 +4742,22 @@ function sectionLabel(q) {
 }
 function bkNum(head) { const m = String(head || '').match(/(\d+)/); return m ? m[1] + '.' : '※'; }
 /* 選項印在題目正下方（像考卷），tap 仍作答；submitFn：single→'qSubmit'|'mockAns'（帶索引），multi→送出鈕 */
-function bkOpts(q, submitFn) {
+function bkOpts(q, submitFn, numberOnly = false) {
   if (q.type === 'single') {
     // 模擬＝正式考：點選項先「劃卡」，再按送出確認（手滑點錯不會直接鎖定）；平時刷題維持點了就走的節奏
     const click = submitFn === 'mockAns' ? (i) => `mockPick(${i},this)` : (i) => `${submitFn}(${i})`;
-    return `<div class="bk-opts">${q.opts.map((o, i) =>
-      `<button type="button" class="bk-opt" aria-label="選項 ${i + 1}：${escH(stripTags(o))}" onclick="${click(i)}"><span class="bk-check" aria-hidden="true"></span><span class="bk-op" aria-hidden="true">(${i + 1})</span><span>${rtTxt(o)}</span></button>`).join('')}</div>`;
+    return `<div class="bk-opts${numberOnly ? ' crop-answer-grid' : ''}">${q.opts.map((o, i) =>
+      `<button type="button" class="bk-opt" aria-label="選擇原題中的第 ${i + 1} 個選項" onclick="${click(i)}"><span class="bk-check" aria-hidden="true"></span><span class="bk-op" aria-hidden="true">(${i + 1})</span>${numberOnly ? `<span class="sr-only">選擇原題裁圖中的第 ${i + 1} 個選項</span>` : `<span>${rtTxt(o)}</span>`}</button>`).join('')}</div>`;
   }
   if (q.type === 'multi') {
-    return `<div class="bk-opts">${q.opts.map((o, i) =>
-      `<label class="bk-opt"><input type="checkbox" value="${i}" hidden><span class="bk-check"></span><span class="bk-op">(${i + 1})</span><span>${rtTxt(o)}</span></label>`).join('')}</div>`;
+    return `<div class="bk-opts${numberOnly ? ' crop-answer-grid' : ''}">${q.opts.map((o, i) =>
+      `<label class="bk-opt"><input type="checkbox" value="${i}" hidden aria-label="選擇原題中的第 ${i + 1} 個選項"><span class="bk-check"></span><span class="bk-op">(${i + 1})</span>${numberOnly ? `<span class="sr-only">選擇原題裁圖中的第 ${i + 1} 個選項</span>` : `<span>${rtTxt(o)}</span>`}</label>`).join('')}</div>`;
   }
   return '';
+}
+function textbookQuestionBodyHTML(q, submitFn) {
+  if (verifiedStemAsset(q)) return `${questionStemHTML(q)}${bkOpts(q, submitFn, true)}`;
+  return `${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${questionFigureHTML(q)}${bkOpts(q, submitFn)}`;
 }
 /* 統一計算紙卡：題目印在最上 → 批改結果槽（就在題目正下方）→ 計算紙工具 → 一大張書寫畫布 → 按鈕沉底。
    一整張連續的紙、題目正下方就能寫；批改後用 :has() 自動收起計算紙與按鈕，結果直接顯示在題目下。 */
@@ -4701,7 +4768,7 @@ function bkCard(q, head, submitFn, actions) {
     <div class="bk-head"><span class="bk-exam">數學Ａ</span><span class="bk-sect">${sectionLabel(q)}</span></div>
     <div class="sheet-tools"><b>✍️ 整張都能寫${q.type === 'fill' ? '，答案寫在最後、圈起來' : ''}</b>${inkToolsHTML()}</div>
     <div class="bk-item"><span class="bk-num">${bkNum(head)}</span>
-      <div class="bk-content">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${questionFigureHTML(q)}${bkOpts(q, submitFn)}</div></div>
+      <div class="bk-content">${textbookQuestionBodyHTML(q, submitFn)}</div></div>
     <div class="write-pad"></div>
     <div class="ansarea">${actions}</div>
     <div id="qfb"></div>
@@ -5289,8 +5356,11 @@ function startVisionScan(entryId) {
   afterFigurePreflight(q ? [q] : [], () => visionOpenEntry(entry, entries, true));
 }
 function visionQuestionHTML(q) {
+  const body = verifiedStemAsset(q)
+    ? questionStemHTML(q)
+    : `${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${questionFigureHTML(q)}${q.opts ? `<div class="eye-options">${q.opts.map((o, i) => `<p>(${i + 1}) ${rtTxt(o)}</p>`).join('')}</div>` : ''}`;
   return `<div class="eye-question"><div class="bk-head"><span class="bk-exam">數學Ａ</span><span class="bk-sect">${escH(sectionLabel(q))}</span></div>
-    <div class="bk-item"><span class="bk-num">${q.examNo ? `${q.examNo}.` : '※'}</span><div class="bk-content">${q.stem ? `<div class="bk-stem">${rtTxt(q.stem)}</div>` : ''}${rtTxt(q.q)}${questionFigureHTML(q)}${q.opts ? `<div class="eye-options">${q.opts.map((o, i) => `<p>(${i + 1}) ${rtTxt(o)}</p>`).join('')}</div>` : ''}</div></div></div>`;
+    <div class="bk-item"><span class="bk-num">${q.examNo ? `${q.examNo}.` : '※'}</span><div class="bk-content">${body}</div></div></div>`;
 }
 function renderVisionWork() {
   const { entry, q } = vision;
@@ -8904,14 +8974,15 @@ function paperLearningSummaryCard() {
 function textbookLibraryCard() {
   const library = typeof TEXTBOOK_LIBRARY === 'object' && TEXTBOOK_LIBRARY ? TEXTBOOK_LIBRARY : { books:[], supplemental:[] };
   const books = Array.isArray(library.books) ? library.books : [];
-  const ready = books.filter((book) => book.ingestion === 'ready');
-  const pending = books.filter((book) => book.ingestion !== 'ready');
+  const ready = books.filter((book) => book.ingestion === 'released');
+  const pending = books.filter((book) => book.ingestion !== 'released');
   const core = books.filter((book) => book.eligibility === 'core');
   const pages = books.reduce((sum, book) => sum + (Number(book.pages) || 0), 0);
-  return `<section class="card textbook-library-summary"><span class="eyebrow">私有教材主庫</span><h2>22 本主題教材＋2 本總複習已完成清冊</h2>
-    <div class="paper-level-summary"><span>已可安全出題 <b>${ready.length}</b></span><span>待 OCR／圖形 QA <b>${pending.length}</b></span><span>數 A 核心 <b>${core.length}</b></span><span>掃描頁數 <b>${pages}</b></span></div>
-    <p>其餘教材會逐本通過來源、頁碼、例題／章末角色、難度、圖資與答案驗證後才啟用，不用題目數量換取錯題風險。</p>
-    <p class="dim">《週攻略數學 A》另列補充題源；數 B 讀寫教材不進數 A 正式校準。</p></section>`;
+  const supplementalPages = (library.supplemental || []).reduce((sum, book) => sum + (Number(book.pages) || 0), 0);
+  return `<section class="card textbook-library-summary"><span class="eyebrow">私有教材主庫</span><h2>25 份教材、6,720 頁已完成 OCR 清冊</h2>
+    <div class="paper-level-summary"><span>已可安全出題 <b>${ready.length}</b></span><span>逐題原卷校驗中 <b>${pending.length}</b></span><span>數 A 核心 <b>${core.length}</b></span><span>主庫頁數 <b>${pages}</b></span><span>含週攻略 <b>${pages + supplementalPages}</b></span></div>
+    <p>新版只把 OCR 當搜尋索引；你實際看到的題目必須是原 PDF 裁圖，答案、圖形與頁碼也要逐題核對後才啟用。</p>
+    <p class="dim">舊辨識題庫已隔離。目前安全題數刻意顯示為 0；《週攻略數學 A》另列補充題源，數 B 讀寫教材不進數 A 正式校準。</p></section>`;
 }
 function learningWinsCard() {
   const entries = (S.corrections || []).filter(correctionBatchInCurrentBaseline).flatMap((batch) => batch.entries || []);
