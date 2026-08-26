@@ -81,6 +81,9 @@ TIER_PATTERNS: tuple[TierTest, ...] = (
 )
 TYPE_PATTERNS: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ("group", lambda t: "組" in t),
+    ("proof", lambda t: "證明" in t or ("證" in t and "題" in t)),
+    ("drawing", lambda t: "作圖" in t or "繪圖" in t),
+    ("mixed", lambda t: "混合" in t),
     ("calculation", lambda t: "計算" in t or "算" in t),
     ("fill", lambda t: "填充" in t or "填" in t),
     ("multi", lambda t: "多" in t and _looks_like_choice(t)),
@@ -180,7 +183,8 @@ def bbox_union(boxes: Iterable[list[int]]) -> list[int] | None:
 
 ID_TYPE_SLUG = {
     "single": "single", "multi": "multi", "fill": "fill",
-    "calculation": "calc", "group": "group", "unclassified": "other",
+    "calculation": "calc", "proof": "proof", "drawing": "drawing",
+    "mixed": "mixed", "group": "group", "unclassified": "other",
 }
 
 
@@ -320,12 +324,17 @@ def read_type_headers(page: dict[str, Any]) -> list[tuple[int, str, str]]:
         if x0 > 0.14 * page["width"]:
             continue
         text = norm(line["text"]).strip()
-        if len(text) > 12 or len(text) < 3:
+        if len(text) < 3:
             continue
         matched = next((name for name, test in TYPE_PATTERNS if test(text)), None)
-        if TYPE_HEADER_RE.match(text):
+        if TYPE_HEADER_RE.match(text) and len(text) <= 40:
+            # Pencil notes and OCR occasionally trail the printed header, e.g.
+            # ``二、多重選擇題 1/2``.  The old 12-character cap discarded that
+            # real boundary and paired the following multi-select questions to
+            # the preceding single-select answers.  The explicit Chinese
+            # enumeration at the left margin is stronger evidence than length.
             out.append((y0, matched or "unclassified", line["text"]))
-        elif matched and text.endswith("題"):
+        elif matched and len(text) <= 12 and text.endswith("題"):
             # OCR drops the 一、 prefix often enough that requiring it lost the
             # 單一選擇題 and 多重選擇題 headers of a whole block, leaving its
             # questions typeless and unable to pair with their answers.

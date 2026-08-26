@@ -34,7 +34,10 @@ def audit(work_root: Path, ocr_root: Path, catalog_file: Path,
     books = mistral.catalog_books(catalog_file)
     require(len(books) == expected_documents,
             f"Catalog has {len(books)} documents, expected {expected_documents}")
-    totals = {"documents": 0, "pages": 0, "ocrLines": 0, "imageRegions": 0}
+    reviewed_dropouts = mistral.dropout_pages(ocr_root)
+    totals = {"documents": 0, "pages": 0, "ocrLines": 0, "imageRegions": 0,
+              "verifiedDropoutRepairs": 0}
+    repair_providers: dict[str, int] = {}
     rows: list[dict[str, Any]] = []
     for book_id, pdf_hash in sorted(books.items()):
         book_dir = work_root / book_id
@@ -56,7 +59,7 @@ def audit(work_root: Path, ocr_root: Path, catalog_file: Path,
         raw_files = sorted(raw_dir.glob("*.json"))
         require(len(page_files) == page_count and len(raw_files) == page_count,
                 f"Page/index count mismatch for {book_id}")
-        book_lines = book_images = 0
+        book_lines = book_images = book_repairs = 0
         for number in range(1, page_count + 1):
             record_file = book_dir / "pages" / f"p{number:04d}.json"
             raw_file = raw_dir / f"{number:04d}.json"
@@ -80,6 +83,37 @@ def audit(work_root: Path, ocr_root: Path, catalog_file: Path,
                     and raw.get("sourcePageIndex") == number - 1
                     and raw.get("model") == mistral.MISTRAL_MODEL,
                     f"Raw OCR provenance mismatch for {book_id} page {number}")
+            expected_repair = None
+            if (pdf_hash, number) in reviewed_dropouts:
+                candidate_file = (ocr_root / "repairs" / "dropouts" / "candidates" /
+                                  f"{pdf_hash[:16]}-p{number:04d}.json")
+                require(candidate_file.is_file(),
+                        f"Reviewed dropout has no repair for {book_id} page {number}")
+                expected_repair = mistral.validate_repair_candidate(
+                    candidate_file, ocr_root, pdf_hash,
+                    str(summary.get("pdfFileName") or ""), number)
+                require(record.get("ocrRepairSourceSha256") ==
+                        expected_repair["candidateSha256"]
+                        and record.get("ocrRepairProvider") == expected_repair["provider"]
+                        and record.get("ocrRepairEngine") == expected_repair["model"]
+                        and record.get("ocrRepairResolvedEngine") ==
+                        expected_repair["resolvedModel"]
+                        and record.get("ocrRepairMethod") == expected_repair["method"]
+                        and record.get("ocrRepairRenderSha256") ==
+                        expected_repair["renderSha256"]
+                        and record.get("ocrRepairRawResponseSha256") ==
+                        expected_repair["rawResponseSha256"],
+                        f"Repair provenance mismatch for {book_id} page {number}")
+                book_repairs += 1
+                repair_providers[expected_repair["provider"]] = (
+                    repair_providers.get(expected_repair["provider"], 0) + 1)
+            else:
+                require(not any(key in record for key in (
+                    "ocrRepairSourceSha256", "ocrRepairProvider", "ocrRepairEngine",
+                    "ocrRepairResolvedEngine",
+                    "ocrRepairMethod", "ocrRepairRenderSha256",
+                    "ocrRepairRawResponseSha256")),
+                    f"Unreviewed repair metadata on {book_id} page {number}")
             require(record.get("displayTruth") == "original-pdf-crop"
                     and record.get("ocrIsIndexOnly") is True,
                     f"OCR escaped the index-only boundary for {book_id} page {number}")
@@ -98,15 +132,22 @@ def audit(work_root: Path, ocr_root: Path, catalog_file: Path,
         totals["pages"] += page_count
         totals["ocrLines"] += book_lines
         totals["imageRegions"] += book_images
+        totals["verifiedDropoutRepairs"] += book_repairs
+        require(summary.get("verifiedDropoutRepairsApplied") == book_repairs,
+                f"Repair count differs in summary for {book_id}")
         rows.append({"bookId": book_id, "pages": page_count,
-                     "ocrLines": book_lines, "imageRegions": book_images})
+                     "ocrLines": book_lines, "imageRegions": book_images,
+                     "verifiedDropoutRepairs": book_repairs})
     require(totals["pages"] == expected_pages,
             f"Corpus has {totals['pages']} pages, expected {expected_pages}")
+    require(totals["verifiedDropoutRepairs"] == len(reviewed_dropouts),
+            "Not every reviewed OCR dropout was repaired and indexed")
     temporary = list(work_root.rglob("*.tmp"))
     require(not temporary, f"Corpus contains {len(temporary)} incomplete temporary file(s)")
     return {"kind": "matha-mistral-page-index-audit", "schema": 1,
             "passed": True, "expectedDocuments": expected_documents,
-            "expectedPages": expected_pages, "totals": totals, "books": rows}
+            "expectedPages": expected_pages, "totals": totals,
+            "repairProviders": repair_providers, "books": rows}
 
 
 def main(argv: list[str]) -> int:

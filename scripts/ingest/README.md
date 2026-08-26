@@ -35,6 +35,11 @@ python scripts/ingest/index-pages.py --pdf "<scan>.pdf" --book <bookId> --work "
 
 25 份來源已於 2026-08-26 用 `mistral-ocr-latest` 完成 6,720／6,720 頁索引。完整輸出留在 repo 外的 `ocr-full-20260826`，費用估計 USD 26.88。Mistral 的角色與下述 Google 第二讀相同：協助搜尋、切段和找候選，不是學生題面。
 
+版本 2 索引另外處理兩個已實際遇到的失敗型態：
+
+- 只對段落開頭且題號完整連續的 Mistral 合併區塊切段；小數、選項或不連續編號不切。裁切邊界優先落在原卷影像的空白列，最終仍由原 PDF 300 dpi 題幹裁圖與獨立複核把關。
+- 逐頁目視確認的 11 個整頁漏辨識，以 fail-closed 修復鏈補入索引：10 頁來自 Mistral 單頁重跑，1 頁來自固定別名 `gpt-5.5` 的結構化視覺重讀。每頁都核對來源 PDF／頁碼、渲染圖、原始 API 回應、候選檔與實際解析模型的 SHA-256／來源欄位；原始全書 Mistral 回應不覆寫。
+
 把已完成的 Mistral block 座標轉成全新的 page index（不沿用舊 RapidOCR 題文或候選）；每頁仍會從 catalog 綁定的原 PDF 單執行緒重渲染，計算裁切需要的墨跡與版面邊界，但不把整頁 PNG 留在硬碟：
 
 ```bash
@@ -44,7 +49,16 @@ python scripts/ingest/index-mistral-pages.py \
   --work "<repo 外>/matha-mistral-ingest-work-20260826"
 ```
 
-每一頁都核對 PDF SHA-256、檔名、頁碼、Mistral model 與回應檔 SHA-256；任一不合即停止。學生最後看到的仍不是這些文字，而是獨立複核後的原 PDF 300 dpi 裁圖。
+每一頁都核對 PDF SHA-256、檔名、頁碼、Mistral model 與回應檔 SHA-256；修復頁另外核對 provider、要求模型、實際模型、方法與所有關聯雜湊；任一不合即停止。學生最後看到的仍不是這些文字，而是獨立複核後的原 PDF 300 dpi 裁圖。
+
+只有已列入 `manual-dispositions.json` 的整頁漏辨識才可使用 OpenAI 單頁修復。工具會先把輸入 JPEG 與指定 PDF 頁重新以 240 dpi 渲染後做尺寸與像素差驗證，確認沒有拿錯頁才讀取 GCP Secret Manager 的金鑰並送出付費請求：
+
+```bash
+python scripts/ingest/repair-dropout-openai.py \
+  --source "<scan>.pdf" --source-sha256 "<catalog SHA-256>" \
+  --page <PDF page number> --render "<verified 240 dpi JPEG>" \
+  --out "<repo 外>/ocr-full-20260826/repairs/dropouts"
+```
 
 全批完成後逐頁重驗一次，並把不含題目內容的稽核摘要留在 repo 外：
 
@@ -198,15 +212,17 @@ python scripts/ingest/promote-reviewed-stems.py \
 
 完整 25 份來源的雜湊皆已記入 `textbook-catalog.js`；`ingestion` 維持 `ocr-complete-review-pending`，目前安全發布數為 0。
 
-無法自動處理而**明列給人工**的清單(所有書合計):漏題缺號 65 題(各書 qa-report 有區塊/題型/頁碼)、頁頂無主內容 21 處、前手鉛筆 481 題、章末缺配 110 題。三次自動掛接嘗試與一次全頁回收嘗試都因目視驗證失敗而撤除——**回收與掛接只在印刷證據自己能證明的地方發生**。
+目前 Mistral 版本 2 對 21 本同格式章節書抽出 **7,055 題候選**，並由原 PDF 以 300 dpi 重新產出 **7,055 個題幹裁切、6,929 個答案裁切、3,157 個圖形裁切**；21／21 本結構稽核均通過，沒有拒絕裁切、重複題幹或重複答案檔。這只證明檔案與來源結構可追溯，不證明題意或答案在數學上正確。
+
+無法自動安全處理的項目仍**明列並隔離**：題號缺漏 37 題、答案配對歧義 25 題、找不到答案連結 91 題、原書目視確認未印答案 9 題，以及其他題幹／圖形／前手筆跡旗標。上述記錄維持 `pending-review`／`needs-repair`；不得進正式學生題庫。自動回收與掛接只在印刷證據自己能證明的地方發生。
 
 ## 已驗證與尚未驗證
 
-已用實跑驗證：Mistral 25 份／6,720 頁索引完整；嚴格 QA 為 6,439 頁通過、281 頁待複核，其中 3 頁確認是原卷空白／封面，10 頁確認漏掉來源內容並已另行重跑。十四本舊製作基線的 3,786 頁也有本機頁索引；11 本章節教材的 section map、難度分層與原卷裁圖仍可作候選材料。
+已用實跑驗證：Mistral 25 份／6,720 頁索引完整；全體稽核核對 117,180 個 OCR 文字區塊、7,275 個影像區域與 11 個已複核整頁修復，provider 分布為 Mistral 10、OpenAI 1。21 本同格式章節教材均完成版本 2 section map 與原卷裁圖重建；另外 4 本不同版面家族目前只有可信的逐頁索引，尚未宣稱可抽題。
 
 **已證明不能信任 OCR 題面：**針對漏頁重跑後，仍目視發現三列方程組漏掉整列，以及原題 `-5≤x<1` 被讀成 `-5≤x≤1`。後者在兩套 OCR 都一致讀錯，證明「雙引擎同意」也不能取代原卷。這就是正式 app 只顯示經獨立複核的原 PDF 題幹裁圖，而不顯示 OCR／轉錄文字的原因。
 
-**尚未驗證**：`needs-repair` 佇列裡的每一題仍待人工判讀；`handwritingSafety` 一律 `unknown`（沒有可信的手寫偵測，掃描本身也可能有筆跡）；目前沒有任何掃描題通過完整 stem promotion，因此安全發布數仍是 0。
+**尚未驗證**：`needs-repair` 佇列裡的每一題仍待人工判讀；`handwritingSafety` 一律 `unknown`（沒有可信的手寫偵測，掃描本身也可能有筆跡）；目前沒有任何掃描題通過完整 stem promotion，因此安全發布數仍是 0。結構稽核通過不能拿來替代逐題原卷—答案核對或數學正確性校驗。
 
 ## 2026-08-26 成熟服務首本實跑
 

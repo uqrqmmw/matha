@@ -773,6 +773,20 @@ class DifficultyProvenance(unittest.TestCase):
         self.assertNotIn("（A）", records[0]["ocrIndex"]["stem"])
         self.assertEqual(len(records[0]["ocrIndex"]["options"]), 2)
 
+    def test_proof_drawing_and_mixed_headers_are_distinct_answer_namespaces(self):
+        sample = page(99, [
+            line("五、證明題", 48, 100),
+            line("六、作圖題", 48, 300),
+            line("七、混合題", 48, 500),
+        ])
+        found = [(name, printed) for _, name, printed in bookmap.read_type_headers(sample)]
+        self.assertEqual([name for name, _ in found], ["proof", "drawing", "mixed"])
+
+    def test_header_with_trailing_pencil_fraction_still_changes_type(self):
+        sample = page(96, [line("二、多重選擇題 1/2", 59, 859)])
+        found = bookmap.read_type_headers(sample)
+        self.assertEqual(found[0][1], "multi")
+
 
 class DrillAnswerPairing(unittest.TestCase):
     def test_answers_are_paired_by_block_sequence_not_chapter_text(self):
