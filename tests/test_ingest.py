@@ -143,10 +143,8 @@ class AnswerSeparation(unittest.TestCase):
         self.assertEqual(records[0]["qaLane"], "needs-repair")
         self.assertEqual(records[0]["status"], "pending-review")
 
-    def test_an_example_without_a_printed_solution_is_not_a_defect(self):
-        """The book deliberately leaves some examples unanswered — the teacher
-        works them in class (owner-confirmed).  Drills are different: their
-        answers are printed, so an unpaired drill stays a repair item."""
+    def test_an_unverified_missing_example_solution_stays_a_repair_item(self):
+        """OCR absence cannot prove that the printed book omitted an answer."""
         questions = [
             {"pdfPage": 60, "roleEvidence": "printed-Ex-marker",
              "flags": ["solution-not-on-this-page"], "qaLane": "needs-repair"},
@@ -157,9 +155,54 @@ class AnswerSeparation(unittest.TestCase):
         bookmap.link_cross_page_solutions(
             [{"pdfPage": 60, "leadInSolution": False},
              {"pdfPage": 61, "leadInSolution": False}], questions)
-        self.assertEqual(questions[0]["flags"], ["no-printed-solution-teacher-covered"])
-        self.assertEqual(questions[0]["qaLane"], "clean-candidate")
+        self.assertEqual(questions[0]["flags"], ["solution-not-on-this-page"])
+        self.assertEqual(questions[0]["qaLane"], "needs-repair")
         self.assertEqual(questions[1]["qaLane"], "needs-repair")
+
+    def test_visual_review_override_quarantines_a_source_without_an_answer(self):
+        questions = [{
+            "id": "line-inequality-p007-ex7",
+            "flags": ["solution-not-on-this-page"],
+            "qaLane": "needs-repair",
+        }]
+        applied = bookmap.apply_source_review_overrides(
+            "matha-114-line-inequality",
+            questions,
+            {"schema": 1, "books": {"matha-114-line-inequality": {
+                "evidence": "manual-test",
+                "noPrintedOfficialAnswer": ["line-inequality-p007-ex7"],
+            }}},
+        )
+        self.assertEqual(applied, 1)
+        self.assertEqual(questions[0]["flags"], ["no-printed-official-answer"])
+        self.assertEqual(questions[0]["sourceAnswerStatus"], "not-printed")
+        self.assertEqual(questions[0]["sourceReviewEvidence"], "manual-test")
+        self.assertEqual(questions[0]["qaLane"], "needs-repair")
+
+    def test_visual_review_override_fails_if_the_candidate_disappears(self):
+        with self.assertRaises(bookmap.MapError):
+            bookmap.apply_source_review_overrides(
+                "matha-114-line-inequality",
+                [],
+                {"schema": 1, "books": {"matha-114-line-inequality": {
+                    "noPrintedOfficialAnswer": ["line-inequality-p007-ex7"],
+                }}},
+            )
+
+    def test_visual_review_override_is_tied_to_the_exact_source_pdf(self):
+        questions = [{
+            "id": "line-inequality-p007-ex7", "flags": [], "qaLane": "clean-candidate",
+        }]
+        with self.assertRaises(bookmap.MapError):
+            bookmap.apply_source_review_overrides(
+                "matha-114-line-inequality",
+                questions,
+                {"schema": 1, "books": {"matha-114-line-inequality": {
+                    "pdfSha256": "a" * 64,
+                    "noPrintedOfficialAnswer": ["line-inequality-p007-ex7"],
+                }}},
+                pdf_sha256="b" * 64,
+            )
 
     def test_solution_continuing_on_the_next_page_is_not_a_repair_item(self):
         pages = [
@@ -174,6 +217,33 @@ class AnswerSeparation(unittest.TestCase):
         self.assertEqual(questions[0]["flags"], ["solution-continues-next-page"])
         self.assertEqual(questions[0]["qaLane"], "clean-candidate")
         self.assertEqual(questions[0]["solutionPdfPage"], 61)
+
+
+class GroupQuestionSegmentation(unittest.TestCase):
+    def test_internal_numbered_headings_do_not_truncate_a_group_question(self):
+        sample = page(98, [
+            line("1. 閱讀下列資料，回答問題", 58, 180, 760, 208),
+            line("撞球沿直線前進", 80, 235, 660, 263),
+            line("一、撞球", 80, 400, 220, 428),
+            line("二、反射定律", 80, 520, 280, 548),
+            line("(4) 求最後撞擊的位置", 110, 820, 730, 848),
+        ])
+        ctx = context(
+            section="drill",
+            type_headers=[
+                (100, "group", "五、題組"),
+                (400, "single", "一、撞球"),
+                (520, "multi", "二、反射定律"),
+            ],
+            printed=96,
+        )
+        ctx["carriedType"] = ("group", "五、題組")
+        records, _ = bookmap.segment_questions(sample, bookmap.page_events(sample, True), ctx)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["questionType"], "group")
+        self.assertIn("反射定律", records[0]["ocrIndex"]["stem"])
+        self.assertIn("最後撞擊的位置", records[0]["ocrIndex"]["stem"])
+        self.assertGreater(records[0]["regions"]["stem"][3], 520)
 
 
 class ContentBounds(unittest.TestCase):

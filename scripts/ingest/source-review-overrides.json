@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "books": {
+    "matha-114-line-inequality": {
+      "pdfSha256": "b397480cc3ace0b6c062d253c331ee28dd72daba3faa62feb0c7ce50d6bc7656",
+      "evidence": "manual-full-page-visual-review-2026-08-26",
+      "fullHybridPairReview": {
+        "candidateCount": 260,
+        "reviewedCandidateCount": 260,
+        "completeOfficialAnswerPairs": 251,
+        "noPrintedOfficialAnswerCount": 9,
+        "correctedCandidateIds": [
+          "line-inequality-p096-q1"
+        ]
+      },
+      "noPrintedOfficialAnswer": [
+        "line-inequality-p007-ex7",
+        "line-inequality-p027-ex33",
+        "line-inequality-p029-ex35",
+        "line-inequality-p029-ex36",
+        "line-inequality-p053-ex68",
+        "line-inequality-p149-ex4",
+        "line-inequality-p149-ex5",
+        "line-inequality-p162-ex20",
+        "line-inequality-p162-ex21"
+      ]
+    }
+  }
+}

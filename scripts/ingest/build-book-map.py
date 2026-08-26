@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 SCHEMA_VERSION = 11
+SOURCE_REVIEW_OVERRIDES = Path(__file__).with_name("source-review-overrides.json")
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIMPLIFIED_TO_MARKER = str.maketrans({
@@ -576,6 +577,13 @@ def segment_questions(
     records: list[dict[str, Any]] = []
     for index, start in enumerate(starts):
         y_start = start["y"]
+        question_type, type_evidence = context["carriedType"]
+        for header_y, name, printed in type_headers:
+            if header_y <= y_start:
+                question_type, type_evidence = name, printed
+        if start["origin"] == "example":
+            question_type, type_evidence = "worked-example", "printed-Ex-marker"
+
         following = [event for event in events if event["y"] > y_start]
         next_question = next((event["y"] for event in following if event["kind"] == "question"), None)
         next_tag = next((event["y"] for event in following
@@ -583,11 +591,15 @@ def segment_questions(
 
         next_tag_event = next((event for event in following
                                if event["kind"] in {"answer-tag", "answer-item"}), None)
-        # A 五、作圖題 header is a section boundary, so it ends the question
-        # above it — otherwise the last question of a section keeps the next
-        # section's heading, and the first line under it, inside its crop.
-        next_header = min((header_y for header_y, _, _ in type_headers if header_y > y_start + 8),
-                          default=None)
+        # A printed question-type header normally ends the question above it.
+        # A 五、題組 question is the exception: its passage can contain
+        # numbered internal headings such as「一、撞球」「二、反射定律」.
+        # Treating those as section boundaries cut away the actual subquestions
+        # and diagrams while leaving only the introductory paragraph.
+        next_header = None if question_type == "group" else min(
+            (header_y for header_y, _, _ in type_headers if header_y > y_start + 8),
+            default=None,
+        )
         if next_header is not None:
             next_question = next_header if next_question is None else min(next_question, next_header)
 
@@ -637,13 +649,6 @@ def segment_questions(
         stem_text = " ".join(norm(line["text"]) for line in stem_lines)
         option_text = [norm(line["text"]) for line in option_lines]
         exam_tag = PAST_EXAM_RE.search(stem_text)
-
-        question_type, type_evidence = context["carriedType"]
-        for header_y, name, printed in type_headers:
-            if header_y <= y_start:
-                question_type, type_evidence = name, printed
-        if start["origin"] == "example":
-            question_type, type_evidence = "worked-example", "printed-Ex-marker"
 
         tier = context["tier"] if context["section"] in {"drill", "drill-answers"} else None
         role = {
@@ -903,6 +908,11 @@ def build(work_root: Path, book_id: str, ocr_provider: str = "rapidocr",
     recover_cross_page_gaps(questions, page_state)
     unattached_tops = collect_page_top_content(page_state)
     link_cross_page_solutions(page_records, questions)
+    apply_source_review_overrides(
+        book_id,
+        questions,
+        pdf_sha256=pages[0]["pdfSha256"],
+    )
     pair_drill_answers(questions, answers)
 
     runs: list[dict[str, Any]] = []
@@ -1188,22 +1198,68 @@ def link_cross_page_solutions(page_records: list[dict[str, Any]], questions: lis
             # where it ends, or 300 questions across six books keep a page
             # number and no rendered answer for a reviewer to read.
             question["solutionRegion"] = lead_in_region.get(pdf_page + 1)
-    # A worked example with no printed solution anywhere is not a defect:
-    # the owner confirms the book leaves those for the teacher to work in
-    # class.  Chapter-end drills are different — their answers are printed,
-    # so an unpaired one stays a repair item.
-    for question in questions:
-        if (question.get("roleEvidence") == "printed-Ex-marker"
-                and "solution-not-on-this-page" in question["flags"]):
-            question["flags"] = [flag for flag in question["flags"]
-                                 if flag != "solution-not-on-this-page"]
-            question["flags"].append("no-printed-solution-teacher-covered")
-
-    handled = {"solution-continues-next-page", "no-printed-solution-teacher-covered"}
+    # Missing solution evidence is unsafe by default.  Only a full-page visual
+    # review recorded in source-review-overrides.json may declare that the
+    # source itself printed no official answer.
+    handled = {"solution-continues-next-page"}
     for question in questions:
         question["qaLane"] = "needs-repair" if [
             flag for flag in question["flags"] if flag not in handled
         ] else "clean-candidate"
+
+
+def load_source_review_overrides() -> dict[str, Any]:
+    """Load human visual-review facts; these are evidence, never OCR guesses."""
+    try:
+        data = json.loads(SOURCE_REVIEW_OVERRIDES.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise MapError(f"Cannot load source review overrides: {error}") from error
+    if data.get("schema") != 1 or not isinstance(data.get("books"), dict):
+        raise MapError("Invalid source review overrides schema")
+    return data
+
+
+def apply_source_review_overrides(
+    book_id: str,
+    questions: list[dict[str, Any]],
+    review_data: dict[str, Any] | None = None,
+    pdf_sha256: str | None = None,
+) -> int:
+    """Quarantine questions whose source was visually verified to lack an answer."""
+    data = review_data if review_data is not None else load_source_review_overrides()
+    book_review = (data.get("books") or {}).get(book_id)
+    if not book_review:
+        return 0
+    expected_hash = book_review.get("pdfSha256")
+    if expected_hash and pdf_sha256 and expected_hash != pdf_sha256:
+        raise MapError(f"Source review PDF hash differs for {book_id}")
+    ids = book_review.get("noPrintedOfficialAnswer")
+    if not isinstance(ids, list) or any(not isinstance(value, str) for value in ids):
+        raise MapError(f"Invalid noPrintedOfficialAnswer list for {book_id}")
+    if len(ids) != len(set(ids)):
+        raise MapError(f"Duplicate source review override IDs for {book_id}")
+
+    by_id = {question["id"]: question for question in questions}
+    missing = sorted(set(ids) - set(by_id))
+    if missing:
+        raise MapError(
+            f"Source review overrides reference {len(missing)} missing question(s): "
+            + ", ".join(missing)
+        )
+
+    evidence = book_review.get("evidence") or "manual-full-page-visual-review"
+    for question_id in ids:
+        question = by_id[question_id]
+        question["flags"] = [
+            flag for flag in question.get("flags") or []
+            if flag not in {"solution-not-on-this-page", "no-printed-solution-teacher-covered"}
+        ]
+        if "no-printed-official-answer" not in question["flags"]:
+            question["flags"].append("no-printed-official-answer")
+        question["sourceAnswerStatus"] = "not-printed"
+        question["sourceReviewEvidence"] = evidence
+        question["qaLane"] = "needs-repair"
+    return len(ids)
 
 
 def pair_drill_answers(questions: list[dict[str, Any]], answers: list[dict[str, Any]]) -> None:
