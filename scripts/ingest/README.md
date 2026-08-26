@@ -142,16 +142,35 @@ python scripts/ingest/apply-review.py --work "<work>" --book <bookId> --template
 python scripts/ingest/apply-review.py --work "<work>" --book <bookId>     --decisions "<work>/<bookId>/review-decisions.json" --out "<repo 外>/qpack.json"
 ```
 
-這是離開 review-only 的**唯一出口**，刻意窄：
+這是離開 review-only 的**唯一出口**，刻意窄。預設採 `imageFirst: true`：學生與 AI 都讀經獨立複核的原 PDF 題目裁圖，不再要求為了發布 7,055 題而人工重打每一個公式：
 
 - 只有明確 `"decision": "approve"` 才會輸出，沒填或填錯一律拒絕。
-- **題幹文字必須由複核者自己填**；貼上 `ocrIndex` 會被擋下。OCR 在這份掃描裡會把「選擇」讀成「遥挥」、把式子的正負號吃掉，抄進 `q` 就是出一題看起來很合理但數學是錯的題。
+- `imageFirst: true` 時，複核者必須逐項確認完整題幹／全部選項、沒有答案／詳解／前手筆跡／鄰題，並對照答案裁圖填入正解；`q` 只存不可冒充題文的來源定位字串，選擇題 `opts` 只存選項編號。正式介面不顯示這些定位 metadata。
+- 若刻意使用 `imageFirst: false`，題幹文字與選項才必須由複核者自行轉錄；貼上 `ocrIndex` 一樣會被擋下。OCR 在這份掃描裡會把「選擇」讀成「遥挥」、把式子的正負號吃掉，不能成為題面。
 - 還帶著 QA 旗標的題，必須把那些旗標逐一列進 `acceptedFlags` 才放行。
 - 難度優先採印刷分層；書上沒印就必須同時提供 `diff` 與 `diffEvidence`。
 - 有圖的題一律帶 `needsFigure: true` 且**不產生** `figureAsset`。前端會把這種題隔離，直到裁圖走完既有的獨立複核與晉級流程——這就是「有圖題不會缺圖上線」的保證。
 - 每一題都另外帶 `displayTruth: original-pdf-crop` 與 `needsStemAsset: true`。人工轉錄只用於搜尋、作答型態與批改；沒有完整原題裁圖仍是待處理題。
 
 輸出的記錄已用 `build-private-bank.js` 的 `validateQuestion` 實跑驗證通過，`tests/private-bank.test.js` 有一條測試釘住這個契約。本程式**不碰**正式題庫 manifest。
+
+### 5a. `build-release-queue.py` — 按需選下一小批，不重打全庫
+
+```bash
+python scripts/ingest/build-release-queue.py \
+  --work "<mistral-work>" --catalog textbook-catalog.js \
+  --out "<mistral-work>/release-queue/batch-001.json" --limit 42
+
+python scripts/ingest/render-release-queue.py \
+  --queue "<mistral-work>/release-queue/batch-001.json" \
+  --out "<mistral-work>/release-queue/batch-001-sheets"
+```
+
+它只從 21 本數 A 章節書選章末題，要求已有答案裁圖且沒有既知 QA 旗標；每本輪流先取中等、再取困難、第三輪才取簡單，含圖題在同層優先。這符合目前「先練破題方向、不要漫無目的刷完紙本」的策略。
+
+輸出**只是視覺複核工作佇列，不是題庫**。已發現即使 `clean-candidate` 仍可能有前手圈出的 `26`、已填入的 `1/4` 或錯配答案裁圖，所以產生器另做答案洩漏初篩，並讀取 repo 外的 `release-queue/review-exclusions.json` 保存人工退件。每一題仍必須走 `apply-review` 與第二位獨立 stem reviewer；這些檢查沒完成前 `studentReady` 永遠是 `false`。
+
+2026-08-27 首次實跑：7,055 題中 2,769 題進入「可安排視覺複核」的候選池，另有 10 題被答案洩漏規則擋下、5 題由接觸表目視退件；第一批 42 題平均覆蓋 21 本書。這些數字代表工作排序，不代表 2,769 題已正確或可上線。
 
 ### 6. `prepare-stem-review.py` — 產生離線原卷審核頁
 

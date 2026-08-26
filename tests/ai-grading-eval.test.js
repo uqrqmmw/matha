@@ -30,3 +30,30 @@ test('原版詳批第一錯步只信任 read 中可核對的 golden 證據', () 
   assert.equal(results[2].firstErrorEvidence, golden.cases[2].raw.firstErrorEvidence);
   assert.equal(results[3].firstErrorEvidence, null);
 });
+
+test('影像優先教材題的 AI 批改先收到原題裁圖，再收到學生手寫', async () => {
+  const { run } = loadApp();
+  const content = await run(`(async () => {
+    appendQuestionStemForAi = async (items) => {
+      items.push({ type:'text', text:'STEM-LABEL' });
+      items.push({ type:'image', source:{ type:'base64', media_type:'image/png', data:'stem-image' } });
+      return true;
+    };
+    aiJSON = async (items) => items;
+    return aiGradeCall({ id:'crop-q', q:'原卷題目定位字串', topic:'num', sol:'' }, '3', 'student-ink', [], 0);
+  })()`);
+  const images = plain(content).filter((item) => item.type === 'image').map((item) => item.source.data);
+  assert.deepEqual(images, ['stem-image', 'student-ink']);
+  assert.match(plain(content).find((item) => item.type === 'text' && item.text.includes('題目：')).text,
+    /題目：原卷題目定位字串/);
+});
+
+test('有驗證原題裁圖時提示詞不把 metadata 定位字串冒充題目', () => {
+  const { run } = loadApp();
+  const text = run(`(() => {
+    verifiedStemAsset = () => ({ assetStatus:'verified' });
+    return questionPromptText({ q:'原卷題目｜book p8｜q1' });
+  })()`);
+  assert.match(text, /完整題目.*原 PDF 題目裁圖/);
+  assert.doesNotMatch(text, /book p8/);
+});

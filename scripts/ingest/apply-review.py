@@ -6,10 +6,11 @@ deliberately narrow.
 
 * Nothing ships without an explicit ``"decision": "approve"``.  A missing or
   unrecognised decision is a refusal, not a default.
-* The question text comes from the reviewer, never from ``ocrIndex``.  The OCR
-  in this pipeline is a search key; it garbles 選擇 into 遥挥 and drops signs
-  out of formulas, so copying it into ``q`` would ship wrong mathematics that
-  looks plausible.
+* Display truth is always the independently reviewed original-PDF crop.  The
+  reviewer may either provide a faithful searchable transcription, or choose
+  ``imageFirst`` and provide only type/topic/answer metadata.  Image-first
+  records get a non-mathematical locator in ``q``; raw ``ocrIndex`` is never
+  promoted to student-visible or AI-visible question text.
 * A record still carrying QA flags needs those exact flags listed in
   ``acceptedFlags``, so a reviewer cannot wave a repair item through by
   accident.
@@ -86,6 +87,17 @@ def write_template(work_root: Path, book_id: str, pack: dict[str, Any]) -> Path:
             "ocrIndexForSearchOnly": question["ocrIndex"]["stem"][:120],
             "topic": "",
             "type": "",
+            "imageFirst": True,
+            "cropReview": {
+                "fullStem": False,
+                "allOptions": False,
+                "containsAnswer": None,
+                "containsSolution": None,
+                "containsHandwriting": None,
+                "containsAdjacentQuestion": None,
+            },
+            "answerVerified": False,
+            "optionCount": None,
             "q": "",
             "opts": [],
             "ans": [],
@@ -100,8 +112,9 @@ def write_template(work_root: Path, book_id: str, pack: dict[str, Any]) -> Path:
         "bookId": book_id,
         "pdfSha256": pack["pdfSha256"],
         "howToUse": (
-            "decision 填 approve/reject/repair。approve 的題必須自行填寫 q（不可貼 ocrIndex）、"
-            "type、topic；選擇題填 opts 與 ans（0 起算的索引），填充題 ans 填字串。"
+            "decision 填 approve/reject/repair。建議維持 imageFirst=true：逐項確認 cropReview、"
+            "answerVerified、type、topic；選擇題填 optionCount 與 ans（0 起算），填充題 ans 填字串。"
+            "若 imageFirst=false 才必須自行轉錄 q／opts，且不可貼 ocrIndex。"
             "帶旗標的題要把接受的旗標列進 acceptedFlags。"
         ),
         "decisions": entries,
@@ -136,11 +149,24 @@ def convert(question: dict[str, Any], decision: dict[str, Any], default_topic: s
     if outstanding:
         raise ReviewError(f"{qid}: flags not accepted by the reviewer: {', '.join(outstanding)}")
 
+    image_first = decision.get("imageFirst") is True
     text = str(decision.get("q") or "").strip()
-    if not text:
-        raise ReviewError(f"{qid}: approved without reviewer-supplied question text")
-    if text == question["ocrIndex"]["stem"].strip():
-        raise ReviewError(f"{qid}: question text is the raw OCR index, which is not display truth")
+    if image_first:
+        crop_review = decision.get("cropReview") or {}
+        required_true = ["fullStem"]
+        if any(crop_review.get(key) is not True for key in required_true):
+            raise ReviewError(f"{qid}: image-first approval needs a complete original stem crop review")
+        for key in ("containsAnswer", "containsSolution", "containsHandwriting", "containsAdjacentQuestion"):
+            if crop_review.get(key) is not False:
+                raise ReviewError(f"{qid}: image-first crop review must explicitly set {key}=false")
+        if decision.get("answerVerified") is not True:
+            raise ReviewError(f"{qid}: image-first approval needs the official answer checked against the answer crop")
+        text = f"原卷題目｜{question['bookId']} p{question['printedPage']}｜{qid}"
+    else:
+        if not text:
+            raise ReviewError(f"{qid}: approved without reviewer-supplied question text")
+        if text == question["ocrIndex"]["stem"].strip():
+            raise ReviewError(f"{qid}: question text is the raw OCR index, which is not display truth")
 
     topic = str(decision.get("topic") or default_topic or "").strip()
     if topic not in TOPICS:
@@ -174,6 +200,8 @@ def convert(question: dict[str, Any], decision: dict[str, Any], default_topic: s
         "displayTruth": "original-pdf-crop",
         "needsStemAsset": True,
     }
+    if image_first:
+        record["imageFirst"] = True
     if not ID_RE.match(qid):
         raise ReviewError(f"{qid}: id has characters the private bank rejects")
 
@@ -183,7 +211,15 @@ def convert(question: dict[str, Any], decision: dict[str, Any], default_topic: s
             raise ReviewError(f"{qid}: a fill question needs at least one string answer")
         record["ans"] = [str(value) for value in answers]
     else:
-        options = decision.get("opts") or []
+        if image_first:
+            if (decision.get("cropReview") or {}).get("allOptions") is not True:
+                raise ReviewError(f"{qid}: image-first choice approval needs allOptions=true")
+            option_count = decision.get("optionCount")
+            if not isinstance(option_count, int) or isinstance(option_count, bool) or not 2 <= option_count <= 10:
+                raise ReviewError(f"{qid}: image-first choice question needs optionCount from 2 to 10")
+            options = [f"原題選項 {index}" for index in range(1, option_count + 1)]
+        else:
+            options = decision.get("opts") or []
         answers = decision.get("ans") or []
         if len(options) < 2:
             raise ReviewError(f"{qid}: a choice question needs at least two options")

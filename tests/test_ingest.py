@@ -28,6 +28,7 @@ crops = _load("render-review-crops")
 indexer = _load("index-pages")
 status = _load("ingest-status")
 review = _load("apply-review")
+release_queue = _load("build-release-queue")
 
 WIDTH, HEIGHT = 1038, 1500
 
@@ -1139,6 +1140,47 @@ class ReviewGate(unittest.TestCase):
         with self.assertRaises(review.ReviewError):
             review.convert(candidate, self.decision(q="   "), "line")
 
+    def test_image_first_uses_original_crop_without_transcribing_ocr(self):
+        decision = self.decision(
+            imageFirst=True, q="", opts=[], optionCount=5, answerVerified=True,
+            cropReview={"fullStem": True, "allOptions": True,
+                        "containsAnswer": False, "containsSolution": False,
+                        "containsHandwriting": False, "containsAdjacentQuestion": False},
+        )
+        record = review.convert(self.candidate(), decision, "line")
+        self.assertTrue(record["imageFirst"])
+        self.assertEqual(record["q"],
+                         "原卷題目｜matha-114-line-inequality p67｜line-inequality-p067-q1")
+        self.assertEqual(record["opts"], [f"原題選項 {index}" for index in range(1, 6)])
+        self.assertNotIn(self.candidate()["ocrIndex"]["stem"], record["q"])
+
+    def test_image_first_fails_closed_on_answer_or_handwriting_leak(self):
+        base = dict(
+            imageFirst=True, q="", opts=[], optionCount=5, answerVerified=True,
+            cropReview={"fullStem": True, "allOptions": True,
+                        "containsAnswer": False, "containsSolution": False,
+                        "containsHandwriting": False, "containsAdjacentQuestion": False},
+        )
+        for field in ("containsAnswer", "containsSolution", "containsHandwriting",
+                      "containsAdjacentQuestion"):
+            decision = self.decision(**base)
+            decision["cropReview"] = {**base["cropReview"], field: True}
+            with self.assertRaises(review.ReviewError):
+                review.convert(self.candidate(), decision, "line")
+        with self.assertRaises(review.ReviewError):
+            review.convert(self.candidate(), self.decision(**{**base, "answerVerified": False}), "line")
+
+    def test_image_first_choice_requires_verified_option_count(self):
+        base = dict(
+            imageFirst=True, q="", opts=[], answerVerified=True,
+            cropReview={"fullStem": True, "allOptions": True,
+                        "containsAnswer": False, "containsSolution": False,
+                        "containsHandwriting": False, "containsAdjacentQuestion": False},
+        )
+        for option_count in (None, 1, 11, True):
+            with self.assertRaises(review.ReviewError):
+                review.convert(self.candidate(), self.decision(**base, optionCount=option_count), "line")
+
     def test_anything_short_of_approve_is_refused(self):
         for value in ("", "repair", "reject", None, "APPROVE"):
             with self.assertRaises(review.ReviewError):
@@ -1189,6 +1231,55 @@ class ReviewGate(unittest.TestCase):
         by_id = {book["id"]: book["topics"] for book in catalog["books"]}
         self.assertEqual(by_id["matha-114-line-inequality"], ["line"])
         self.assertEqual(by_id["matha-114-trig-graph"], ["trig2"])
+
+
+class OnDemandReleaseQueue(unittest.TestCase):
+    @staticmethod
+    def candidate(book="matha-114-permutation", qid="q1", stem="1. 求 x？"):
+        return {
+            "id": qid, "bookId": book, "pdfPage": 10, "printedPage": 8,
+            "qaLane": "clean-candidate", "flags": [], "role": "chapter-end-medium",
+            "sourceDifficulty": "medium", "sourceDifficultyEvidence": "進階試題演練",
+            "questionType": "fill", "regions": {"figures": []},
+            "ocrIndex": {"stem": stem}, "answerRef": {"id": f"{qid}-answer"},
+        }
+
+    def test_standalone_official_answer_after_question_is_not_queued(self):
+        question = self.candidate(stem="13. 如圖，最短路徑有多少條？ 26")
+        answers = {"q1-answer": {"ocrIndex": "13.答案：26 條 解析：另補一線計算"}}
+        book = {"title": "排列組合", "topics": ["comb"]}
+        row, reason = release_queue.candidate_from(question, book, answers)
+        self.assertIsNone(row)
+        self.assertEqual(reason, "answer-leak-suspected")
+
+    def test_formula_already_filled_into_answer_box_is_not_queued(self):
+        question = self.candidate(
+            stem=r"18. 如圖，則 \frac{AE}{EC}=\left[\frac{1}{4}\right]。")
+        answers = {"q1-answer": {"ocrIndex": r"18.答案：$\frac{1}{4}$ 解析：設 AE=tAC"}}
+        row, reason = release_queue.candidate_from(
+            question, {"title": "平面向量", "topics": ["vec"]}, answers)
+        self.assertIsNone(row)
+        self.assertEqual(reason, "answer-leak-suspected")
+
+    def test_clean_crop_is_only_a_review_item_never_student_ready(self):
+        question = self.candidate(stem="1. 求 x？")
+        answers = {"q1-answer": {"ocrIndex": "1.答案：3 解析：代入"}}
+        row, reason = release_queue.candidate_from(
+            question, {"title": "排列組合", "topics": ["comb"]}, answers)
+        self.assertIsNone(reason)
+        self.assertEqual(row["topicChoices"], ["comb"])
+        self.assertFalse(row["review"]["answerVerified"])
+        self.assertIsNone(row["review"]["cropReview"]["containsHandwriting"])
+
+    def test_queue_round_robins_across_books_before_taking_a_second_item(self):
+        rows = []
+        for book in ("a", "b", "c"):
+            for number in range(3):
+                rows.append({"id": f"{book}{number}", "bookId": book,
+                             "priorityScore": 300 - number, "pdfPage": number,
+                             "figureCount": 0, "role": "chapter-end-medium"})
+        selected = release_queue.round_robin(rows, 5)
+        self.assertEqual([row["bookId"] for row in selected], ["a", "b", "c", "a", "b"])
 
 
 class RepoSafety(unittest.TestCase):

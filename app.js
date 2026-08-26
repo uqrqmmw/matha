@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0826b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0827a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -2112,6 +2112,35 @@ function aiCard() {
     <div class="actr"><button class="btn primary" onclick="aiTest()">測試 OpenAI 連線</button></div></div>`;
 }
 function stripTags(s) { return String(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
+function questionPromptText(q) {
+  return verifiedStemAsset(q)
+    ? '完整題目、公式、選項與圖形都在本訊息附加的「原 PDF 題目裁圖」中；請直接讀圖，不要把索引文字當題目。'
+    : stripTags(q && q.q);
+}
+function blobBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').replace(/^data:[^,]*,/, ''));
+    reader.onerror = () => reject(new Error('原題裁圖無法轉成 AI 可讀格式'));
+    reader.readAsDataURL(blob);
+  });
+}
+async function questionStemAiBlock(q) {
+  const asset = verifiedStemAsset(q);
+  if (!asset) return null;
+  const response = await fetch(await privateStemURL(q));
+  if (!response.ok) throw new Error('原題裁圖無法交給 AI 判讀');
+  const blob = await response.blob();
+  const mediaType = ['image/png', 'image/jpeg', 'image/webp'].includes(blob.type) ? blob.type : asset.mime;
+  return { type:'image', source:{ type:'base64', media_type:mediaType || 'image/png', data:await blobBase64(blob) } };
+}
+async function appendQuestionStemForAi(content, q) {
+  const block = await questionStemAiBlock(q);
+  if (!block) return false;
+  content.push({ type:'text', text:'【原 PDF 題目裁圖】以下影像才是題目真本；其中包含的公式、選項與圖形都必須納入判斷。' });
+  content.push(block);
+  return true;
+}
 function escH(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 // 放進 inline onclick 單引號字串裡的 id（extbank 題 id 來源不可控，要跳脫）
 function jsA(s) { return String(s).replace(/&/g, '&amp;').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
@@ -2121,13 +2150,17 @@ function aiCorrect(v) { const c = v && v.correct; return c === true || c === 1 |
 function stars(d) { d = Math.max(0, Math.min(3, d | 0)); return '★'.repeat(d) + '☆'.repeat(3 - d); }
 async function aiGradeCall(q, correctTxt, calcB64, shots, steps) {
   const content = [];
-  if (calcB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: calcB64 } });
+  await appendQuestionStemForAi(content, q);
+  if (calcB64) {
+    content.push({ type:'text', text:'【學生手寫作答】以下影像是學生的計算與作答，不是題目。' });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: calcB64 } });
+  }
   const teach = S.teach && S.teach[q.id];
   const hasShots = Array.isArray(shots) && shots.length > 0;
   content.push({
     type: 'text',
     text: `你是嚴謹但溫暖的數學閱卷老師。以下是一位學測考生的完整手寫計算過程（單張圖）。${steps > 0 ? '\n⚠️ 這張圖已標「書寫順序」：橘色①②③…圓圈序號＝他下筆的先後（不是位置！），紅色虛線框住、序號最大的那一組是他「最後寫的」。請先照序號順序看懂他的解題流程，再判分。' : ''}
-題目：${stripTags(q.q)}
+題目：${questionPromptText(q)}
 正確答案：${correctTxt}
 ${q.sol ? `參考詳解：${stripTags(q.sol)}` : ''}
 ${teach && teach.sol ? `他補習班老師教這題的方法（指出錯誤或建議路線時優先對照這個教法）：${stripTags(teach.sol)}${teach.tip ? '｜老師口訣：' + stripTags(teach.tip) : ''}` : ''}
@@ -2192,10 +2225,13 @@ async function aiJSON(content, responseType) {
 async function aiProcCall(q, ok, correctTxt, calcB64, shots, steps) {
   const teach = S.teach && S.teach[q.id];
   const hasShots = Array.isArray(shots) && shots.length > 0;
-  const content = [
+  const content = [];
+  await appendQuestionStemForAi(content, q);
+  content.push(
+    { type:'text', text:'【學生手寫作答】以下影像是學生的計算與作答，不是題目。' },
     { type: 'image', source: { type: 'base64', media_type: 'image/png', data: calcB64 } },
-    { type: 'text', text: `你是嚴謹但溫暖的數學閱卷老師。圖＝一位學測考生此題的完整手寫計算過程。${steps > 0 ? '圖上橘色①②③…圓圈＝他下筆的先後順序（不是位置），紅框＝他最後寫的；請照序號順序看懂他的解題流程再點評、找卡點。' : ''}
-題目：${stripTags(q.q)}
+    { type: 'text', text: `你是嚴謹但溫暖的數學閱卷老師。學生手寫圖＝一位學測考生此題的完整手寫計算過程。${steps > 0 ? '圖上橘色①②③…圓圈＝他下筆的先後順序（不是位置），紅框＝他最後寫的；請照序號順序看懂他的解題流程再點評、找卡點。' : ''}
+題目：${questionPromptText(q)}
 正確答案：${correctTxt}；此題已判定考生「${ok ? '答對' : '答錯'}」。
 ${q.sol ? `參考詳解：${stripTags(q.sol)}` : ''}
 ${teach && teach.sol ? `他補習班老師教這題的方法（點評時優先對照這個教法）：${stripTags(teach.sol)}${teach.tip ? '｜老師口訣：' + stripTags(teach.tip) : ''}` : ''}
@@ -2208,7 +2244,7 @@ ${learnerContextForAi(q.topic)}
 4. marks：過程裡有具體寫錯的地方就框出來（box=[左,上,右,下] 0~1 小數、原點左上，label ≤8 字，最多 2 個），沒有就 []。
 ${hasShots ? `5. stuck：後面附了 ${shots.length} 張「停頓快照」——他停筆很久的時刻。對每張推斷他當時卡在哪個決策或概念（原色＝停頓當下已寫、藍色＝想通後接著寫的）。phase 從「讀題/選方法/想公式/卡計算/驗算收尾」擇一；what ≤40字講人話、可引用他寫的式子；unstick ≤30字給下次解卡動作。按快照順序、數量一致。` : ''}
 只回傳 JSON（不要其他文字）：{"firstError":"哪步開始錯（沒有就 null）","errKind":"錯在哪種機制、用一個詞（沒錯填 null；從『正負號、公式套錯、化簡約分、移項、代入計算、審題看錯、範圍邊界、方法選錯、沒寫完』擇一，方便日後統整趨勢）","praise":"他做得好的地方（必填）","nextTime":"一句可記住的下次這樣做","marks":[],"stuck":${hasShots ? '[{"phase":"想公式","what":"他卡在什麼","unstick":"下次怎麼解卡"}]' : '[]'}}` },
-  ];
+  );
   if (hasShots) for (let i = 0; i < shots.length; i++) {
     content.push({ type: 'text', text: `【停頓快照 ${i + 1}】第 ${shots[i].sec} 秒起停了 ${shots[i].dur} 秒。原色＝停頓當下已寫；藍色＝之後接著寫的頭幾筆。` });
     content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: shots[i].b64 } });
@@ -2262,7 +2298,7 @@ async function aiChatCall(system, messages) {
   const payload = await openAiInvoke({ responseType: 'text', instructions: system, messages });
   return String(payload.text || '').trim();
 }
-function chatCtx(sess) {
+async function chatCtx(sess) {
   const q = sess.q;
   const correctTxt = q.type === 'fill' ? (q.ans && q.ans[0]) : (Array.isArray(q.ans) ? q.ans.map((a) => '(' + (a + 1) + ')').join('') : '');
   const v = sess.ai || sess.procV; // 之前的 AI 批改/過程點評（有就帶進脈絡）
@@ -2274,9 +2310,10 @@ function chatCtx(sess) {
     if (v.nextTime) bits.push('建議：' + v.nextTime);
     if (bits.length) prior = '你剛才給他的點評——' + bits.join('；') + '。';
   }
-  const system = '你是這位學測數學考生的一對一家教，正跟他討論「他剛做的這一題」。用繁體中文、口語、簡短好懂地回答他的追問；要寫算式時一律用 \\(…\\) 把數學包起來、每個 \\( 都要有 \\) 收尾（介面用 KaTeX 渲染），不要用 markdown 粗體/標題語法。斷言任何數值或答案前先自己重算驗證（log/根號/正負號/比大小易錯），沒把握寧可說不確定，別給錯答案誤導他。只聚焦這一題與相關概念，別扯遠、別長篇大論。\n\n【這一題】\n題目：' + stripTags(q.q) + '\n正確答案：' + (correctTxt || '（未提供）') + '\n他這次' + (sess.lastOk ? '答對' : '答錯') + '了。\n' + (q.sol ? '參考詳解：' + stripTags(q.sol) + '\n' : '') + prior + (sess.calcImg ? '\n（第一則訊息附了他的手寫過程圖，請對照他實際寫法回答。）' : '');
+  const system = '你是這位學測數學考生的一對一家教，正跟他討論「他剛做的這一題」。用繁體中文、口語、簡短好懂地回答他的追問；要寫算式時一律用 \\(…\\) 把數學包起來、每個 \\( 都要有 \\) 收尾（介面用 KaTeX 渲染），不要用 markdown 粗體/標題語法。斷言任何數值或答案前先自己重算驗證（log/根號/正負號/比大小易錯），沒把握寧可說不確定，別給錯答案誤導他。只聚焦這一題與相關概念，別扯遠、別長篇大論。\n\n【這一題】\n題目：' + questionPromptText(q) + '\n正確答案：' + (correctTxt || '（未提供）') + '\n他這次' + (sess.lastOk ? '答對' : '答錯') + '了。\n' + (q.sol ? '參考詳解：' + stripTags(q.sol) + '\n' : '') + prior + (sess.calcImg ? '\n（第一則訊息附了他的手寫過程圖，請對照他實際寫法回答。）' : '');
   const imgB64 = sess.calcImg ? sess.calcImg.replace(/^data:image\/[a-z]+;base64,/, '') : null;
-  return { system, imgB64 };
+  const stemBlock = await questionStemAiBlock(q);
+  return { system, imgB64, stemBlock };
 }
 function mountChat(sess) {
   const el = document.getElementById('ai-chat');
@@ -2311,10 +2348,15 @@ async function chatSend() {
   sess.chatBusy = true;
   mountChat(sess);
   try {
-    const { system, imgB64 } = chatCtx(sess);
-    const msgs = sess.chat.turns.map((t, i) => (t.role === 'user' && i === 0 && imgB64)
-      ? { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: imgB64 } }, { type: 'text', text: t.text }] }
-      : { role: t.role, content: t.text });
+    const { system, imgB64, stemBlock } = await chatCtx(sess);
+    const msgs = sess.chat.turns.map((t, i) => {
+      if (t.role !== 'user' || i !== 0 || (!imgB64 && !stemBlock)) return { role:t.role, content:t.text };
+      const content = [];
+      if (stemBlock) content.push({ type:'text', text:'【原 PDF 題目裁圖】' }, stemBlock);
+      if (imgB64) content.push({ type:'text', text:'【學生手寫作答】' }, { type:'image', source:{ type:'base64', media_type:'image/png', data:imgB64 } });
+      content.push({ type:'text', text:t.text });
+      return { role:'user', content };
+    });
     const reply = await aiChatCall(system, msgs);
     sess.chat.turns.push({ role: 'assistant', text: reply || '（沒有回應）' });
   } catch (e) {
@@ -4864,8 +4906,12 @@ async function qHint() {
       + '鐵則：只給「剛好夠他自己往下走」的一點提示、循序漸進；絕對不要寫出完整解法或最終答案（會毀了練習）。任何你講出的中間數值/等式，寫出前先自己心算驗過一遍（log/根號/正負號易錯），別給錯的中間值把他帶歪。繁體中文、口語、簡短（最多 3 句）。數學式用 \\(…\\) 包起來、每個 \\( 都要有 \\) 收尾。';
     const usr = (b64 ? '這是我目前的手寫。' : '我還沒動筆、不知道怎麼下手。') + '我卡住了，給我一點提示（不要直接給我答案）。' + prior;
     const content = [];
-    if (b64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } });
-    content.push({ type: 'text', text: '題目：' + stripTags(q.q) + '\n正解（你心裡有數就好、絕不可透露）：' + (correctTxt || '（略）') + (q.sol ? '\n參考詳解（絕不可照抄或劇透，只供你判斷方向對不對）：' + stripTags(q.sol) : '') + '\n\n' + usr });
+    await appendQuestionStemForAi(content, q);
+    if (b64) {
+      content.push({ type:'text', text:'【學生目前手寫】以下影像是學生已寫的方向與算式，不是題目。' });
+      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } });
+    }
+    content.push({ type: 'text', text: '題目：' + questionPromptText(q) + '\n正解（你心裡有數就好、絕不可透露）：' + (correctTxt || '（略）') + (q.sol ? '\n參考詳解（絕不可照抄或劇透，只供你判斷方向對不對）：' + stripTags(q.sol) : '') + '\n\n' + usr });
     const hint = await aiChatCall(system, [{ role: 'user', content }]);
     sess.hints.push(hint || '（沒有提示）');
   } catch (e) {
