@@ -69,6 +69,17 @@ def segment(sample, in_drill=False, **kwargs):
 
 
 class AnswerSeparation(unittest.TestCase):
+    def test_cross_page_solution_stops_before_the_next_subsection_title(self):
+        sample = page(6, [
+            {**line("解答 0, 1, 3, -3, -1", 118, 123, 500, 148), "blockType": "text"},
+            {**line("解析 設 m1 至 m5 為五條直線的斜率", 121, 153, 700, 181), "blockType": "text"},
+            {**line("判斷三點是否共線", 82, 323, 420, 354), "blockType": "title"},
+            {**line("Ex3. 設 A、B、C 為坐標平面上三點", 82, 378, 700, 404), "blockType": "text"},
+        ])
+        events = bookmap.page_events(sample, False)
+        region = bookmap.lead_in_solution_region(sample, events, [], True)
+        self.assertEqual(region, [0, 0, WIDTH, 319])
+
     def test_solution_below_the_tag_never_enters_the_question(self):
         sample = page(60, [
             line("Ex75. 考慮坐標平面上的直線 L", 82, 126),
@@ -789,6 +800,32 @@ class DrillAnswerPairing(unittest.TestCase):
         self.assertIn("drill-answer-not-found", questions[0]["flags"])
         self.assertEqual(questions[0]["qaLane"], "needs-repair")
 
+    def test_duplicate_question_keys_never_share_one_answer(self):
+        questions = [{
+            "blockIndex": 1, "sourceDifficulty": "easy", "questionType": "fill",
+            "provenance": {"drillNumber": 2}, "flags": [], "qaLane": "clean-candidate",
+        } for _ in range(2)]
+        answers = [{
+            "id": "trig-radian-p061-ans2", "blockIndex": 2,
+            "sourceDifficulty": "easy", "questionType": "fill", "drillNumber": 2,
+            "pdfPage": 63, "printedPage": 61, "region": [44, 903, 844, 1058],
+        }]
+        bookmap.pair_drill_answers(questions, answers)
+        for question in questions:
+            self.assertNotIn("answerRef", question)
+            self.assertIn("drill-answer-ambiguous", question["flags"])
+            self.assertEqual(question["qaLane"], "needs-repair")
+
+    def test_duplicate_keys_without_any_answer_are_reported_as_missing(self):
+        questions = [{
+            "blockIndex": 1, "sourceDifficulty": "easy", "questionType": "unclassified",
+            "provenance": {"drillNumber": 1}, "flags": [], "qaLane": "clean-candidate",
+        } for _ in range(2)]
+        bookmap.pair_drill_answers(questions, [])
+        for question in questions:
+            self.assertIn("drill-answer-not-found", question["flags"])
+            self.assertNotIn("drill-answer-ambiguous", question["flags"])
+
 
 class PrintedPageResolution(unittest.TestCase):
     def test_offset_is_read_from_the_footer_and_conflicts_are_flagged(self):
@@ -859,6 +896,19 @@ class PageClassification(unittest.TestCase):
         sample = page(33, [line("5. 綜合上述，知 ABCD 為正方形", 60, 1332)])
         self.assertEqual(bookmap.page_events(sample, False), [])
         self.assertEqual(len(bookmap.page_events(sample, True)), 1)
+
+    def test_decimal_working_is_not_a_numbered_question(self):
+        """Handwritten 1.7 was once emitted as a 10 px question stem and then
+        paired to a real question's official answer."""
+        sample = page(97, [
+            line("5. (B) 1988 年 NBA 先發球員平均薪資", 56, 76),
+            line("(A) 2000 (B) 2600 (C) 3000 (D) 3500", 148, 176),
+            line("1.7\n2.89\n1.7\n2023", 143, 206),
+            line("6. ( ) 設高一某班 50 人", 56, 444),
+        ])
+        starts = [event["number"] for event in bookmap.page_events(sample, True)
+                  if event["kind"] == "question"]
+        self.assertEqual(starts, [5, 6])
 
 
 class CropSeparation(unittest.TestCase):

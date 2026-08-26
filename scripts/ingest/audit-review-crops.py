@@ -123,7 +123,10 @@ def audit(book_dir: Path, variant: str | None = None) -> dict[str, Any]:
     if duplicate_stems:
         errors.append({"duplicate-stem-sha": duplicate_stems})
     if duplicate_answers:
-        warnings.append({"duplicate-answer-sha": duplicate_answers})
+        # Byte-identical answer crops are the same source region assigned more
+        # than once.  Even when the printed answer happens to be numerically
+        # equal, one region cannot prove two distinct question mappings.
+        errors.append({"duplicate-answer-sha": duplicate_answers})
 
     for kind, dimensions in minimums.items():
         if dimensions[0] == sys.maxsize:

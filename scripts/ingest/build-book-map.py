@@ -52,7 +52,13 @@ ANSWER_TAG_RE = re.compile(r"^\s*[\[［(（]?\s*(解答|解析|詳解|答案)\s*
 ANSWER_TAG_ANYWHERE_RE = re.compile(r"(解答|解析|詳解|答案)\s*[:：]")
 ANSWER_ITEM_RE = re.compile(r"^\s*(\d{1,3})\s*[.．、]\s*(?:答案|答|案)\s*[:：]?")
 EXAMPLE_RE = re.compile(r"(?:^|[^A-Za-z])Ex\s*[.．]?\s*(\d{1,3})\s*[.．、]")
-NUMBERED_ITEM_RE = re.compile(r"^\s*(\d{1,3})\s*[.．、]")
+# A printed question number is followed by prose, a choice bubble or whitespace.
+# Pencil arithmetic such as ``1.7`` / ``2.89`` occurs inside these scans and
+# Mistral faithfully returns it as its own block.  Treating that decimal point
+# as a question delimiter created a 10 px phantom stem and paired it to another
+# question's official answer.  A digit immediately after the delimiter is
+# therefore not a numbered-item marker.
+NUMBERED_ITEM_RE = re.compile(r"^\s*(\d{1,3})\s*[.．、](?!\d)")
 # OCR reads the enumeration comma 、 as the ideograph 丶 often enough that a
 # whole 五、作圖題 header went unrecognised and its section ran into the
 # question above it.
@@ -355,6 +361,38 @@ def collect_headings(page: dict[str, Any]) -> tuple[str | None, str | None]:
         elif 24 <= size < 34 and x0 < 0.14 * width and (heading is None or y0 < heading[0]):
             heading = (y0, text)
     return (chapter[1] if chapter else None, heading[1] if heading else None)
+
+
+def lead_in_solution_region(page: dict[str, Any], events: list[dict[str, Any]],
+                            type_headers: list[tuple[int, str, str]],
+                            lead_in: bool) -> list[int] | None:
+    """Bound a previous page's continued solution before the next section.
+
+    The next exercise is not always the first thing after a continued
+    solution: the publisher often prints a new subsection title above it.  A
+    crop ending only at the next Ex marker therefore included that title and
+    made official-answer review ambiguous.  Mistral explicitly marks titles;
+    the size/position fallback keeps the same safety boundary for older page
+    indexes without block types.
+    """
+    if not lead_in:
+        return None
+    first_question = min((event["y"] for event in events if event["kind"] == "question"),
+                         default=int(0.94 * page["height"]))
+    cutoffs = [first_question]
+    cutoffs.extend(y for y, _, _ in type_headers if y < first_question)
+    for line in page["ocr"]:
+        x0, y0, _, y1 = line["bbox"]
+        text = norm(line["text"]).strip()
+        if y0 <= 0.12 * page["height"] or y0 >= first_question or not text:
+            continue
+        size = y1 - y0
+        marked_title = line.get("blockType") == "title"
+        visual_title = (24 <= size <= 42 and x0 < 0.20 * page["width"]
+                        and CHAPTER_TITLE_RE.match(text) is not None)
+        if (marked_title or visual_title) and not ANSWER_TAG_RE.match(text):
+            cutoffs.append(y0)
+    return [0, 0, page["width"], max(1, min(cutoffs) - 4)]
 
 
 INK_ROW_MIN = 3
@@ -805,6 +843,14 @@ def build(work_root: Path, book_id: str, ocr_provider: str = "rapidocr",
             alternate = page["ocrAlternates"]["googleDocumentAi"]
             page["ocr"] = alternate["lines"]
             page["ocrEngineUsed"] = alternate["engine"]
+    elif ocr_provider == "mistral":
+        missing = [page["pdfPage"] for page in pages
+                   if page.get("ocrProvider") != "mistral"
+                   or page.get("ocrEngine") != "mistral-ocr-latest"]
+        if missing:
+            raise MapError(f"Mistral OCR is missing or untrusted on {len(missing)} pages")
+        for page in pages:
+            page["ocrEngineUsed"] = page["ocrEngine"]
     elif ocr_provider != "rapidocr":
         raise MapError(f"Unsupported OCR provider: {ocr_provider}")
 
@@ -895,10 +941,7 @@ def build(work_root: Path, book_id: str, ocr_provider: str = "rapidocr",
             "questionStarts": [event["marker"] for event in events if event["kind"] == "question"],
             "answerTagYs": [event["y"] for event in events if event["kind"] in {"answer-tag", "answer-item"}],
             "leadInSolution": lead_in,
-            "leadInRegion": ([0, 0, page["width"],
-                              min([event["y"] for event in events if event["kind"] == "question"],
-                                  default=int(0.94 * page["height"]))]
-                             if lead_in else None),
+            "leadInRegion": lead_in_solution_region(page, events, type_headers, lead_in),
             "ocrLineCount": len(page["ocr"]),
             "frameBoxCount": len(page["layout"]["frameBoxes"]),
             "figureCandidateCount": len(page["layout"]["nonTextRegions"]),
@@ -1282,20 +1325,42 @@ def pair_drill_answers(questions: list[dict[str, Any]], answers: list[dict[str, 
         answer_blocks[block] = max(candidates)
         taken.add(max(candidates))
 
-    index: dict[tuple[Any, ...], dict[str, Any]] = {}
+    index: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for answer in answers:
         target = answer_blocks.get(answer["blockIndex"])
         if target is not None:
-            index[(target, answer["questionType"], answer["drillNumber"])] = answer
+            index.setdefault((target, answer["questionType"], answer["drillNumber"]), []).append(answer)
+
+    # A source answer crop is one-to-one with a printed question.  Repeated
+    # (block, type, number) keys mean a type boundary was missed — for example
+    # the same printed ``2.`` appeared once under 填充題 and again after an OCR-
+    # lost 計算題 header.  Assigning the one official answer to both silently
+    # gives one student question the wrong answer.  Fail closed: neither side
+    # receives an answer until that boundary is reviewed.
+    question_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for question in questions:
         number = question["provenance"]["drillNumber"]
         if number is None:
             continue
-        answer = index.get((question["blockIndex"], question["questionType"], number))
-        if answer is None:
+        key = (question["blockIndex"], question["questionType"], number)
+        question_groups.setdefault(key, []).append(question)
+
+    for question in questions:
+        number = question["provenance"]["drillNumber"]
+        if number is None:
+            continue
+        key = (question["blockIndex"], question["questionType"], number)
+        matches = index.get(key, [])
+        if not matches:
             question["flags"].append("drill-answer-not-found")
             question["qaLane"] = "needs-repair"
             continue
+        if len(question_groups.get(key, [])) > 1 or len(matches) > 1:
+            if "drill-answer-ambiguous" not in question["flags"]:
+                question["flags"].append("drill-answer-ambiguous")
+            question["qaLane"] = "needs-repair"
+            continue
+        answer = matches[0]
         question["answerRef"] = {"id": answer["id"], "pdfPage": answer["pdfPage"],
                                  "printedPage": answer["printedPage"], "region": answer["region"]}
         if "solution-not-on-this-page" in question["flags"]:
@@ -1400,7 +1465,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--book", required=True)
-    parser.add_argument("--ocr-provider", choices=("rapidocr", "google"), default="rapidocr")
+    parser.add_argument("--ocr-provider", choices=("rapidocr", "google", "mistral"), default="rapidocr")
     parser.add_argument("--output-variant", default=None,
                         help="write .<variant> outputs instead of replacing the default review files")
     args = parser.parse_args(argv)

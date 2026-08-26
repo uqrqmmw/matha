@@ -35,6 +35,26 @@ python scripts/ingest/index-pages.py --pdf "<scan>.pdf" --book <bookId> --work "
 
 25 份來源已於 2026-08-26 用 `mistral-ocr-latest` 完成 6,720／6,720 頁索引。完整輸出留在 repo 外的 `ocr-full-20260826`，費用估計 USD 26.88。Mistral 的角色與下述 Google 第二讀相同：協助搜尋、切段和找候選，不是學生題面。
 
+把已完成的 Mistral block 座標轉成全新的 page index（不沿用舊 RapidOCR 題文或候選）；每頁仍會從 catalog 綁定的原 PDF 單執行緒重渲染，計算裁切需要的墨跡與版面邊界，但不把整頁 PNG 留在硬碟：
+
+```bash
+python scripts/ingest/index-mistral-pages.py \
+  --pdf "<scan>.pdf" --book <bookId> \
+  --ocr-root "<repo 外>/ocr-full-20260826" \
+  --work "<repo 外>/matha-mistral-ingest-work-20260826"
+```
+
+每一頁都核對 PDF SHA-256、檔名、頁碼、Mistral model 與回應檔 SHA-256；任一不合即停止。學生最後看到的仍不是這些文字，而是獨立複核後的原 PDF 300 dpi 裁圖。
+
+全批完成後逐頁重驗一次，並把不含題目內容的稽核摘要留在 repo 外：
+
+```bash
+python scripts/ingest/audit-mistral-index.py \
+  --work "<repo 外>/matha-mistral-ingest-work-20260826" \
+  --ocr-root "<repo 外>/ocr-full-20260826" \
+  --out "<repo 外>/matha-mistral-ingest-work-20260826/CORPUS_AUDIT.json"
+```
+
 Google Enterprise Document OCR 的 Math OCR 曾作為獨立第二讀；若要針對局部頁重跑，流程如下：
 
 目前採用 Google Enterprise Document OCR 的 Math OCR，不再要求本機 OCR 獨力扛數學式與繁體中文。先在 Google Cloud 建立 Enterprise Document OCR processor，再對 `pages/*.png` 執行：
@@ -57,6 +77,8 @@ python scripts/ingest/attach-google-document-ai.py \
 
 ```bash
 python scripts/ingest/build-book-map.py --work "<work>" --book <bookId>
+python scripts/ingest/build-book-map.py --work "<mistral-work>" --book <bookId> \
+  --ocr-provider mistral
 python scripts/ingest/build-book-map.py --work "<work>" --book <bookId> \
   --ocr-provider google --output-variant google
 ```

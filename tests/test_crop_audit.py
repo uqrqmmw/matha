@@ -64,6 +64,16 @@ class CropAuditTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["duplicateStemGroups"], 1)
 
+    def test_duplicate_answer_pixels_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            book = self.make_book(Path(tmp), ("q1", "q2"))
+            (book / "crops.hybrid" / "q2" / "answer.png").write_bytes(
+                (book / "crops.hybrid" / "q1" / "answer.png").read_bytes()
+            )
+            result = audit_module.audit(book, "hybrid")
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["duplicateAnswerGroups"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
