@@ -24,8 +24,43 @@ test('私有題包檔名包含內容雜湊，更新內容不會被同名 Storage
   fs.writeFileSync(source, JSON.stringify([q('content-address-1', '測試內容位碼 91827364')]), 'utf8');
   const manifest = buildPrivateBank(source, output, root);
   assert.equal(manifest.packs.length, 1);
+  assert.equal(manifest.releaseReady, false, '一般或舊來源只能產生製作檔，不能直接成為正式發版 manifest');
   assert.equal(manifest.sourceSha256, require('node:crypto').createHash('sha256').update(fs.readFileSync(source)).digest('hex'));
   assert.match(manifest.packs[0].file, new RegExp(`${manifest.packs[0].sha256.slice(0, 10)}\\.json$`));
+});
+
+test('只有新版來源清冊與三項人工校驗都齊全時才產生可發布 manifest', (t) => {
+  const root = path.resolve(__dirname, '..');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'matha-release-contract-'));
+  t.after(() => fs.rmSync(temp, { recursive:true, force:true }));
+  const source = path.join(temp, 'source.json');
+  const output = path.join(temp, 'out');
+  fs.writeFileSync(source, JSON.stringify({
+    schema: 3,
+    kind: 'private-question-source',
+    corpusGeneration: 'mistral-ocr4-verified-v1',
+    sourceInventorySha256: 'c0cedf6b71917211fce887f002978b1180ee661e86f16885e1625c34e5f9fc96',
+    sourceDocuments: 25,
+    sourcePages: 6720,
+    ocrProvider: 'mistral',
+    ocrModel: 'mistral-ocr-latest',
+    verificationPolicy: 'pdf-crop-and-answer-review-v1',
+    originalPdfVerified: true,
+    answerKeyVerified: true,
+    mathematicalCorrectnessVerified: true,
+    reviewedBy: 'yen-manual-review',
+    releaseApprovedBy: 'yen-release-review',
+    reviewAudit: { sourceQuestionCount:1, approvedQuestionCount:1, completedAt:'2026-08-26T12:00:00+08:00' },
+    questions: [q('release-contract-1', '已對照原卷與答案的測試題', {
+      bookId:'matha-114-real-number-line', page:12, src:'matha-114-real-number-line p12',
+    })],
+  }), 'utf8');
+
+  const manifest = buildPrivateBank(source, output, root);
+  assert.equal(manifest.releaseReady, true);
+  assert.equal(manifest.schema, 3);
+  assert.equal(manifest.corpusGeneration, 'mistral-ocr4-verified-v1');
+  assert.equal(Object.values(manifest.releaseChecks).every(Boolean), true);
 });
 
 test('掃描教材 apply-review envelope 的 questions 會被正式建置器接住', (t) => {

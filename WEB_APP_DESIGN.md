@@ -7,7 +7,7 @@
 
 - 正式 repo 是 `uqrqmmw/matha`，預設分支 `main`，Pages 主入口是 <https://uqrqmmw.github.io/matha/>。`yen-2cats/matha` 只是一度誤用的救援來源，不再部署正式版。
 - `rrihysbxhsbxjteqmtdu` 現在同時承擔 Auth、學習狀態、手寫歸檔、私有 `matha-content` Storage 與 `openai-proxy`；前端與 Edge Function 都不再依賴舊 `jahqjaipeekkynpjjafw`。
-- 4521 題原始來源由 `scripts/build-private-bank.js` 清洗為 4092 題、10 個單元包與 SHA-256 manifest。前端登入後下載、驗雜湊、驗 schema，再併入 `CONTENT.packs`；缺檔或雜湊錯誤時保持 362 題核心庫可用。
+- 舊版 4,138 題掃描辨識庫已停用；SHA-256 與 schema 只能做結構完整性檢查，不能證明題文或答案正確。新版前端除內容雜湊外，還固定檢查 corpus generation、25 份 PDF canonical 清冊雜湊、OCR provider/model、原卷與答案校驗、數學正確性及人工發布簽核；任一不符即保持 363 題核心庫。
 - 私有題庫不進公開 Git、`app_state` 或 `content_packs` 上傳路徑；Storage policy 只有 authenticated select，更新由專案擁有者在後台執行。
 
 ## 0716e 9→13 級分閉環

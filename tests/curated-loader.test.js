@@ -5,11 +5,33 @@ const crypto = require('node:crypto');
 const test = require('node:test');
 const { loadApp } = require('./helpers/load-app');
 
+const TRUSTED_MANIFEST_FIELDS = {
+  schema: 3,
+  visibility: 'authenticated',
+  corpusGeneration: 'mistral-ocr4-verified-v1',
+  sourceInventorySha256: 'c0cedf6b71917211fce887f002978b1180ee661e86f16885e1625c34e5f9fc96',
+  sourceDocuments: 25,
+  sourcePages: 6720,
+  ocrProvider: 'mistral',
+  ocrModel: 'mistral-ocr-latest',
+  verificationPolicy: 'pdf-crop-and-answer-review-v1',
+  mathematicalCorrectnessVerified: true,
+  releaseReady: true,
+  releaseChecks: { corpusGeneration:true, sourceInventory:true, sourceDocuments:true, sourcePages:true,
+    ocrProvider:true, ocrModel:true, verificationPolicy:true, originalPdfVerified:true,
+    answerKeyVerified:true, mathematicalCorrectnessVerified:true, questionProvenance:true,
+    reviewAudit:true, trustedHumanReview:true },
+  releaseApprovedBy: 'yen-release-review',
+};
+function trustedManifest(fields) {
+  return JSON.stringify({ ...TRUSTED_MANIFEST_FIELDS, generatedAt: '2026-08-26T00:00:00Z', packs: [], ...(fields || {}) });
+}
+
 test('私有 manifest 以短效簽署網址且禁用 HTTP 快取下載', async () => {
   const { context, run } = loadApp();
   context.crypto = crypto.webcrypto;
   context.TextDecoder = TextDecoder;
-  const manifest = JSON.stringify({ schema: 1, visibility: 'authenticated', generatedAt: '2026-08-25T00:00:00Z', packs: [] });
+  const manifest = trustedManifest();
   let fetchedUrl = '';
   let fetchOptions = null;
   context.fetch = async (url, options) => {
@@ -20,13 +42,13 @@ test('私有 manifest 以短效簽署網址且禁用 HTTP 快取下載', async (
   let directManifestDownloads = 0;
   context.__storage = { from() { return {
     createSignedUrl: async (name, seconds) => ({ data: { signedUrl: `https://example.supabase.co/storage/${name}?token=test-${seconds}` }, error: null }),
-    download: async (name) => { if (name === 'manifest-0825e.json') directManifestDownloads++; return { data: null, error: new Error('unexpected direct download') }; },
+    download: async (name) => { if (name === 'manifest-mistral-ocr4-verified-v1.json') directManifestDownloads++; return { data: null, error: new Error('unexpected direct download') }; },
   }; } };
   run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
 
   assert.equal(await run('pullCuratedContent()'), true);
   assert.equal(directManifestDownloads, 0);
-  assert.match(fetchedUrl, new RegExp(`manifest-0825e\\.json\\?token=test-60&matha_cb=${run('APP_VER')}-`));
+  assert.match(fetchedUrl, new RegExp(`manifest-mistral-ocr4-verified-v1\\.json\\?token=test-60&matha_cb=${run('APP_VER')}-`));
   assert.equal(fetchOptions.cache, 'no-store');
 });
 
@@ -36,8 +58,8 @@ test('登入後私有題包會驗 SHA-256、寫入內容快取並加入題庫', 
   context.TextDecoder = TextDecoder;
   const pack = `${JSON.stringify({ kind: 'qpack', name: '私有測試包', items: [{ id: 'curated-test-1', topic: 'num', type: 'fill', diff: 1, q: '測試題', ans: ['1'], sol: '解法', src: '私有測試包' }] })}\n`;
   const digest = crypto.createHash('sha256').update(pack).digest('hex');
-  const manifest = JSON.stringify({ schema: 1, visibility: 'authenticated', generatedAt: '2026-07-16T00:00:00Z', packs: [{ id: 'curated-test', name: '私有測試包', file: 'test.json', count: 1, sha256: digest }] });
-  context.__files = { 'manifest-0825e.json': new Blob([manifest]), 'test.json': new Blob([pack]) };
+  const manifest = trustedManifest({ packs: [{ id: 'curated-test', name: '私有測試包', file: 'test.json', count: 1, sha256: digest }] });
+  context.__files = { 'manifest-mistral-ocr4-verified-v1.json': new Blob([manifest]), 'test.json': new Blob([pack]) };
   context.__downloads = [];
   context.__storage = { from() { return { download: async (name) => { context.__downloads.push(name); return { data: context.__files[name], error: null }; } }; } };
   run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
@@ -69,12 +91,44 @@ test('私有題包雜湊不符時拒絕加入，不污染既有題庫', async ()
   context.crypto = crypto.webcrypto;
   context.TextDecoder = TextDecoder;
   const pack = `${JSON.stringify({ kind: 'qpack', name: '壞包', items: [] })}\n`;
-  const manifest = JSON.stringify({ schema: 1, visibility: 'authenticated', generatedAt: '2026-07-16T00:00:00Z', packs: [{ id: 'curated-bad', name: '壞包', file: 'bad.json', count: 0, sha256: '0'.repeat(64) }] });
-  context.__files = { 'manifest-0825e.json': new Blob([manifest]), 'bad.json': new Blob([pack]) };
+  const manifest = trustedManifest({ packs: [{ id: 'curated-bad', name: '壞包', file: 'bad.json', count: 0, sha256: '0'.repeat(64) }] });
+  context.__files = { 'manifest-mistral-ocr4-verified-v1.json': new Blob([manifest]), 'bad.json': new Blob([pack]) };
   context.__storage = { from() { return { download: async (name) => ({ data: context.__files[name], error: null }) }; } };
   run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
   const ok = await run('pullCuratedContent()');
   assert.equal(ok, false);
   assert.equal(run('Object.hasOwn(CONTENT.packs, "curated-bad")'), false);
   assert.match(run('curatedState.error'), /完整性驗證失敗/);
+});
+
+test('舊 OCR manifest 即使可下載也因題庫世代不符而拒收', async () => {
+  const { context, run } = loadApp();
+  context.crypto = crypto.webcrypto;
+  context.TextDecoder = TextDecoder;
+  const legacy = JSON.stringify({ schema: 2, visibility: 'authenticated', generatedAt: '2026-08-25T00:00:00Z', packs: [] });
+  context.__files = { 'manifest-mistral-ocr4-verified-v1.json': new Blob([legacy]) };
+  context.__storage = { from() { return { download: async (name) => ({ data: context.__files[name], error: null }) }; } };
+  run('supa = { storage: __storage }; syncState.user = { id: "test-user" }; syncPill = () => {}; rerenderActiveView = () => {}; updateBadge = () => {}');
+
+  assert.equal(await run('pullCuratedContent()'), false);
+  assert.equal(run('curatedState.status'), 'quarantined');
+  assert.match(run('curatedState.error'), /manifest 格式|題庫世代/);
+});
+
+test('隔離舊官方快取時保留使用者自建題包', async () => {
+  const { run } = loadApp();
+  const result = await run(`(async () => {
+    localStorage.setItem(SPLIT_LS, '1');
+    CONTENT.packs = {
+      'curated-old': { kind:'qpack', curated:true, items:[{ id:'old-ocr' }] },
+      'user-pack': { kind:'qpack', name:'我的題包', items:[{ id:'mine', topic:'num', type:'fill', diff:1, q:'我的題目', ans:['1'] }] },
+    };
+    const removed = await quarantineStaleCuratedContent();
+    return { removed, keys:Object.keys(CONTENT.packs), userItems:CONTENT.packs['user-pack'].items.length, ext:extBankArr().map((q) => q.id) };
+  })()`);
+  assert.equal(result.removed.removedPacks, 1);
+  assert.equal(result.removed.removedQuestions, 1);
+  assert.deepEqual([...result.keys], ['user-pack']);
+  assert.equal(result.userItems, 1);
+  assert.deepEqual([...result.ext], ['mine']);
 });

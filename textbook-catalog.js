@@ -6,6 +6,18 @@ const TEXTBOOK_LIBRARY = {
   subject: 'math-a',
   series: '114 學測課程主題練習教材',
   verifiedCount: 24,
+  /* 正式題庫的信任邊界。sourceInventorySha256 是 25 份數學 PDF 的
+     {file,pages,sha256} 排序後 canonical JSON 雜湊，不含會因搬家改變的絕對路徑。 */
+  trustedCorpus: {
+    generation: 'mistral-ocr4-verified-v1',
+    manifestAlias: 'manifest-mistral-ocr4-verified-v1.json',
+    sourceInventorySha256: 'c0cedf6b71917211fce887f002978b1180ee661e86f16885e1625c34e5f9fc96',
+    sourceDocuments: 25,
+    sourcePages: 6720,
+    ocrProvider: 'mistral',
+    ocrModel: 'mistral-ocr-latest',
+    verificationPolicy: 'pdf-crop-and-answer-review-v1',
+  },
   books: [
     { id:'matha-114-data', title:'一維二維數據分析', file:'114學測班一維二為數據分析.pdf', pages:282, pdfSha256:'d72c5741de114ee486f18eb4473885d6fbc722a8ef0359e6d276502d4dd9c7d7', kind:'chapter', topics:['data'], ingestion:'pending-qa', eligibility:'core' },
     { id:'matha-114-cubic-ineq', title:'三次函數與多項式不等式', file:'114學測班三次函數與多項式不等式.pdf', pages:198, pdfSha256:'e87ad8f0e0b0d26c5bd934770686e10a168fd326a9486e90cac72ee57419b5c1', kind:'chapter', topics:['poly'], ingestion:'ready', eligibility:'core', sourceNames:['114班·三次函數與多項式'] },

@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0825o'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0826a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -207,7 +207,9 @@ function contentByKind(kind) {
   const out = [];
   for (const pid of Object.keys(CONTENT.packs)) {
     const p = CONTENT.packs[pid];
-    if (p && p.kind === kind && Array.isArray(p.items)) out.push(...p.items);
+    // 舊官方 OCR pack 即使仍殘留在 IndexedDB／localStorage，也不能進抽題池。
+    // 使用者自建 pack 沒有 curated 標記，不受這個官方世代閘門影響。
+    if (p && p.kind === kind && Array.isArray(p.items) && (!p.curated || curatedPackCurrent(p))) out.push(...p.items);
   }
   return out;
 }
@@ -390,6 +392,7 @@ async function activateUserState(user) {
   await refreshInkLocalStatus();
   CONTENT = { packs: {} };
   await contentInit();
+  await quarantineStaleCuratedContent();
   applyExtBank();
   return true;
 }
@@ -404,6 +407,7 @@ async function deactivateUserState() {
   await refreshInkLocalStatus();
   CONTENT = { packs: {} };
   await contentInit();
+  await quarantineStaleCuratedContent();
   applyExtBank();
 }
 /* localStorage 只保留同步啟動用的鏡像；真正的本機權威副本在 IndexedDB。
@@ -713,7 +717,12 @@ async function pullContent() {
 
 const CURATED_BUCKET = 'matha-content';
 const FIGURE_BUCKET = 'matha-figures';
-const CURATED_MANIFEST = 'manifest-0825e.json';
+const CURATED_TRUST = (TEXTBOOK_LIBRARY && TEXTBOOK_LIBRARY.trustedCorpus) || Object.freeze({
+  generation: 'disabled-missing-trust-catalog', manifestAlias: 'manifest-disabled.json',
+  sourceInventorySha256: '', sourceDocuments: 0, sourcePages: 0,
+  ocrProvider: '', ocrModel: '', verificationPolicy: '',
+});
+const CURATED_MANIFEST = CURATED_TRUST.manifestAlias;
 let trustedCuratedQuestions = new WeakSet();
 const CURATED_HEALTH_LS = 'mathA13_curated_health_v1';
 function loadCuratedHealth() {
@@ -726,12 +735,58 @@ function persistCuratedHealth() {
   try { localStorage.setItem(CURATED_HEALTH_LS, JSON.stringify(curatedState)); } catch (_) {}
 }
 let curatedState = { status: 'idle', count: 0, error: '', ...(loadCuratedHealth() || {}) };
-function curatedManifestValid(m) {
-  return !!(m && [1, 2].includes(Number(m.schema)) && m.visibility === 'authenticated' && Array.isArray(m.packs)
-    && m.packs.every((p) => p && typeof p.id === 'string' && /^curated-[\w-]+$/.test(p.id)
-      && typeof p.file === 'string' && !p.file.includes('..') && !p.file.startsWith('/')
-      && Number.isInteger(Number(p.count)) && Number(p.count) >= 0
-      && typeof p.sha256 === 'string' && /^[a-f0-9]{64}$/.test(p.sha256)));
+function curatedPackCurrent(pack) {
+  return !!(pack && pack.curated
+    && pack.corpusGeneration === CURATED_TRUST.generation
+    && pack.sourceInventorySha256 === CURATED_TRUST.sourceInventorySha256);
+}
+function hasCurrentCuratedContent() {
+  return Object.values(CONTENT.packs).some(curatedPackCurrent);
+}
+async function quarantineStaleCuratedContent() {
+  let removedPacks = 0;
+  let removedQuestions = 0;
+  for (const pid of Object.keys(CONTENT.packs)) {
+    const pack = CONTENT.packs[pid];
+    if (!pack || !pack.curated || curatedPackCurrent(pack)) continue;
+    removedPacks++;
+    removedQuestions += Array.isArray(pack.items) ? pack.items.length : 0;
+    delete CONTENT.packs[pid];
+  }
+  const staleHealth = curatedState.corpusGeneration !== CURATED_TRUST.generation
+    || curatedState.sourceInventorySha256 !== CURATED_TRUST.sourceInventorySha256;
+  if (removedPacks || staleHealth) {
+    trustedCuratedQuestions = new WeakSet();
+    revokePrivateFigureURLs();
+    curatedState = {
+      status: 'quarantined', count: 0, manifestCount: 0, quarantinedCount: removedQuestions,
+      pendingVisualCount: 0, total: BUILTIN_N, packCount: 0,
+      corpusGeneration: CURATED_TRUST.generation,
+      sourceInventorySha256: CURATED_TRUST.sourceInventorySha256,
+      lastChecked: new Date().toISOString(),
+      error: '舊掃描辨識題庫已隔離；新版題庫尚在原卷與答案校驗中',
+    };
+    persistCuratedHealth();
+  }
+  if (removedPacks) await persistContent();
+  return { removedPacks, removedQuestions };
+}
+function curatedManifestError(m) {
+  if (!m || Number(m.schema) !== 3 || m.visibility !== 'authenticated') return 'manifest 格式或存取層級不正確';
+  if (m.corpusGeneration !== CURATED_TRUST.generation) return '題庫世代不是目前核准版本';
+  if (m.sourceInventorySha256 !== CURATED_TRUST.sourceInventorySha256) return '來源 PDF 清冊雜湊不符';
+  if (Number(m.sourceDocuments) !== CURATED_TRUST.sourceDocuments || Number(m.sourcePages) !== CURATED_TRUST.sourcePages) return '來源 PDF 數量或頁數不符';
+  if (m.ocrProvider !== CURATED_TRUST.ocrProvider || m.ocrModel !== CURATED_TRUST.ocrModel) return 'OCR 來源不符';
+  if (m.verificationPolicy !== CURATED_TRUST.verificationPolicy || m.mathematicalCorrectnessVerified !== true || m.releaseReady !== true) return '題庫尚未完成原卷與答案校驗';
+  if (!m.releaseChecks || typeof m.releaseChecks !== 'object' || !Object.values(m.releaseChecks).length
+    || !Object.values(m.releaseChecks).every((value) => value === true)) return '題庫發布稽核未全數通過';
+  if (typeof m.releaseApprovedBy !== 'string' || m.releaseApprovedBy.trim().length < 3
+    || /(?:claude|codex|chatgpt|gpt|gemini|agent|bot|automation|自動|模型|人工智慧|\bai\b)/i.test(m.releaseApprovedBy)) return '題庫缺少可信人工發布簽核';
+  if (!Array.isArray(m.packs) || !m.packs.every((p) => p && typeof p.id === 'string' && /^curated-[\w-]+$/.test(p.id)
+    && typeof p.file === 'string' && !p.file.includes('..') && !p.file.startsWith('/')
+    && Number.isInteger(Number(p.count)) && Number(p.count) >= 0
+    && typeof p.sha256 === 'string' && /^[a-f0-9]{64}$/.test(p.sha256))) return '題包清冊格式不正確';
+  return '';
 }
 async function sha256Bytes(bytes) {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -771,6 +826,7 @@ function rerenderActiveView() {
    GitHub Pages 只含載入器，不公開講義抽取內容；manifest 移除的舊包也會從本機快取撤回。 */
 async function pullCuratedContent() {
   if (!supa || !syncState.user || !supa.storage) return false;
+  await quarantineStaleCuratedContent();
   curatedState = { ...curatedState, status: 'loading', count: curatedState.count || 0, error: '' };
   syncState.msg = '正在核對私有題庫'; syncPill();
   const previousTrustedQuestions = trustedCuratedQuestions;
@@ -782,7 +838,8 @@ async function pullCuratedContent() {
     const manifestBytes = await manifestRes.data.arrayBuffer();
     const manifestSha = await sha256Bytes(manifestBytes);
     const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
-    if (!curatedManifestValid(manifest)) throw new Error('manifest 格式或存取層級不正確');
+    const manifestError = curatedManifestError(manifest);
+    if (manifestError) throw new Error(manifestError);
     const keep = new Set(manifest.packs.map((p) => p.id));
     let changed = false;
     let manifestCount = 0;
@@ -806,7 +863,9 @@ async function pullCuratedContent() {
       CONTENT.packs[meta.id] = {
         kind: 'qpack', name: meta.name || envelope.name || meta.id,
         rev: Date.parse(manifest.generatedAt) || 1, sha256: meta.sha256,
-        curated: true, verifiedBytes: bytes.slice(0), items,
+        curated: true, corpusGeneration: manifest.corpusGeneration,
+        sourceInventorySha256: manifest.sourceInventorySha256,
+        verifiedBytes: bytes.slice(0), items,
       };
       if (!local || local.sha256 !== meta.sha256 || !exactStoredBytes(local.verifiedBytes)) changed = true;
     }
@@ -828,6 +887,8 @@ async function pullCuratedContent() {
       total: BUILTIN_N + count,
       packCount: manifest.packs.length,
       generatedAt: manifest.generatedAt || null,
+      corpusGeneration: manifest.corpusGeneration,
+      sourceInventorySha256: manifest.sourceInventorySha256,
       manifestSha,
       lastChecked: new Date().toISOString(),
       error: '',
@@ -837,10 +898,17 @@ async function pullCuratedContent() {
     rerenderActiveView();
     return true;
   } catch (e) {
-    trustedCuratedQuestions = previousTrustedQuestions;
-    curatedState = { ...curatedState, status: 'error', error: (e && e.message) || String(e), lastFailure: new Date().toISOString() };
+    const currentAvailable = hasCurrentCuratedContent();
+    trustedCuratedQuestions = currentAvailable ? previousTrustedQuestions : new WeakSet();
+    curatedState = {
+      ...curatedState,
+      status: currentAvailable ? 'error' : 'quarantined',
+      count: currentAvailable ? curatedState.count : 0,
+      error: (e && e.message) || String(e),
+      lastFailure: new Date().toISOString(),
+    };
     persistCuratedHealth();
-    syncState.msg = '私有題庫暫時無法載入；內建題庫仍可使用'; syncPill();
+    syncState.msg = currentAvailable ? '新版私有題庫暫時無法更新；沿用已驗證快取' : '舊掃描題庫已隔離；目前使用內建題庫'; syncPill();
     rerenderActiveView();
     return false;
   }
@@ -9005,7 +9073,9 @@ function packCard() {
       ? `<p class="dim fs13">正在核對私有題庫與本機快取…</p>${healthMeta}`
       : curatedState.status === 'error'
         ? `<p class="warnc fs13">這次私有題庫核對失敗：${escH(curatedState.error)}。${curatedState.count ? '下方仍顯示上次成功驗證的快取資訊。' : `內建 ${BUILTIN_N} 題仍可正常練習。`}</p>${healthMeta}`
-        : (supa && !syncState.user ? '<p class="dim fs13">登入後會載入受保護的完整題庫；未登入可先使用內建 363 題。</p>' : '');
+        : curatedState.status === 'quarantined'
+          ? `<p class="warnc fs13">舊掃描辨識題庫已隔離，不會再被抽到。新版題庫正在逐題對照原卷、圖形與答案；完成前使用 ${BUILTIN_N} 題非 OCR 核心題。</p>`
+          : (supa && !syncState.user ? '<p class="dim fs13">登入後會載入受保護的完整題庫；未登入可先使用內建 363 題。</p>' : '');
   if (!keys.length) return curatedLine ? `<div class="card"><h2>私有題庫</h2>${curatedLine}</div>` : '';
   const rows = keys.map((src) => {
     const p = packs[src];
@@ -9745,6 +9815,7 @@ async function boot() {
   await stateInit(); // IndexedDB 是本機權威副本；先救回 localStorage 配額滿或上次崩潰前已提交的狀態
   await refreshInkLocalStatus();
   await contentInit(); // 分家啟用時從 IndexedDB 載內容（毫秒級；未啟用是 no-op）
+  await quarantineStaleCuratedContent(); // 第一次啟動即撤出舊 OCR 題包；作答紀錄與個人內容不動
   // 舊版 errshots 縮圖相簿已整組移除（從無顯示介面）：清掉殘留縮圖釋放配額；store 本身保留，避免 IDB 版本遷移
   idbOpen().then((db) => { try { db.transaction('errshots', 'readwrite').objectStore('errshots').clear(); } catch (_) {} }).catch(() => {});
   applyExtBank();

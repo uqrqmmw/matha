@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const TEXTBOOK_LIBRARY = require('../textbook-catalog');
+const TRUSTED_CORPUS = TEXTBOOK_LIBRARY.trustedCorpus || {};
 
 const TOPICS = new Set(['num', 'line', 'poly', 'seq', 'comb', 'prob', 'data', 'trig1', 'trig2', 'exp', 'vec', 'svec', 'splane', 'mat']);
 /* 歷史製作工具曾使用 vec3/space；app 與 bank.js 的正式 14 單元鍵是
@@ -19,6 +20,7 @@ const QUESTION_ROLES = new Set(['example', 'chapter-end-easy', 'chapter-end-medi
 const BOOK_BY_SOURCE = new Map(TEXTBOOK_LIBRARY.books.flatMap((book) => (book.sourceNames || []).map((name) => [name, book])));
 const BOOK_BY_ID = new Map(TEXTBOOK_LIBRARY.books.map((book) => [book.id, book]));
 const UNTRUSTED_REVIEWER_RE = /(?:draft|smoke|not[-_\s]*a[-_\s]*human|not[-_\s]*human|not[-_\s]*importable|qa[-_\s]*only|forced|unsigned)/i;
+const RELEASE_NON_HUMAN_RE = /(?:claude|codex|chatgpt|gpt|gemini|agent|bot|automation|自動|模型|人工智慧|\bai\b)/i;
 /* 逐頁核對後確認：題文已把印刷表格的全部欄列與數值完整序列化，位置/顏色/合併格不影響解題。
    這是 build-time 信任清單；外部 qpack 自報 visualComplete 或仿造 evidence 都不會取得 curated trust。 */
 const VERIFIED_TEXT_COMPLETE_IDS = new Set([
@@ -316,14 +318,50 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
     return { id: `curated-${sha(name).slice(0, 16)}`, name, file, count: packItems.length, sha256: digest };
   });
   const generatedAt = new Date().toISOString();
+  const corpusGeneration = String(raw.corpusGeneration || 'legacy-unverified');
+  const sourceInventorySha256 = String(raw.sourceInventorySha256 || '');
+  const verificationPolicy = String(raw.verificationPolicy || '');
+  const reviewAudit = raw.reviewAudit && typeof raw.reviewAudit === 'object' ? raw.reviewAudit : {};
+  const releaseChecks = {
+    corpusGeneration: corpusGeneration === TRUSTED_CORPUS.generation,
+    sourceInventory: sourceInventorySha256 === TRUSTED_CORPUS.sourceInventorySha256,
+    sourceDocuments: Number(raw.sourceDocuments) === Number(TRUSTED_CORPUS.sourceDocuments),
+    sourcePages: Number(raw.sourcePages) === Number(TRUSTED_CORPUS.sourcePages),
+    ocrProvider: raw.ocrProvider === TRUSTED_CORPUS.ocrProvider,
+    ocrModel: raw.ocrModel === TRUSTED_CORPUS.ocrModel,
+    verificationPolicy: verificationPolicy === TRUSTED_CORPUS.verificationPolicy,
+    originalPdfVerified: raw.originalPdfVerified === true,
+    answerKeyVerified: raw.answerKeyVerified === true,
+    mathematicalCorrectnessVerified: raw.mathematicalCorrectnessVerified === true,
+    questionProvenance: items.length > 0 && items.every((q) => BOOK_BY_ID.has(q.bookId)
+      && Number.isInteger(Number(q.page)) && Number(q.page) >= 1 && typeof q.src === 'string' && q.src.trim()),
+    reviewAudit: Number(reviewAudit.sourceQuestionCount) === sourceItems.length
+      && Number(reviewAudit.approvedQuestionCount) === items.length + pendingVisuals.length
+      && typeof reviewAudit.completedAt === 'string' && !Number.isNaN(Date.parse(reviewAudit.completedAt)),
+    trustedHumanReview: !trustBlockReason && typeof raw.releaseApprovedBy === 'string'
+      && raw.releaseApprovedBy.trim().length >= 3 && !UNTRUSTED_REVIEWER_RE.test(raw.releaseApprovedBy)
+      && !RELEASE_NON_HUMAN_RE.test(raw.releaseApprovedBy),
+  };
+  const releaseReady = Object.values(releaseChecks).every(Boolean);
   const pendingVisualEnvelope = {
     kind: 'pending-visual-queue', version: 1, generatedAt, count: pendingVisuals.length, items: pendingVisuals,
   };
   const pendingVisualJson = `${JSON.stringify(pendingVisualEnvelope, null, 2)}\n`;
   const manifest = {
-    schema: 2,
+    schema: 3,
     visibility: 'authenticated',
     generatedAt,
+    corpusGeneration,
+    sourceInventorySha256,
+    sourceDocuments: Number(raw.sourceDocuments) || 0,
+    sourcePages: Number(raw.sourcePages) || 0,
+    ocrProvider: String(raw.ocrProvider || ''),
+    ocrModel: String(raw.ocrModel || ''),
+    verificationPolicy,
+    mathematicalCorrectnessVerified: raw.mathematicalCorrectnessVerified === true,
+    releaseReady,
+    releaseChecks,
+    releaseApprovedBy: releaseReady ? raw.releaseApprovedBy : null,
     sourceFile: path.basename(sourceFile),
     sourceSha256: sha(fs.readFileSync(sourceFile)),
     report,
