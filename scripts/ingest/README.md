@@ -170,7 +170,21 @@ python scripts/ingest/render-release-queue.py \
 
 輸出**只是視覺複核工作佇列，不是題庫**。已發現即使 `clean-candidate` 仍可能有前手圈出的 `26`、已填入的 `1/4` 或錯配答案裁圖，所以產生器另做答案洩漏初篩，並讀取 repo 外的 `release-queue/review-exclusions.json` 保存人工退件。每一題仍必須走 `apply-review` 與第二位獨立 stem reviewer；這些檢查沒完成前 `studentReady` 永遠是 `false`。
 
-2026-08-27 首次實跑：7,055 題中 2,769 題進入「可安排視覺複核」的候選池，另有 10 題被答案洩漏規則擋下、5 題由接觸表目視退件；第一批 42 題平均覆蓋 21 本書。這些數字代表工作排序，不代表 2,769 題已正確或可上線。
+2026-08-27 首次實跑：7,055 題中 2,761 題進入「可安排視覺複核」的候選池，另有 10 題被答案洩漏規則擋下、10 題由接觸表目視退件；抽樣污染密集的「集合與邏輯」266 題整本暫停。第一批 42 題改由其餘 20 本書輪流取樣。這些數字代表工作排序，不代表 2,761 題已正確或可上線。
+
+### 5b. `erase-handwriting-textin.py` — 專用試卷去手寫，仍不自動發布
+
+若原卷只有答案格或頁邊空白上的手寫，可使用 [TextIn 官方「自動擦除手寫文字」API](https://www.textin.com/document/text_auto_removal) 產生待複核衍生圖：
+
+```bash
+$env:TEXTIN_APP_ID = "..."
+$env:TEXTIN_SECRET_CODE = "..."
+python scripts/ingest/erase-handwriting-textin.py \
+  --work "<mistral-work>" --ids "question-id-1,question-id-2" \
+  --out "<repo 外>/handwriting-cleanup"
+```
+
+工具固定關閉 API 預設的切邊、方向校正、曲面矯正與二值化，只要求去手寫；逐題保存清理圖、來源／結果雜湊、TextIn request ID，以及把所有變動像素標紅的 QA 圖。輸出 `releaseAuthority:false`，在人工確認印刷公式與圖線完全沒被改、手寫全數清除前不得晉級。筆跡壓在數學符號或圖線上的題，原則上直接退件，不以生成式修圖猜回原題。
 
 ### 6. `prepare-stem-review.py` — 產生離線原卷審核頁
 

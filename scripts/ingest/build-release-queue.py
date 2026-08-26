@@ -175,12 +175,19 @@ def round_robin(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, 
     return output
 
 
-def read_exclusions(path: Path | None) -> set[str]:
+def read_exclusions(path: Path | None) -> tuple[set[str], set[str]]:
     if path is None or not path.is_file():
-        return set()
+        return set(), set()
     document = json.loads(path.read_text(encoding="utf-8"))
     rows = document.get("questions", []) if isinstance(document, dict) else []
-    return {str(row.get("id")) for row in rows if isinstance(row, dict) and row.get("id")}
+    books = document.get("books", []) if isinstance(document, dict) else []
+    question_ids = {str(row.get("id")) for row in rows
+                    if isinstance(row, dict) and row.get("id")}
+    book_ids = {
+        str(row.get("bookId") or row.get("id"))
+        for row in books if isinstance(row, dict) and (row.get("bookId") or row.get("id"))
+    }
+    return question_ids, book_ids
 
 
 def build(work: Path, catalog_path: Path, limit: int,
@@ -190,7 +197,7 @@ def build(work: Path, catalog_path: Path, limit: int,
     catalog = read_catalog(catalog_path)
     candidates: list[dict[str, Any]] = []
     excluded = Counter()
-    manual_exclusions = read_exclusions(exclusions_path)
+    manual_exclusions, held_books = read_exclusions(exclusions_path)
     source_questions = 0
     eligible_books = {book_id for book_id, book in catalog.items()
                       if book.get("kind") == "chapter" and book.get("eligibility") == "core"}
@@ -205,6 +212,9 @@ def build(work: Path, catalog_path: Path, limit: int,
         answers = {str(row.get("id")): row for row in pack.get("drillAnswers", [])}
         for question in pack.get("questions", []):
             source_questions += 1
+            if book_id in held_books:
+                excluded["manual-book-visual-review-hold"] += 1
+                continue
             if str(question.get("id")) in manual_exclusions:
                 excluded["manual-visual-review-reject"] += 1
                 continue
@@ -226,6 +236,7 @@ def build(work: Path, catalog_path: Path, limit: int,
         "eligibleAfterStructuralFilters": len(candidates),
         "selectedForThisBatch": len(selected),
         "manualExclusionsApplied": len(manual_exclusions),
+        "manualBooksOnHold": sorted(held_books),
         "excluded": dict(sorted(excluded.items())),
         "workflow": [
             "review original stem crop for completeness and answer/solution/handwriting leakage",

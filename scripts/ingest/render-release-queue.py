@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -36,11 +37,20 @@ def fit(image: Image.Image, width: int, max_height: int) -> Image.Image:
 
 def render(queue_path: Path, output: Path, per_sheet: int) -> dict:
     outside_repo(output)
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_bytes = queue_path.read_bytes()
+    queue = json.loads(queue_bytes.decode("utf-8"))
     if queue.get("kind") != "textbook-on-demand-release-review-queue":
         raise RenderError("Expected a textbook on-demand release review queue")
     work = Path(queue["workRoot"])
     output.mkdir(parents=True, exist_ok=True)
+    # A queue is regenerated as exclusions are discovered.  Never leave stale
+    # numbered sheets behind: a reviewer could otherwise approve questions
+    # that are no longer in the queue.
+    for stale in output.glob("review-*.jpg"):
+        stale.unlink()
+    listing = output / "review-sheets.json"
+    if listing.exists():
+        listing.unlink()
     sheets = []
     items = queue.get("items") or []
     for offset in range(0, len(items), per_sheet):
@@ -72,8 +82,12 @@ def render(queue_path: Path, output: Path, per_sheet: int) -> dict:
         path = output / f"review-{offset + 1:03d}-{offset + len(group):03d}.jpg"
         canvas.save(path, quality=90, optimize=True)
         sheets.append({"path": str(path), "questionIds": [item["id"] for item in group]})
-    listing = output / "review-sheets.json"
-    listing.write_text(json.dumps({"queue": str(queue_path.resolve()), "sheets": sheets},
+    listing.write_text(json.dumps({
+        "queue": str(queue_path.resolve()),
+        "queueSha256": hashlib.sha256(queue_bytes).hexdigest(),
+        "questionIds": [item["id"] for item in items],
+        "sheets": sheets,
+    },
                                   ensure_ascii=False, indent=1), encoding="utf-8")
     return {"items": len(items), "sheets": len(sheets), "listing": str(listing)}
 

@@ -7,8 +7,11 @@ printed evidence, and a printed page number being silently wrong.
 """
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,6 +32,9 @@ indexer = _load("index-pages")
 status = _load("ingest-status")
 review = _load("apply-review")
 release_queue = _load("build-release-queue")
+release_renderer = _load("render-release-queue")
+openai_release_audit = _load("review-release-openai")
+textin_eraser = _load("erase-handwriting-textin")
 
 WIDTH, HEIGHT = 1038, 1500
 
@@ -1280,6 +1286,93 @@ class OnDemandReleaseQueue(unittest.TestCase):
                              "figureCount": 0, "role": "chapter-end-medium"})
         selected = release_queue.round_robin(rows, 5)
         self.assertEqual([row["bookId"] for row in selected], ["a", "b", "c", "a", "b"])
+
+    def test_exclusions_can_hold_an_entire_contaminated_book(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "exclusions.json"
+            path.write_text(json.dumps({
+                "questions": [{"id": "q-bad"}],
+                "books": [{"bookId": "matha-114-logic-set", "reason": "filled answers"}],
+            }), encoding="utf-8")
+            questions, books = release_queue.read_exclusions(path)
+            self.assertEqual(questions, {"q-bad"})
+            self.assertEqual(books, {"matha-114-logic-set"})
+
+    def test_rerender_removes_stale_contact_sheets_and_binds_listing_to_queue(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "sheets"
+            output.mkdir()
+            stale = output / "review-001-003.jpg"
+            stale.write_bytes(b"old")
+            queue_path = root / "queue.json"
+            queue_path.write_text(json.dumps({
+                "kind": "textbook-on-demand-release-review-queue",
+                "workRoot": str(root),
+                "items": [],
+            }), encoding="utf-8")
+
+            result = release_renderer.render(queue_path, output, 3)
+
+            self.assertFalse(stale.exists())
+            listing = json.loads(Path(result["listing"]).read_text(encoding="utf-8"))
+            self.assertEqual(listing["questionIds"], [])
+            self.assertEqual(len(listing["queueSha256"]), 64)
+
+    def test_openai_audit_parser_requires_exact_ids_and_explicit_safety_fields(self):
+        item = {
+            "id": "q1", "fullStem": True, "allOptions": True,
+            "containsAnswer": False, "containsSolution": False,
+            "containsHandwriting": False, "containsAdjacentQuestion": False,
+            "answerText": "D", "optionCount": 5, "answerIndexes": [3], "notes": "",
+        }
+        parsed = openai_release_audit.validate_items(json.dumps({"items": [item]}), ["q1"])
+        self.assertEqual(parsed[0]["answerIndexes"], [3])
+        with self.assertRaises(openai_release_audit.AuditError):
+            openai_release_audit.validate_items(json.dumps({"items": [item]}), ["q2"])
+        unsafe = {**item}
+        unsafe.pop("containsHandwriting")
+        with self.assertRaises(openai_release_audit.AuditError):
+            openai_release_audit.validate_items(json.dumps({"items": [unsafe]}), ["q1"])
+
+    def test_textin_cleanup_diff_marks_changed_pixels_and_rejects_resizing(self):
+        from PIL import Image
+        original = Image.new("RGB", (10, 8), "white")
+        cleaned = original.copy()
+        cleaned.putpixel((4, 3), (0, 0, 0))
+        _, metrics = textin_eraser.diff_artifacts(original, cleaned)
+        self.assertEqual(metrics["changedPixels"], 1)
+        self.assertEqual(metrics["changedBbox"], [4, 3, 5, 4])
+        with self.assertRaises(textin_eraser.EraseError):
+            textin_eraser.diff_artifacts(original, Image.new("RGB", (9, 8), "white"))
+
+    def test_textin_request_only_erases_handwriting_and_keeps_credentials_in_headers(self):
+        import base64
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "stem.png"
+            source.write_bytes(b"source-image")
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = json.dumps({
+                "code": 200, "duration": 321,
+                "result": {"image": base64.b64encode(b"cleaned-image").decode("ascii")},
+            }).encode("utf-8")
+            response.headers = {"x-ti-request-id": "request-1"}
+
+            with mock.patch.object(textin_eraser.urllib.request, "urlopen", return_value=response) as call:
+                image, request_id, duration = textin_eraser.request_clean(
+                    source, "app-id-not-a-real-secret", "secret-not-real"
+                )
+
+            request = call.call_args.args[0]
+            self.assertEqual(image, b"cleaned-image")
+            self.assertEqual((request_id, duration), ("request-1", 321))
+            self.assertEqual(request.data, b"source-image")
+            self.assertEqual(request.get_header("X-ti-app-id"), "app-id-not-a-real-secret")
+            self.assertEqual(request.get_header("X-ti-secret-code"), "secret-not-real")
+            for setting in ("crop=0", "doc_direction=0", "dewarp=0",
+                            "binarization=0", "image_type=1"):
+                self.assertIn(setting, request.full_url)
 
 
 class RepoSafety(unittest.TestCase):
