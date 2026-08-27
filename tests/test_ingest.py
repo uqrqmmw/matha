@@ -8,6 +8,7 @@ printed evidence, and a printed page number being silently wrong.
 
 import importlib.util
 import hashlib
+import io
 import json
 import os
 import sys
@@ -1497,6 +1498,11 @@ class OnDemandReleaseQueue(unittest.TestCase):
         normalized, geometry = yescanner_eraser.normalize_geometry(original, scaled)
         self.assertEqual(normalized.size, original.size)
         self.assertEqual(geometry["method"], "uniform-resize-lanczos")
+        wide = Image.new("RGB", (2064, 88), "white")
+        quantized = Image.new("RGB", (3072, 130), "white")
+        normalized, geometry = yescanner_eraser.normalize_geometry(wide, quantized)
+        self.assertEqual(normalized.size, wide.size)
+        self.assertLess(geometry["aspectDrift"], geometry["allowedAspectDrift"])
         with self.assertRaises(yescanner_eraser.EraseError):
             yescanner_eraser.normalize_geometry(
                 original, Image.new("RGB", (1000, 700), "white")
@@ -1546,6 +1552,207 @@ class OnDemandReleaseQueue(unittest.TestCase):
                 client_id, secret = yescanner_eraser.load_credentials(path)
             self.assertEqual(client_id, "client-id-not-real")
             self.assertEqual(secret, "secret-value-must-not-appear")
+
+    def test_yescanner_discovers_all_core_chapter_stems_without_other_books(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            work = root / "work"
+            catalog = root / "catalog.js"
+            catalog.write_text(
+                "\n".join([
+                    "{ id:'book-b', title:'B', kind:'chapter', eligibility:'core' },",
+                    "{ id:'book-a', title:'A', kind:'chapter', eligibility:'core' },",
+                    "{ id:'review', title:'R', kind:'comprehensive-review', eligibility:'core' },",
+                ]),
+                encoding="utf-8",
+            )
+            for book_id, question_ids in (("book-a", ("q2", "q1")), ("book-b", ("q3",))):
+                for question_id in question_ids:
+                    path = work / book_id / "crops" / question_id / "stem.png"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"png")
+            ids = yescanner_eraser.discover_core_chapter_stems(work, catalog)
+            self.assertEqual(ids, ["q1", "q2", "q3"])
+
+    def test_yescanner_retries_only_transient_provider_errors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "stem.png"
+            source.write_bytes(b"source")
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean",
+                side_effect=[yescanner_eraser.EraseError("YesScanner HTTP 429: busy"),
+                             (b"cleaned", {"requestId": "ok"})],
+            ) as request, mock.patch.object(yescanner_eraser.time, "sleep") as sleep:
+                image, metadata = yescanner_eraser.request_clean_with_retry(
+                    source, "client", "secret", retries=2
+                )
+            self.assertEqual(image, b"cleaned")
+            self.assertEqual(metadata["requestId"], "ok")
+            self.assertEqual(request.call_count, 2)
+            sleep.assert_called_once()
+
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean",
+                side_effect=yescanner_eraser.EraseError("invalid geometry"),
+            ) as request:
+                with self.assertRaises(yescanner_eraser.EraseError):
+                    yescanner_eraser.request_clean_with_retry(
+                        source, "client", "secret", retries=2
+                    )
+            self.assertEqual(request.call_count, 1)
+
+    def test_yescanner_full_run_persists_and_resumes_without_rebilling(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            work = root / "work"
+            output = root / "cleaned"
+            question_ids = ["book-p001-q1", "book-p001-q2"]
+            for question_id in question_ids:
+                source = work / "book" / "crops" / question_id / "stem.png"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (40, 30), "white").save(source)
+
+            cleaned = io.BytesIO()
+            Image.new("RGB", (40, 30), "white").save(cleaned, format="PNG")
+            provider_result = (cleaned.getvalue(), {"requestId": "paid-once"})
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean_with_retry",
+                return_value=provider_result,
+            ) as request:
+                first = yescanner_eraser.erase(
+                    work,
+                    question_ids,
+                    output,
+                    "client",
+                    "secret",
+                    review_every=1,
+                )
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(first["progress"], {
+                "processed": 2, "successful": 2, "failed": 0, "pending": 0,
+            })
+            self.assertTrue((output / "yescanner-handwriting-cleanup.json").is_file())
+            self.assertTrue((output / "review.html").is_file())
+
+            # A later one-item selection must not discard the global paid
+            # artifact cache needed by another resume window.
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean_with_retry",
+                side_effect=AssertionError("resume must not call the paid provider"),
+            ) as request:
+                subset = yescanner_eraser.erase(
+                    work,
+                    [question_ids[1]],
+                    output,
+                    "client",
+                    "secret",
+                    review_every=1,
+                )
+            request.assert_not_called()
+            self.assertEqual(subset["progress"]["successful"], 1)
+            self.assertEqual(len(subset["cacheItems"]), 2)
+
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean_with_retry",
+                side_effect=AssertionError("global cache must survive selection changes"),
+            ) as request:
+                resumed = yescanner_eraser.erase(
+                    work,
+                    question_ids,
+                    output,
+                    "client",
+                    "secret",
+                    review_every=1,
+                )
+            request.assert_not_called()
+            self.assertEqual(resumed["progress"]["successful"], 2)
+            self.assertFalse(resumed["stoppedEarly"])
+
+    def test_yescanner_full_run_isolates_one_item_failure(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            work = root / "work"
+            output = root / "cleaned"
+            question_ids = ["book-p001-q1", "book-p001-q2"]
+            for question_id in question_ids:
+                source = work / "book" / "crops" / question_id / "stem.png"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (40, 30), "white").save(source)
+
+            cleaned = io.BytesIO()
+            Image.new("RGB", (40, 30), "white").save(cleaned, format="PNG")
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean_with_retry",
+                side_effect=[
+                    yescanner_eraser.EraseError("invalid first crop"),
+                    (cleaned.getvalue(), {"requestId": "second-succeeded"}),
+                ],
+            ) as request:
+                result = yescanner_eraser.erase(
+                    work,
+                    question_ids,
+                    output,
+                    "client",
+                    "secret",
+                    max_consecutive_errors=2,
+                    review_every=1,
+                )
+            self.assertEqual(request.call_count, 2)
+            self.assertFalse(result["stoppedEarly"])
+            self.assertEqual([item["id"] for item in result["items"]], [question_ids[1]])
+            self.assertEqual([item["id"] for item in result["failures"]], [question_ids[0]])
+            self.assertEqual(result["progress"], {
+                "processed": 2, "successful": 1, "failed": 1, "pending": 0,
+            })
+
+    def test_yescanner_recovers_orphaned_pixels_without_rebilling(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            work = root / "work"
+            output = root / "cleaned"
+            question_id = "book-p001-q1"
+            source = work / "book" / "crops" / question_id / "stem.png"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (40, 30), "white").save(source)
+            cleaned = io.BytesIO()
+            Image.new("RGB", (40, 30), "white").save(cleaned, format="PNG")
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean_with_retry",
+                return_value=(cleaned.getvalue(), {"requestId": "paid"}),
+            ):
+                yescanner_eraser.erase(
+                    work, [question_id], output, "client", "secret", review_every=1
+                )
+            (output / "yescanner-handwriting-cleanup.json").unlink()
+            (output / question_id / "item-record.json").unlink()
+            (output / question_id / "provider-record.json").unlink()
+
+            with mock.patch.object(
+                yescanner_eraser,
+                "request_clean_with_retry",
+                side_effect=AssertionError("pixel-verified artifacts must be recovered"),
+            ) as request:
+                recovered = yescanner_eraser.erase(
+                    work, [question_id], output, "client", "secret", review_every=1
+                )
+            request.assert_not_called()
+            self.assertEqual(
+                recovered["items"][0]["provider"]["recoveredFrom"],
+                "pixel-verified-local-artifacts",
+            )
 
 
 class RepoSafety(unittest.TestCase):
