@@ -105,13 +105,17 @@ def question_region(question: dict[str, Any], width: int, height: int) -> tuple[
         return None, "empty-region"
     top = min(box[1] for box in boxes) - TOP_PAD
     bottom = max(box[3] for box in boxes) + BOTTOM_PAD
-    # The ink profile may extend the bottom past an OCR baseline (for example a
-    # fraction denominator), but it must never shrink a union that already
-    # proves more content exists.  It also must not move the top above the first
-    # stem/option/figure box: noisy ink there is normally the preceding row.
+    # Mistral sometimes gives one list block a bbox hundreds of pixels tall,
+    # covering blank paper or pencil work below the printed question.  The
+    # printed-ink profile is therefore authoritative for text.  Independently
+    # detected figures are the only regions allowed to extend beneath it.
+    # This keeps diagrams while excluding recognised handwriting.
     content = question["regions"].get("contentBox")
     if content:
-        bottom = max(bottom, content[3] + 2)
+        bottom = content[3] + 2
+        figures = question["regions"].get("figures") or []
+        if figures:
+            bottom = max(bottom, max(box[3] for box in figures) + 2)
     boundary = question["regions"]["answerBoundaryY"]
     if boundary is not None:
         if top >= boundary - ANSWER_GAP:

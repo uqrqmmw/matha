@@ -990,9 +990,16 @@ class CropSeparation(unittest.TestCase):
         self.assertIsNone(refusal)
         self.assertGreaterEqual(region[3], 400)
 
-    def test_content_box_cannot_shrink_a_proven_complete_stem(self):
+    def test_printed_ink_caps_an_ocr_box_that_absorbed_handwriting(self):
         question = self.question([80, 120, 900, 400])
         question["regions"]["contentBox"] = [0, 130, WIDTH, 180]
+        region, refusal = crops.question_region(question, WIDTH, HEIGHT)
+        self.assertIsNone(refusal)
+        self.assertLess(region[3], 200)
+
+    def test_a_figure_can_extend_below_the_printed_text_profile(self):
+        question = self.question([80, 120, 900, 180], figures=[[100, 170, 500, 400]])
+        question["regions"]["contentBox"] = [0, 130, WIDTH, 190]
         region, refusal = crops.question_region(question, WIDTH, HEIGHT)
         self.assertIsNone(refusal)
         self.assertGreaterEqual(region[3], 400)

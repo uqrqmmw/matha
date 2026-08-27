@@ -74,6 +74,29 @@ class CropAuditTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["duplicateAnswerGroups"], 1)
 
+    def test_unmanifested_crop_file_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            book = self.make_book(Path(tmp))
+            Image.new("RGB", (70, 40), "white").save(
+                book / "crops.hybrid" / "q1" / "solution.png"
+            )
+            result = audit_module.audit(book, "hybrid")
+        self.assertFalse(result["passed"])
+        self.assertIn("crop-file-set-mismatch", str(result["errors"]))
+
+    def test_manifested_solution_is_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            book = self.make_book(Path(tmp))
+            folder = book / "crops.hybrid" / "q1"
+            Image.new("RGB", (70, 40), "white").save(folder / "solution.png")
+            manifest_path = book / "crops-manifest.hybrid.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["crops"]["q1"]["solution"] = True
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            result = audit_module.audit(book, "hybrid")
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["solutionFiles"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

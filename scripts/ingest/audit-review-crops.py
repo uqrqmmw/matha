@@ -77,7 +77,7 @@ def audit(book_dir: Path, variant: str | None = None) -> dict[str, Any]:
         })
 
     hashes: dict[str, dict[str, list[str]]] = {
-        kind: collections.defaultdict(list) for kind in ("stem", "answer", "figure")
+        kind: collections.defaultdict(list) for kind in ("stem", "answer", "solution", "figure")
     }
     minimums = {kind: [sys.maxsize, sys.maxsize] for kind in hashes}
     counts = {kind: 0 for kind in hashes}
@@ -96,6 +96,18 @@ def audit(book_dir: Path, variant: str | None = None) -> dict[str, Any]:
         )
         if row.get("answer"):
             expected.append(("answer", folder / "answer.png"))
+        if row.get("solution"):
+            expected.append(("solution", folder / "solution.png"))
+
+        expected_names = {path.name for _, path in expected}
+        actual_names = {path.name for path in folder.iterdir() if path.is_file()} if folder.is_dir() else set()
+        if actual_names != expected_names:
+            errors.append({question_id: {
+                "crop-file-set-mismatch": {
+                    "missing": sorted(expected_names - actual_names),
+                    "stale": sorted(actual_names - expected_names),
+                }
+            }})
 
         for kind, path in expected:
             if not path.is_file() or path.stat().st_size < 100:
@@ -141,6 +153,7 @@ def audit(book_dir: Path, variant: str | None = None) -> dict[str, Any]:
         "cropDirs": len(actual_dirs),
         "stemFiles": counts["stem"],
         "answerFiles": counts["answer"],
+        "solutionFiles": counts["solution"],
         "figureFiles": counts["figure"],
         "minDimensions": minimums,
         "duplicateStemGroups": len(duplicate_stems),
