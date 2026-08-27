@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0827a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0828a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -9020,15 +9020,22 @@ function paperLearningSummaryCard() {
 function textbookLibraryCard() {
   const library = typeof TEXTBOOK_LIBRARY === 'object' && TEXTBOOK_LIBRARY ? TEXTBOOK_LIBRARY : { books:[], supplemental:[] };
   const books = Array.isArray(library.books) ? library.books : [];
-  const ready = books.filter((book) => book.ingestion === 'released');
-  const pending = books.filter((book) => book.ingestion !== 'released');
   const core = books.filter((book) => book.eligibility === 'core');
   const pages = books.reduce((sum, book) => sum + (Number(book.pages) || 0), 0);
   const supplementalPages = (library.supplemental || []).reduce((sum, book) => sum + (Number(book.pages) || 0), 0);
+  const releasedItems = Object.values((typeof CONTENT === 'object' && CONTENT && CONTENT.packs) || {})
+    .filter((pack) => pack && pack.curated && pack.corpusGeneration === CURATED_TRUST.generation)
+    .flatMap((pack) => Array.isArray(pack.items) ? pack.items : []);
+  const safeQuestions = releasedItems.length;
+  const releasedBooks = new Set(releasedItems.map((q) => q && q.bookId).filter(Boolean));
+  const pendingBooks = Math.max(0, books.length - releasedBooks.size);
+  const releaseLine = safeQuestions
+    ? `目前已有 ${safeQuestions} 題通過原卷、答案、圖形與數學校驗，來自 ${releasedBooks.size} 本教材；其餘題目仍維持隔離。`
+    : '目前尚無題目通過完整發布門檻；所有待複核內容仍維持隔離。';
   return `<section class="card textbook-library-summary"><span class="eyebrow">私有教材主庫</span><h2>25 份教材、6,720 頁已完成 OCR 清冊</h2>
-    <div class="paper-level-summary"><span>已可安全出題 <b>${ready.length}</b></span><span>逐題原卷校驗中 <b>${pending.length}</b></span><span>數 A 核心 <b>${core.length}</b></span><span>主庫頁數 <b>${pages}</b></span><span>含週攻略 <b>${pages + supplementalPages}</b></span></div>
+    <div class="paper-level-summary"><span>已可安全出題 <b>${safeQuestions} 題</b></span><span>已開始發布 <b>${releasedBooks.size} 本</b></span><span>逐題原卷校驗中 <b>${pendingBooks} 本</b></span><span>數 A 核心 <b>${core.length}</b></span><span>主庫頁數 <b>${pages}</b></span><span>含週攻略 <b>${pages + supplementalPages}</b></span></div>
     <p>新版只把 OCR 當搜尋索引；你實際看到的題目必須是原 PDF 裁圖，答案、圖形與頁碼也要逐題核對後才啟用。</p>
-    <p class="dim">舊辨識題庫已隔離。目前安全題數刻意顯示為 0；《週攻略數學 A》另列補充題源，數 B 讀寫教材不進數 A 正式校準。</p></section>`;
+    <p class="dim">舊辨識題庫已隔離。${releaseLine}《週攻略數學 A》另列補充題源，數 B 讀寫教材不進數 A 正式校準。</p></section>`;
 }
 function learningWinsCard() {
   const entries = (S.corrections || []).filter(correctionBatchInCurrentBaseline).flatMap((batch) => batch.entries || []);

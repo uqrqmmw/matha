@@ -28,9 +28,26 @@ test('同版型私有教材清冊固定為 24 本，週攻略另列補充題源'
   assert.deepEqual(result.supplemental, [{ title:'週攻略數學 A', sha:'ebf646b89f10f3fac4458289985dd1c50b575f06dfb5391d4d2fb749d61d4efe' }]);
   assert.equal(result.pages, 6210);
   assert.match(result.html, /25 份教材、6,720 頁已完成 OCR 清冊/);
-  assert.match(result.html, /逐題原卷校驗中 <b>24<\/b>/);
+  assert.match(result.html, /逐題原卷校驗中 <b>24 本<\/b>/);
   assert.match(result.html, /含週攻略 <b>6720<\/b>/);
-  assert.match(result.html, /已可安全出題 <b>0<\/b>/);
+  assert.match(result.html, /已可安全出題 <b>0 題<\/b>/);
+  assert.match(result.html, /所有待複核內容仍維持隔離/);
+});
+
+test('私有教材卡顯示實際已驗證題數與來源教材數，不再寫死為零', () => {
+  const { run } = loadApp();
+  const html = run(`(() => {
+    CONTENT.packs = {
+      a:{ curated:true, corpusGeneration:CURATED_TRUST.generation, items:[{bookId:'book-a'},{bookId:'book-a'}] },
+      b:{ curated:true, corpusGeneration:CURATED_TRUST.generation, items:[{bookId:'book-b'}] },
+      stale:{ curated:true, corpusGeneration:'legacy', items:[{bookId:'book-c'}] },
+    };
+    return textbookLibraryCard();
+  })()`);
+  assert.match(html, /已可安全出題 <b>3 題<\/b>/);
+  assert.match(html, /已開始發布 <b>2 本<\/b>/);
+  assert.match(html, /逐題原卷校驗中 <b>22 本<\/b>/);
+  assert.match(html, /目前已有 3 題通過原卷、答案、圖形與數學校驗，來自 2 本教材/);
 });
 
 test('答案正規化支援分數、多根不拘順序，但不交換座標', () => {
