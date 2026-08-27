@@ -778,7 +778,13 @@ def collect_answer_items(page: dict[str, Any], events: list[dict[str, Any]],
     items = [event for event in events if event["kind"] == "answer-item"]
     out: list[dict[str, Any]] = []
     for index, item in enumerate(items):
-        end = items[index + 1]["y"] if index + 1 < len(items) else footer_y
+        boundaries = [footer_y]
+        if index + 1 < len(items):
+            boundaries.append(items[index + 1]["y"])
+        # A new printed question-type heading ends the preceding solution even
+        # when no answer item follows it on the same page.
+        boundaries.extend(y for y, _, _ in context.get("typeHeaders", []) if y > item["y"])
+        end = min(boundaries)
         block = [line for line in page["ocr"] if item["y"] - 4 <= line["bbox"][1] < end]
         question_type, type_evidence = context["carriedType"]
         for header_y, name, printed in context["typeHeaders"]:

@@ -905,6 +905,23 @@ class PageClassification(unittest.TestCase):
         records, _ = bookmap.segment_questions(sample, events, context(section="drill-answers"))
         self.assertEqual(records, [])
 
+    def test_a_new_type_header_ends_the_previous_answer_solution(self):
+        sample = page(80, [
+            line("2.答案：(B)", 48, 566, 178, 591),
+            line("解析：新平均與原平均相同", 48, 595, 811, 622),
+            line("二、多重選擇題", 48, 873, 212, 898),
+            line("1.答案：(A)(B)(D)", 48, 904, 265, 930),
+        ])
+        headers = bookmap.read_type_headers(sample)
+        events = bookmap.page_events(sample, True)
+        items = bookmap.collect_answer_items(
+            sample,
+            events,
+            context(section="drill-answers", type_headers=headers),
+        )
+        first = next(item for item in items if item["drillNumber"] == 2)
+        self.assertLess(first["region"][3], 873)
+
     def test_divider_page_is_not_mistaken_for_content(self):
         sample = page(170, [
             line("There is no royal road to Geometry.", 160, 300),
@@ -972,6 +989,30 @@ class CropSeparation(unittest.TestCase):
         region, refusal = crops.question_region(question, WIDTH, HEIGHT)
         self.assertIsNone(refusal)
         self.assertGreaterEqual(region[3], 400)
+
+    def test_content_box_cannot_shrink_a_proven_complete_stem(self):
+        question = self.question([80, 120, 900, 400])
+        question["regions"]["contentBox"] = [0, 130, WIDTH, 180]
+        region, refusal = crops.question_region(question, WIDTH, HEIGHT)
+        self.assertIsNone(refusal)
+        self.assertGreaterEqual(region[3], 400)
+
+    def test_question_top_does_not_absorb_the_preceding_row(self):
+        question = self.question([80, 120, 900, 400])
+        question["regions"]["contentBox"] = [0, 100, WIDTH, 405]
+        region, refusal = crops.question_region(question, WIDTH, HEIGHT)
+        self.assertIsNone(refusal)
+        self.assertGreaterEqual(region[1], 118)
+
+    def test_official_answer_crop_is_only_the_answer_key_row(self):
+        indexed = page(5, [
+            line("2.答案：(B)", 48, 566, 178, 591),
+            line("解析：新平均與原平均相同", 48, 595, 811, 622),
+            line("二、多重選擇題", 48, 873, 212, 898),
+        ])
+        region = crops.official_answer_region([48, 566, 923, 898], indexed, WIDTH, HEIGHT)
+        self.assertLess(region[3], 595)
+        self.assertLess(region[2], 220)
 
     def test_crop_output_inside_the_repository_is_refused(self):
         with self.assertRaises(crops.CropError):

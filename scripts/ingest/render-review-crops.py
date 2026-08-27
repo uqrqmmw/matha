@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -38,11 +39,19 @@ import fitz
 SCHEMA_VERSION = 11
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CROP_DPI = 300
-PAD = 8          # review-dpi pixels of breathing room around a question band
+# OCR/figure boxes already include the printed glyphs.  Eight pixels above the
+# first box was enough to pull the tail of the preceding row into 9/42 pilot
+# crops, so vertical padding is asymmetric: a tiny guard above, more room below
+# for fraction denominators and radicals.
+TOP_PAD = 2
+BOTTOM_PAD = 8
 ANSWER_GAP = 4   # review-dpi pixels kept clear of the answer boundary
 # Figure boxes arrive already grown to their labels and clamped off the option
 # rows, so padding them again only drags neighbouring text back into the crop.
 FIGURE_PAD = 0
+ANSWER_PAD_X = 8
+ANSWER_PAD_Y = 3
+ANSWER_MARKER_RE = re.compile(r"(?:答案|答|案)\s*[:：]")
 
 
 class CropError(RuntimeError):
@@ -94,15 +103,15 @@ def question_region(question: dict[str, Any], width: int, height: int) -> tuple[
                              *question["regions"]["figures"]] if box]
     if not boxes:
         return None, "empty-region"
-    top = min(box[1] for box in boxes) - PAD
-    bottom = max(box[3] for box in boxes) + PAD
-    # The ink profile is the authority on where content really starts and stops:
-    # OCR boxes clip a fraction's denominator off the bottom and know nothing
-    # about the blank paper and page footer that follow.
+    top = min(box[1] for box in boxes) - TOP_PAD
+    bottom = max(box[3] for box in boxes) + BOTTOM_PAD
+    # The ink profile may extend the bottom past an OCR baseline (for example a
+    # fraction denominator), but it must never shrink a union that already
+    # proves more content exists.  It also must not move the top above the first
+    # stem/option/figure box: noisy ink there is normally the preceding row.
     content = question["regions"].get("contentBox")
     if content:
-        top = min(top, content[1] - 2)
-        bottom = content[3] + 2
+        bottom = max(bottom, content[3] + 2)
     boundary = question["regions"]["answerBoundaryY"]
     if boundary is not None:
         if top >= boundary - ANSWER_GAP:
@@ -111,6 +120,34 @@ def question_region(question: dict[str, Any], width: int, height: int) -> tuple[
     if bottom <= top:
         return None, "crop-refused-crosses-answer-boundary"
     return clamp([0, int(top), width, int(bottom)], width, height), None
+
+
+def official_answer_region(raw: list[int], indexed_page: dict[str, Any],
+                           width: int, height: int) -> list[int]:
+    """Return the printed answer-key row, not the whole worked solution.
+
+    ``answerRef.region`` intentionally spans from ``1.答案`` through the
+    solution.  That was useful as a source record but made the review crop
+    absorb the next section heading or a neighbouring diagram.  The official
+    key is the first OCR block carrying the answer marker.  OCR is used only to
+    locate that row; the pixels still come directly from the source PDF.
+    """
+    overlapping = []
+    for line in indexed_page.get("ocr") or []:
+        box = line.get("bbox")
+        if not box or len(box) != 4:
+            continue
+        if box[2] <= raw[0] or box[0] >= raw[2] or box[3] <= raw[1] or box[1] >= raw[3]:
+            continue
+        overlapping.append(line)
+    overlapping.sort(key=lambda line: (line["bbox"][1], line["bbox"][0]))
+    marked = [line for line in overlapping if ANSWER_MARKER_RE.search(str(line.get("text") or ""))]
+    chosen = marked[0] if marked else (overlapping[0] if overlapping else None)
+    if not chosen:
+        return clamp(raw, width, height)
+    box = chosen["bbox"]
+    return clamp([box[0] - ANSWER_PAD_X, box[1] - ANSWER_PAD_Y,
+                  box[2] + ANSWER_PAD_X, box[3] + ANSWER_PAD_Y], width, height)
 
 
 def render(work_root: Path, book_id: str, pdf: Path, limit: int | None,
@@ -178,9 +215,29 @@ def render(work_root: Path, book_id: str, pdf: Path, limit: int | None,
             answer_crops += 1
         elif answer_ref and answer_ref.get("region"):
             answer_page = document[answer_ref["pdfPage"] - 1]
-            answer_page.get_pixmap(dpi=CROP_DPI, clip=to_pdf_rect(answer_ref["region"], review_dpi)).save(
+            answer_indexed = page_index.get(answer_ref["pdfPage"])
+            if answer_indexed is None:
+                entry["answerRefused"] = "answer-page-index-missing"
+                continue
+            answer_width, answer_height = answer_indexed["width"], answer_indexed["height"]
+            key_region = official_answer_region(
+                answer_ref["region"], answer_indexed, answer_width, answer_height)
+            answer_page.get_pixmap(
+                dpi=CROP_DPI,
+                clip=to_pdf_rect(key_region, answer_indexed["dpi"]),
+            ).save(
                 str(out_dir / "answer.png"))
+            # Preserve the complete printed solution as a separate reviewer
+            # asset; the delayed-answer UI never has to expose it early.
+            solution_region = clamp(answer_ref["region"], answer_width, answer_height)
+            answer_page.get_pixmap(
+                dpi=CROP_DPI,
+                clip=to_pdf_rect(solution_region, answer_indexed["dpi"]),
+            ).save(str(out_dir / "solution.png"))
             entry["answer"] = True
+            entry["answerRegion"] = key_region
+            entry["solution"] = True
+            entry["solutionRegion"] = solution_region
             answer_crops += 1
         elif question.get("solutionRegion") and question.get("solutionPdfPage"):
             # The 解答 tag opens the next page; that page's lead-in is this
@@ -251,7 +308,10 @@ def render_review_html(book_id: str, questions: list[dict[str, Any]],
             or (question.get("solutionRegion") and question.get("solutionPdfPage"))
         ):
             parts.append("<details class='ans'><summary>展開答案／詳解（複核用）</summary>"
-                         f"<img src='{folder}/answer.png' alt='答案與詳解'></details>")
+                         f"<img src='{folder}/answer.png' alt='官方答案'>")
+            if entry.get("solution"):
+                parts.append(f"<img src='{folder}/solution.png' alt='官方詳解'>")
+            parts.append("</details>")
         parts.append("</article>")
     return "\n".join(parts) + "\n"
 
