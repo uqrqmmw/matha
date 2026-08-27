@@ -206,6 +206,60 @@ class HandwritingRecropTests(unittest.TestCase):
             }])
             self.assertFalse(record["releaseAuthority"])
 
+    def test_failed_full_page_can_be_rescued_by_hash_bound_question_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work, queue, manifest, _ = self.fixture(root)
+            manifest.write_text('{"items": []}', encoding="utf-8")
+            source = work / "book" / "crops" / "q1" / "stem.png"
+            fallback_image = root / "fallback-q1.png"
+            Image.new("RGB", (200, 100), "white").save(fallback_image)
+            fallback = root / "fallback.json"
+            fallback.write_text(json.dumps({"items": [{
+                "id": "q1",
+                "sourceSha256": sha(source),
+                "cleaned": str(fallback_image),
+                "cleanedSha256": sha(fallback_image),
+            }]}), encoding="utf-8")
+            result = recrop_pages.recrop(
+                work,
+                queue,
+                manifest,
+                root / "out",
+                fallback_cleanup_manifest=fallback,
+            )
+            record = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+            self.assertEqual(record["rescuedPageCount"], 1)
+            self.assertEqual(record["fallbackQuestionCount"], 1)
+            self.assertEqual(record["quarantinedPageCount"], 0)
+            self.assertEqual(record["items"][0]["cleanupMode"], "question-fallback")
+            self.assertEqual(record["items"][0]["cleanedSha256"], sha(
+                Path(record["items"][0]["cleaned"])
+            ))
+
+    def test_fallback_cleanup_with_wrong_source_hash_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work, queue, manifest, _ = self.fixture(root)
+            manifest.write_text('{"items": []}', encoding="utf-8")
+            fallback_image = root / "fallback-q1.png"
+            Image.new("RGB", (200, 100), "white").save(fallback_image)
+            fallback = root / "fallback.json"
+            fallback.write_text(json.dumps({"items": [{
+                "id": "q1",
+                "sourceSha256": "0" * 64,
+                "cleaned": str(fallback_image),
+                "cleanedSha256": sha(fallback_image),
+            }]}), encoding="utf-8")
+            with self.assertRaises(recrop_pages.RecropError):
+                recrop_pages.recrop(
+                    work,
+                    queue,
+                    manifest,
+                    root / "out",
+                    fallback_cleanup_manifest=fallback,
+                )
+
     def test_wrong_cleanup_source_hash_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
