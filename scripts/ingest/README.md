@@ -170,6 +170,43 @@ python scripts/ingest/render-release-queue.py \
 
 輸出**只是視覺複核工作佇列，不是題庫**。已發現即使 `clean-candidate` 仍可能有前手圈出的 `26`、已填入的 `1/4` 或錯配答案裁圖，所以產生器另做答案洩漏初篩，並讀取 repo 外的 `release-queue/review-exclusions.json` 保存人工退件。每一題仍必須走 `apply-review` 與第二位獨立 stem reviewer；這些檢查沒完成前 `studentReady` 永遠是 `false`。
 
+完成逐題像素複核後，用 `materialize-batch-review.py` 將雜湊綁定的 queue、獨立模型 audit、以及涵蓋全部題目的 primary review 合併成各書 qpack：
+
+```powershell
+python scripts/ingest/materialize-batch-review.py `
+  --queue "<work>/release-queue/batch-001.json" `
+  --audit "<work>/release-queue/batch-001-openai-audit.json" `
+  --primary-review "<work>/release-queue/batch-001-primary-review.json" `
+  --work "<work>" --output "<repo 外>/batch-001-materialized"
+```
+
+此步仍不具發布權：任何一份檔案換版、遺漏題目、選擇題選項不全、答案索引不合法，或 primary approval 與獨立 audit 的不安全判定衝突，都會整批失敗。輸出的 qpack 仍需走 `prepare-stem-review.py`／`promote-reviewed-stems.py`，最後還要真人發布簽核。
+
+同一批可再用 `promote-audited-batch.py` 逐書執行原 PDF 雜湊、頁碼、裁切座標與像素完全比對，並產生帶 verified stem assets 的合併候選來源：
+
+```powershell
+python scripts/ingest/promote-audited-batch.py `
+  --materialized "<repo 外>/batch-001-materialized" `
+  --audit "<work>/release-queue/batch-001-openai-audit.json" `
+  --work "<work>" --pdf-root "<原始 PDF 目錄>" `
+  --output "<repo 外>/batch-001-promoted"
+```
+
+此輸出的 `mathematicalCorrectnessVerified` 固定為 `false`、`releaseApprovedBy` 固定為空；它只證明「顯示的題圖確實是指定原 PDF 的完整像素」以及「答案已對照官方答案裁圖」，不能冒充獨立重算或真人發布同意。
+
+`verify-math-openai.py` 固定使用 `gpt-5.5` 做兩階段驗算：第一階段只看原題盲解，第二階段才看到已保存的盲解與官方答案圖並判斷等價。它每次呼叫後都原子保存、可續跑；任何 `disagree`、`unclear` 或不可讀題都不會產生 math-verified source：
+
+```powershell
+python scripts/ingest/verify-math-openai.py `
+  --source "<promoted>/combined-source-candidate.json" --work "<work>" `
+  --out "<repo 外>/math-verification.json" `
+  --verified-source "<repo 外>/source-math-verified.json"
+```
+
+第一次盲解若與官方答案分歧，程式會只針對分歧題再做一輪全新的盲解與比較；第二次仍無法一致的題會自動排除。產生的 math-verified source 只包含至少有一輪「盲解答案與官方答案完整等價」的題。即使如此，此步仍固定 `releaseAuthority=false`，不會填入 `releaseApprovedBy`；真人只需對最後候選批次做一次發布簽核，不必重新相信 OCR。
+
+收到該批次的明確真人同意後，才可執行 `sign-private-release.py`；AI／agent 名稱會被拒絕，既有簽核檔也不可覆寫。簽核後再用 `assemble-private-release.py` 產生上傳包；它會重新跑完整 private-bank release checks、核對每張題圖雜湊，並把 manifest 放在前端實際讀取的 `manifest-mistral-ocr4-verified-v1.json`，不會誤傳未被前端使用的別名。
+
 2026-08-27 首次實跑：7,055 題中 2,761 題進入「可安排視覺複核」的候選池，另有 10 題被答案洩漏規則擋下、10 題由接觸表目視退件；抽樣污染密集的「集合與邏輯」266 題整本暫停。第一批 42 題改由其餘 20 本書輪流取樣。這些數字代表工作排序，不代表 2,761 題已正確或可上線。
 
 ### 5b. `erase-handwriting-yescanner.py` — 專用試卷去手寫，仍不自動發布

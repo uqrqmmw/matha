@@ -38,6 +38,11 @@ release_renderer = _load("render-release-queue")
 openai_release_audit = _load("review-release-openai")
 textin_eraser = _load("erase-handwriting-textin")
 yescanner_eraser = _load("erase-handwriting-yescanner")
+batch_review = _load("materialize-batch-review")
+audited_batch = _load("promote-audited-batch")
+math_verifier = _load("verify-math-openai")
+release_signoff = _load("sign-private-release")
+release_bundle = _load("assemble-private-release")
 
 WIDTH, HEIGHT = 1038, 1500
 
@@ -1500,6 +1505,144 @@ class RepoSafety(unittest.TestCase):
         with self.assertRaises(bookmap.MapError):
             bookmap.ensure_outside_repo(REPO_ROOT / "private-content")
         bookmap.ensure_outside_repo(Path(REPO_ROOT.anchor) / "somewhere-else")
+
+
+class BatchReviewMaterialization(unittest.TestCase):
+    @staticmethod
+    def queue():
+        return {
+            "kind": "textbook-on-demand-release-review-queue",
+            "items": [{
+                "id": "q-1", "bookId": "matha-114-line-inequality",
+                "suggestedType": "single",
+            }],
+        }
+
+    @staticmethod
+    def audit(**overrides):
+        row = {
+            "id": "q-1", "fullStem": True, "allOptions": True,
+            "containsAnswer": False, "containsSolution": False,
+            "containsHandwriting": False, "containsAdjacentQuestion": False,
+            "answerText": "(D)", "optionCount": 5, "answerIndexes": [3],
+        }
+        row.update(overrides)
+        return {
+            "kind": "openai-independent-visual-audit", "releaseAuthority": False,
+            "sheets": [{"items": [row]}],
+        }
+
+    @staticmethod
+    def primary(decision="approve", **extra):
+        row = {"id": "q-1", "decision": decision, **extra}
+        if decision == "approve":
+            row.setdefault("topic", "line")
+        else:
+            row.setdefault("reason", "needs a tighter crop")
+        return {
+            "kind": "matha-batch-primary-pixel-review", "releaseAuthority": False,
+            "reviewedBy": "primary-pixel-reviewer", "reviewedAt": "2026-08-28T12:00:00+08:00",
+            "items": [row],
+        }
+
+    def test_safe_choice_is_materialized_without_ocr_question_text(self):
+        books, summary = batch_review.compile_decisions(
+            self.queue(), self.audit(), self.primary())
+        row = books["matha-114-line-inequality"][0]
+        self.assertTrue(row["imageFirst"])
+        self.assertEqual(row["q"], "")
+        self.assertEqual(row["optionCount"], 5)
+        self.assertEqual(row["ans"], [3])
+        self.assertEqual(summary["approved"], 1)
+
+    def test_primary_approval_cannot_override_adjacent_content(self):
+        with self.assertRaises(batch_review.BatchReviewError):
+            batch_review.compile_decisions(
+                self.queue(), self.audit(containsAdjacentQuestion=True), self.primary())
+
+    def test_every_queue_item_requires_an_explicit_primary_decision(self):
+        primary = self.primary()
+        primary["items"] = []
+        with self.assertRaises(batch_review.BatchReviewError):
+            batch_review.compile_decisions(self.queue(), self.audit(), primary)
+
+    def test_repair_item_is_recorded_but_not_materialized(self):
+        books, summary = batch_review.compile_decisions(
+            self.queue(), self.audit(), self.primary("repair"))
+        self.assertEqual(books, {})
+        self.assertEqual(summary["notApproved"], 1)
+        self.assertEqual(summary["notApprovedItems"][0]["decision"], "repair")
+
+
+class AuditedBatchPromotion(unittest.TestCase):
+    def test_completed_review_keeps_audit_non_authoritative(self):
+        template = {
+            "kind": "matha-private-stem-independent-review", "version": 1,
+            "sourceSha256": "a" * 64, "cropManifestSha256": "b" * 64,
+            "questions": [{
+                "id": "q-1", "type": "single", "cropSha256": "c" * 64,
+                "integrity": {"sourcePdfHash": True, "cropHash": True,
+                              "cropPixelsMatchPdf": True, "bookPageQuestionBinding": True},
+            }],
+        }
+        audit = {"q-1": {
+            "fullStem": True, "allOptions": True,
+            "containsAnswer": False, "containsSolution": False,
+            "containsHandwriting": False, "containsAdjacentQuestion": False,
+        }}
+        review_doc = audited_batch.completed_review(
+            template, audit, "independent-model-review", "2026-08-28T12:00:00+08:00", "d" * 64)
+        self.assertFalse(review_doc["releaseAuthority"])
+        self.assertEqual(review_doc["summary"], {"passed": 1, "failed": 0})
+        self.assertTrue(review_doc["questions"][0]["visual"]["allOptionsVerified"])
+
+    def test_completed_review_rejects_an_unsafe_audit_row(self):
+        template = {
+            "questions": [{
+                "id": "q-1", "type": "fill", "cropSha256": "c" * 64,
+                "integrity": {},
+            }],
+        }
+        audit = {"q-1": {
+            "fullStem": True, "allOptions": True,
+            "containsAnswer": False, "containsSolution": False,
+            "containsHandwriting": False, "containsAdjacentQuestion": True,
+        }}
+        with self.assertRaises(audited_batch.AuditedBatchError):
+            audited_batch.completed_review(
+                template, audit, "independent-model-review", "2026-08-28T12:00:00+08:00", "d" * 64)
+
+
+class MathematicalVerification(unittest.TestCase):
+    def test_output_text_reads_responses_message(self):
+        payload = {"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": '{"items":[]}'},
+        ]}]}
+        self.assertEqual(math_verifier.output_text(payload), '{"items":[]}')
+
+    def test_id_order_mismatch_is_rejected(self):
+        with self.assertRaises(math_verifier.MathVerifyError):
+            math_verifier.validate_order([{"id": "q-2"}], ["q-1"], "test")
+
+    def test_comparison_schema_is_strict_and_has_three_verdicts(self):
+        schema = math_verifier.comparison_schema()
+        item = schema["properties"]["items"]["items"]
+        self.assertFalse(item["additionalProperties"])
+        self.assertEqual(item["properties"]["verdict"]["enum"],
+                         ["agree", "disagree", "unclear"])
+
+
+class PrivateReleaseSignoff(unittest.TestCase):
+    def test_ai_identity_cannot_be_used_as_human_signoff(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(release_signoff.SignoffError):
+                release_signoff.sign(Path(temp) / "source.json", Path(temp) / "audit.json",
+                                     Path(temp) / "signed.json", "Codex Agent")
+
+    def test_bundle_path_rejects_parent_traversal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(release_bundle.BundleError):
+                release_bundle.safe_join(Path(temp), "../escape.png")
 
 
 if __name__ == "__main__":
