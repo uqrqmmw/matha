@@ -223,6 +223,8 @@ python scripts/ingest/erase-handwriting-yescanner.py \
 
 工具固定使用 `data.base64img`（不用服務的 cropped image），服務回報旋轉／幾何校正就整題拒絕。YesScanner 會把短寬裁圖等比例放大到推論尺寸，因此同時保留供應商原始 lossless PNG；只有長寬比漂移不超過 0.5% 時才用 Lanczos 縮回原裁圖尺寸，超過即拒絕。逐題保存來源／供應商輸出／正規化結果雜湊、非機密請求 metadata、變動遮罩與把「原圖有墨、清理後附近已無墨」的區域標紅，避開縮放造成的全頁字緣假差異，另產生三欄 `review.html`。輸出 `releaseAuthority:false`，在人工確認印刷公式與圖線完全沒被改、手寫全數清除、沒有答案洩漏前不得晉級。重跑會以來源和四份輸出雜湊續接；即使 QA 演算法升級，也只從已保存的供應商輸出重建，不重複計費。
 
+整頁去筆跡後可用 `recrop-cleaned-handwriting-pages.py` 依原始 crop manifest 重裁題目。預設只要少一頁就失敗；全量批次若有供應商幾何異常頁，必須明確加 `--quarantine-incomplete`，輸出 manifest 會逐頁記錄隔離原因，只有通過來源雜湊、清理成品雜湊與頁面幾何驗證的頁會被重裁。這個旗標不會讓隔離頁進入題庫，所有成品仍維持 `releaseAuthority:false` 與人工像素複核要求。
+
 先前預備的 TextIn 工具仍保留作供應商備援，但目前不作主線：
 
 ### 5c. `erase-handwriting-textin.py` — 備援去手寫

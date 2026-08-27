@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image
@@ -24,7 +25,14 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def recrop(work: Path, page_queue: Path, cleaned_manifest: Path, output: Path) -> dict:
+def recrop(
+    work: Path,
+    page_queue: Path,
+    cleaned_manifest: Path,
+    output: Path,
+    *,
+    quarantine_incomplete: bool = False,
+) -> dict:
     queue = json.loads(page_queue.read_text(encoding="utf-8"))
     cleaned = json.loads(cleaned_manifest.read_text(encoding="utf-8"))
     cleaned_items = {
@@ -33,8 +41,17 @@ def recrop(work: Path, page_queue: Path, cleaned_manifest: Path, output: Path) -
         if item.get("cleaned")
     }
     queue_items = queue.get("items") or []
-    missing_pages = [str(page.get("id")) for page in queue_items if page.get("id") not in cleaned_items]
-    if missing_pages:
+    failures_by_id = {
+        str(item.get("id")): item
+        for item in (cleaned.get("cacheFailures") or cleaned.get("failures") or [])
+        if item.get("id")
+    }
+    missing_pages = [
+        str(page.get("id"))
+        for page in queue_items
+        if page.get("id") not in cleaned_items
+    ]
+    if missing_pages and not quarantine_incomplete:
         raise RecropError(
             f"Cleaned manifest is incomplete: {len(missing_pages)} page(s) missing; "
             f"first={missing_pages[0]}"
@@ -45,6 +62,8 @@ def recrop(work: Path, page_queue: Path, cleaned_manifest: Path, output: Path) -
     for page in queue_items:
         page_id = str(page["id"])
         cleaned_item = cleaned_items.get(page_id)
+        if cleaned_item is None:
+            continue
         render = Path(page["render"])
         if not render.is_file() or sha256(render) != page.get("renderSha256"):
             raise RecropError(f"Rendered source hash mismatch for {page_id}")
@@ -98,15 +117,33 @@ def recrop(work: Path, page_queue: Path, cleaned_manifest: Path, output: Path) -
                 "pdfPage": page["pdfPage"],
                 "pageId": page_id,
                 "source": str(source.resolve()),
+                "sourceSha256": sha256(source),
                 "cleaned": str(target.resolve()),
+                "cleanedSha256": sha256(target),
+                "pageRenderSha256": page.get("renderSha256"),
+                "pageCleanedSha256": cleaned_item.get("cleanedSha256"),
                 "stemRegion": region,
                 "cropDpi": crop_dpi,
             })
     result = {
         "schema": 1,
         "kind": "cleaned-page-question-candidates",
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "pageQueueSha256": sha256(page_queue),
+        "cleanupManifestSha256": sha256(cleaned_manifest),
+        "cleanupService": cleaned.get("service"),
         "releaseAuthority": False,
         "humanPixelReviewRequired": True,
+        "pageSelectionCount": len(queue_items),
+        "cleanedPageCount": len(queue_items) - len(missing_pages),
+        "quarantinedPageCount": len(missing_pages),
+        "quarantinedPages": [
+            {
+                "id": page_id,
+                "reason": str((failures_by_id.get(page_id) or {}).get("error") or "missing-cleaned-page"),
+            }
+            for page_id in missing_pages
+        ],
         "questions": len(question_records),
         "items": question_records,
     }
@@ -121,9 +158,20 @@ def main() -> int:
     parser.add_argument("--page-queue", type=Path, required=True)
     parser.add_argument("--cleaned-manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--quarantine-incomplete",
+        action="store_true",
+        help="recrop verified pages and explicitly quarantine missing/failed pages",
+    )
     args = parser.parse_args()
     try:
-        print(json.dumps(recrop(args.work, args.page_queue, args.cleaned_manifest, args.out), ensure_ascii=False))
+        print(json.dumps(recrop(
+            args.work,
+            args.page_queue,
+            args.cleaned_manifest,
+            args.out,
+            quarantine_incomplete=args.quarantine_incomplete,
+        ), ensure_ascii=False))
         return 0
     except (OSError, ValueError, RecropError) as error:
         print(f"recrop-cleaned-handwriting-pages: {error}", file=sys.stderr)

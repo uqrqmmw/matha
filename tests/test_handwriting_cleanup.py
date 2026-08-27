@@ -159,6 +159,14 @@ class HandwritingRecropTests(unittest.TestCase):
             with Image.open(record["items"][0]["cleaned"]) as crop:
                 crop_size = crop.size
             self.assertEqual(crop_size, (200, 100))
+            self.assertEqual(record["items"][0]["sourceSha256"], sha(
+                work / "book" / "crops" / "q1" / "stem.png"
+            ))
+            self.assertEqual(record["items"][0]["cleanedSha256"], sha(
+                Path(record["items"][0]["cleaned"])
+            ))
+            self.assertEqual(record["cleanupManifestSha256"], sha(manifest))
+            self.assertEqual(record["pageQueueSha256"], sha(queue))
             self.assertFalse(record["releaseAuthority"])
             self.assertTrue(record["humanPixelReviewRequired"])
 
@@ -169,6 +177,34 @@ class HandwritingRecropTests(unittest.TestCase):
             manifest.write_text('{"items": []}', encoding="utf-8")
             with self.assertRaises(recrop_pages.RecropError):
                 recrop_pages.recrop(work, queue, manifest, root / "out")
+
+    def test_incomplete_pages_can_only_be_explicitly_quarantined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work, queue, manifest, _ = self.fixture(root)
+            manifest.write_text(json.dumps({
+                "items": [],
+                "failures": [{
+                    "id": "book-pdf-0001",
+                    "error": "provider changed page geometry",
+                }],
+            }), encoding="utf-8")
+            result = recrop_pages.recrop(
+                work,
+                queue,
+                manifest,
+                root / "out",
+                quarantine_incomplete=True,
+            )
+            record = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+            self.assertEqual(record["cleanedPageCount"], 0)
+            self.assertEqual(record["quarantinedPageCount"], 1)
+            self.assertEqual(record["questions"], 0)
+            self.assertEqual(record["quarantinedPages"], [{
+                "id": "book-pdf-0001",
+                "reason": "provider changed page geometry",
+            }])
+            self.assertFalse(record["releaseAuthority"])
 
     def test_wrong_cleanup_source_hash_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
