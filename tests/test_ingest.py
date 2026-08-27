@@ -7,7 +7,9 @@ printed evidence, and a printed page number being silently wrong.
 """
 
 import importlib.util
+import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -35,6 +37,7 @@ release_queue = _load("build-release-queue")
 release_renderer = _load("render-release-queue")
 openai_release_audit = _load("review-release-openai")
 textin_eraser = _load("erase-handwriting-textin")
+yescanner_eraser = _load("erase-handwriting-yescanner")
 
 WIDTH, HEIGHT = 1038, 1500
 
@@ -1373,6 +1376,123 @@ class OnDemandReleaseQueue(unittest.TestCase):
             for setting in ("crop=0", "doc_direction=0", "dewarp=0",
                             "binarization=0", "image_type=1"):
                 self.assertIn(setting, request.full_url)
+
+    def test_yescanner_signature_and_request_match_official_contract(self):
+        import base64
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "stem.png"
+            source.write_bytes(b"source-image")
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = json.dumps({
+                "success": True,
+                "errorCode": None,
+                "errorMsg": None,
+                "data": {
+                    "base64img": base64.b64encode(b"cleaned-image").decode("ascii"),
+                    "has_rectified": False,
+                    "predict_rotate_angle": 0,
+                    "cropped_image_width": 100,
+                    "cropped_image_height": 200,
+                    "image_cls": "LEGACY_ELEC_DOC",
+                },
+                "costMs": 321,
+            }).encode("utf-8")
+            response.headers = {"x-request-id": "request-1"}
+            nonce = "091e0088"
+            timestamp = 1694152918888
+
+            with mock.patch.object(
+                yescanner_eraser.urllib.request, "urlopen", return_value=response
+            ) as call:
+                image, metadata = yescanner_eraser.request_clean(
+                    source,
+                    "client-id-not-real",
+                    "secret-not-real",
+                    nonce=nonce,
+                    timestamp=timestamp,
+                )
+
+            request = call.call_args.args[0]
+            payload = json.loads(request.data)
+            expected = hashlib.sha3_256(
+                f"client-id-not-real_vision_SHA3-256_{nonce}_{timestamp}_secret-not-real".encode()
+            ).hexdigest()
+            self.assertEqual(request.full_url, "https://scanb.yescanner.com/vision")
+            self.assertEqual(image, b"cleaned-image")
+            self.assertEqual(payload["scene"], "handwriting-remover")
+            self.assertEqual(payload["clientId"], "client-id-not-real")
+            self.assertEqual(payload["signature"], expected)
+            self.assertEqual(payload["imageBase64"], base64.b64encode(b"source-image").decode())
+            self.assertNotIn("secret-not-real", request.data.decode())
+            self.assertEqual(metadata["requestId"], "request-1")
+            self.assertEqual(metadata["costMs"], 321)
+
+    def test_yescanner_cleanup_diff_rejects_geometry_changes(self):
+        from PIL import Image
+        original = Image.new("RGB", (10, 8), "white")
+        original.putpixel((4, 3), (0, 0, 0))
+        cleaned = Image.new("RGB", (10, 8), "white")
+        _, mask, metrics = yescanner_eraser.diff_artifacts(original, cleaned)
+        self.assertEqual(metrics["changedPixels"], 9)
+        self.assertEqual(metrics["changedBbox"], [3, 2, 6, 5])
+        self.assertEqual(mask.getpixel((4, 3)), 255)
+        with self.assertRaises(yescanner_eraser.EraseError):
+            yescanner_eraser.diff_artifacts(original, Image.new("RGB", (9, 8), "white"))
+
+        scaled = Image.new("RGB", (1000, 800), "white")
+        normalized, geometry = yescanner_eraser.normalize_geometry(original, scaled)
+        self.assertEqual(normalized.size, original.size)
+        self.assertEqual(geometry["method"], "uniform-resize-lanczos")
+        with self.assertRaises(yescanner_eraser.EraseError):
+            yescanner_eraser.normalize_geometry(
+                original, Image.new("RGB", (1000, 700), "white")
+            )
+
+    def test_yescanner_rejects_provider_rectification(self):
+        import base64
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "stem.png"
+            source.write_bytes(b"source-image")
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = json.dumps({
+                "success": True,
+                "data": {
+                    "base64img": base64.b64encode(b"cleaned-image").decode("ascii"),
+                    "has_rectified": True,
+                    "predict_rotate_angle": 0,
+                },
+            }).encode("utf-8")
+            response.headers = {}
+            with mock.patch.object(
+                yescanner_eraser.urllib.request, "urlopen", return_value=response
+            ):
+                with self.assertRaises(yescanner_eraser.EraseError):
+                    yescanner_eraser.request_clean(
+                        source, "client-id-not-real", "secret-not-real"
+                    )
+
+    def test_yescanner_credentials_are_never_stored_in_plaintext(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "yescanner-credentials.json"
+            with mock.patch.object(
+                yescanner_eraser, "_protect_secret", return_value=b"protected-bytes"
+            ):
+                yescanner_eraser.store_credentials(
+                    "client-id-not-real", "secret-value-must-not-appear", path
+                )
+            raw = path.read_text(encoding="utf-8")
+            self.assertNotIn("secret-value-must-not-appear", raw)
+            self.assertIn("Windows-DPAPI-current-user", raw)
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                yescanner_eraser,
+                "_unprotect_secret",
+                return_value="secret-value-must-not-appear",
+            ):
+                client_id, secret = yescanner_eraser.load_credentials(path)
+            self.assertEqual(client_id, "client-id-not-real")
+            self.assertEqual(secret, "secret-value-must-not-appear")
 
 
 class RepoSafety(unittest.TestCase):

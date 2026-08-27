@@ -172,7 +172,23 @@ python scripts/ingest/render-release-queue.py \
 
 2026-08-27 首次實跑：7,055 題中 2,761 題進入「可安排視覺複核」的候選池，另有 10 題被答案洩漏規則擋下、10 題由接觸表目視退件；抽樣污染密集的「集合與邏輯」266 題整本暫停。第一批 42 題改由其餘 20 本書輪流取樣。這些數字代表工作排序，不代表 2,761 題已正確或可上線。
 
-### 5b. `erase-handwriting-textin.py` — 專用試卷去手寫，仍不自動發布
+### 5b. `erase-handwriting-yescanner.py` — 專用試卷去手寫，仍不自動發布
+
+目前正式 pilot 使用 YesScanner 官方 `handwriting-remover` API。金鑰只從環境變數或 Windows DPAPI 保護檔讀取，原圖以 base64 直接送出，不使用臨時公開網址：
+
+```bash
+python scripts/ingest/erase-handwriting-yescanner.py \
+  --work "<mistral-work>" --ids "question-id-1,question-id-2" \
+  --out "<repo 外>/yescanner-handwriting-cleanup"
+```
+
+首次設定可把 `clientId`／`clientSecret` JSON 從 stdin 送進 `--store-credentials`；工具只在目前使用者的 `~\.matha\yescanner-credentials.json` 留下 Windows DPAPI（目前 Windows 使用者範圍）密文，避開封裝應用的 LocalAppData 重新導向，後續重開機可直接使用。CI／短期工作也可同時設定 `YESCANNER_CLIENT_ID` 與 `YESCANNER_CLIENT_SECRET`，環境變數會優先；兩者都不會進 manifest 或命令輸出。
+
+工具固定使用 `data.base64img`（不用服務的 cropped image），服務回報旋轉／幾何校正就整題拒絕。YesScanner 會把短寬裁圖等比例放大到推論尺寸，因此同時保留供應商原始 lossless PNG；只有長寬比漂移不超過 0.5% 時才用 Lanczos 縮回原裁圖尺寸，超過即拒絕。逐題保存來源／供應商輸出／正規化結果雜湊、非機密請求 metadata、變動遮罩與把「原圖有墨、清理後附近已無墨」的區域標紅，避開縮放造成的全頁字緣假差異，另產生三欄 `review.html`。輸出 `releaseAuthority:false`，在人工確認印刷公式與圖線完全沒被改、手寫全數清除、沒有答案洩漏前不得晉級。重跑會以來源和四份輸出雜湊續接；即使 QA 演算法升級，也只從已保存的供應商輸出重建，不重複計費。
+
+先前預備的 TextIn 工具仍保留作供應商備援，但目前不作主線：
+
+### 5c. `erase-handwriting-textin.py` — 備援去手寫
 
 若原卷只有答案格或頁邊空白上的手寫，可使用 [TextIn 官方「自動擦除手寫文字」API](https://www.textin.com/document/text_auto_removal) 產生待複核衍生圖：
 
