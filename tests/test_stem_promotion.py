@@ -88,6 +88,19 @@ class StemPromotionTests(unittest.TestCase):
                 "manifest": crop_manifest, "review": review_file, "catalog": catalog,
                 "output": root / "output", "review_payload": review_payload, "crop": crop}
 
+    def set_stem_region(self, fx, region):
+        manifest_payload = json.loads(fx["manifest"].read_text(encoding="utf-8"))
+        manifest_payload["crops"]["q1"]["stemRegion"] = region
+        fx["manifest"].write_text(json.dumps(manifest_payload), encoding="utf-8")
+        source = fitz.open(fx["pdf"])
+        pixmap = source[0].get_pixmap(
+            dpi=300, clip=promotion.pdf_rect(region, 144), alpha=False)
+        pixmap.save(fx["crop"])
+        source.close()
+        fx["review_payload"]["cropManifestSha256"] = sha(fx["manifest"])
+        fx["review_payload"]["questions"][0]["cropSha256"] = sha(fx["crop"])
+        fx["review"].write_text(json.dumps(fx["review_payload"]), encoding="utf-8")
+
     def test_only_exact_original_crop_with_independent_review_is_promoted(self):
         fx = self.fixture()
         result = promotion.promote(fx["source"], fx["book_dir"], fx["pdf"], fx["manifest"],
@@ -139,6 +152,25 @@ class StemPromotionTests(unittest.TestCase):
         crop.save(fx["crop"])
         fx["review_payload"]["questions"][0]["cropSha256"] = sha(fx["crop"])
         fx["review"].write_text(json.dumps(fx["review_payload"]), encoding="utf-8")
+        with self.assertRaises(promotion.PromotionError):
+            promotion.promote(fx["source"], fx["book_dir"], fx["pdf"], fx["manifest"],
+                              fx["review"], fx["output"], fx["catalog"])
+
+    def test_complete_wide_single_line_crop_can_be_shorter_than_80_pixels(self):
+        fx = self.fixture()
+        self.set_stem_region(fx, [0, 30, 200, 62])
+        crop = fitz.Pixmap(str(fx["crop"]))
+        self.assertGreaterEqual(crop.height, promotion.MIN_STUDENT_CROP_HEIGHT)
+        self.assertLess(crop.height, 80)
+        result = promotion.promote(fx["source"], fx["book_dir"], fx["pdf"], fx["manifest"],
+                                   fx["review"], fx["output"], fx["catalog"])
+        self.assertEqual(result["questions"], 1)
+
+    def test_extremely_thin_crop_is_still_rejected(self):
+        fx = self.fixture()
+        self.set_stem_region(fx, [0, 30, 200, 52])
+        crop = fitz.Pixmap(str(fx["crop"]))
+        self.assertLess(crop.height, promotion.MIN_STUDENT_CROP_HEIGHT)
         with self.assertRaises(promotion.PromotionError):
             promotion.promote(fx["source"], fx["book_dir"], fx["pdf"], fx["manifest"],
                               fx["review"], fx["output"], fx["catalog"])

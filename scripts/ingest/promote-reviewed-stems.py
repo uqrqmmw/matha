@@ -26,6 +26,13 @@ import fitz
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 HEX64 = re.compile(r"^[a-f0-9]{64}$")
+MIN_STUDENT_CROP_WIDTH = 80
+# A complete one-line printed question can legitimately be shorter than 80 px
+# at the 300 dpi crop resolution. The previous square 80x80 gate rejected a
+# visually verified 2075x64 crop even though every glyph was present. Keep a
+# strict lower bound, but make it rectangular so short, wide stems remain
+# usable without padding the crop into handwritten work below the question.
+MIN_STUDENT_CROP_HEIGHT = 48
 
 
 class PromotionError(RuntimeError):
@@ -104,7 +111,7 @@ def pixmap_matches_original(crop_file: Path, document: fitz.Document, page_numbe
         raise PromotionError(f"Crop dimensions/channels do not match a fresh render of source PDF: {crop_file}")
     if crop.samples != expected.samples:
         raise PromotionError(f"Crop pixels are not exactly the catalogued PDF region: {crop_file}")
-    if crop.width < 80 or crop.height < 80:
+    if crop.width < MIN_STUDENT_CROP_WIDTH or crop.height < MIN_STUDENT_CROP_HEIGHT:
         raise PromotionError(f"Crop rendition is too small for student use: {crop_file}")
     return crop.width, crop.height
 
