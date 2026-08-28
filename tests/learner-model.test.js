@@ -212,6 +212,62 @@ test('學習證據優先採持久化結構欄位，保留舊文字只作相容�
   assert.equal(result.processEvidenceStatus, 'blocked');
 });
 
+test('老師具名修正保留 AI 原判與每次歷史，最新逐欄修正進入學習模型', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES[0];
+    const state = { topic:'num', aiErrorKind:'找不到破題方向', processEvidence:processEvidenceBlank() };
+    const first = paperTeacherOverrideAppend(state, {
+      at:100, reviewer:'王老師', source:'老師面談', reason:'卷面顯示是符號運算先出錯', topic:'prob', processStage:'calculation',
+    }, { topic:'num', errorKind:'找不到破題方向' });
+    const second = paperTeacherOverrideAppend(state, {
+      at:200, reviewer:'王老師', source:'老師卷面批註', reason:'重新核對題目應歸在數列', topic:'seq',
+    }, { topic:'num', errorKind:'找不到破題方向' });
+    S.paperRuns = [{ id:'teacher-run', sourceId:source.id, d:today(), submittedAt:10, status:'completed',
+      aiGrade:{ gradedAt:10, questions:[{ no:1, status:'incorrect', points:0, maxPoints:5, topic:'num' }] },
+      review:{ 1:state } }];
+    const evidence = learningEvidenceLedger().filter((row) => row.qid === 'teacher-run:1');
+    return {
+      history:state.teacherOverrideHistory,
+      first, second,
+      topic:paperReviewEffectiveTopic(state, 'num'),
+      process:paperReviewEffectiveProcess(state, 'direction'),
+      teacherEvidence:evidence.find((row) => row.processEvidenceSource === 'teacher-override'),
+    };
+  })()`));
+  assert.equal(result.history.length, 2);
+  assert.equal(result.history[0].previous.aiTopic, 'num');
+  assert.equal(result.history[1].previous.priorOverrideId, result.first.id);
+  assert.equal(result.topic, 'seq');
+  assert.equal(result.process, 'calculation', '後一筆只改單元，不應抹掉前一筆流程修正');
+  assert.equal(result.teacherEvidence.topic, 'seq');
+  assert.equal(result.teacherEvidence.processStage, 'calculation');
+});
+
+test('跨裝置合併逐筆聯集老師修正與流程證據，不讓較新整題覆蓋另一台歷史', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const left = { mt:100, logs:[], processEvidence:processEvidenceBlank(), teacherOverrideHistory:[] };
+    const right = { mt:200, logs:[], processEvidence:processEvidenceBlank(), teacherOverrideHistory:[] };
+    paperTeacherOverrideAppend(left, { at:100, reviewer:'王老師', source:'面談', reason:'單元應改為機率', topic:'prob' }, { topic:'num' });
+    paperTeacherOverrideAppend(right, { at:200, reviewer:'王老師', source:'卷面', reason:'第一錯步是建式', processStage:'setup' }, { topic:'num' });
+    processEvidenceAppend(left, 'direction', { ts:90, status:'attempted', source:'learner', confidence:'verified', note:'先列出事件' });
+    const merged = mergePaperReviewState(left, right);
+    return {
+      history:merged.teacherOverrideHistory,
+      topic:paperReviewEffectiveTopic(merged, 'num'),
+      process:paperReviewEffectiveProcess(merged, 'direction'),
+      direction:merged.processEvidence.direction,
+      setup:merged.processEvidence.setup,
+    };
+  })()`));
+  assert.equal(result.history.length, 2);
+  assert.equal(result.topic, 'prob');
+  assert.equal(result.process, 'setup');
+  assert.equal(result.direction.length, 1);
+  assert.equal(result.setup.length, 1);
+});
+
 test('流程斷點至少跨兩題才進個人化提示，不被同一題重複紀錄灌大', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

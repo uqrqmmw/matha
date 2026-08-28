@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829i'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829j'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3451,13 +3451,13 @@ function diagnosticTopicSignals() {
     const graded = run.aiGrade && Array.isArray(run.aiGrade.questions) ? run.aiGrade.questions : [];
     for (const item of graded) {
       const no = Number(item && item.no), review = run.review && run.review[no];
-      const topicKey = item && item.topic || review && review.topic;
+      const topicKey = paperReviewEffectiveTopic(review, item && item.topic || review && review.topic || '');
       if (!topicKey || !TOPICS[topicKey]) continue;
       const topic = row(topicKey); topic.n++; topic.ok += item.status === 'correct' ? 1 : 0;
     }
     for (const [noText, review] of Object.entries(run.review || {})) {
       const item = graded.find((gradedItem) => Number(gradedItem && gradedItem.no) === Number(noText));
-      const topicKey = review && review.topic || item && item.topic;
+      const topicKey = paperReviewEffectiveTopic(review, review && review.topic || item && item.topic || '');
       if (!topicKey || !TOPICS[topicKey]) continue;
       const topic = row(topicKey), level = Number(review && review.level) || 0;
       if (!review || !review.done) topic.open++;
@@ -3671,6 +3671,75 @@ function processEvidenceRecordAiDetail(holder, detail) {
     confidence:detail.confidence, note:detail.firstError, evidence:detail.firstErrorEvidence,
   });
 }
+function mergeProcessEvidence(A, B) {
+  const merged = processEvidenceBlank();
+  for (const stage of PROCESS_EVIDENCE_STAGES) {
+    const seen = new Set();
+    for (const row of [...(A && A[stage] || []), ...(B && B[stage] || [])]) {
+      if (!row || typeof row !== 'object') continue;
+      const key = `${row.ts || ''}|${row.status || ''}|${row.source || ''}|${row.note || ''}|${row.evidence || ''}`;
+      if (!seen.has(key)) { seen.add(key); merged[stage].push({ ...row }); }
+    }
+    merged[stage].sort((x, y) => Number(x.ts || 0) - Number(y.ts || 0));
+  }
+  return merged;
+}
+function paperTeacherOverrideHistory(state) {
+  return (state && Array.isArray(state.teacherOverrideHistory) ? state.teacherOverrideHistory : [])
+    .filter((row) => row && typeof row === 'object')
+    .slice().sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
+}
+function paperTeacherOverrideLatest(state) {
+  const history = paperTeacherOverrideHistory(state);
+  return history[history.length - 1] || state && state.teacherOverride || null;
+}
+function paperTeacherOverrideField(state, field) {
+  const history = paperTeacherOverrideHistory(state).reverse();
+  const row = history.find((item) => Object.prototype.hasOwnProperty.call(item, field));
+  if (row) return { found:true, value:String(row[field] || ''), row };
+  const latest = state && state.teacherOverride;
+  return latest && Object.prototype.hasOwnProperty.call(latest, field)
+    ? { found:true, value:String(latest[field] || ''), row:latest } : { found:false, value:'', row:null };
+}
+function paperReviewEffectiveTopic(state, fallback = '') {
+  const override = paperTeacherOverrideField(state, 'topic');
+  return override.found ? (TOPICS[override.value] ? override.value : '') : (TOPICS[fallback] ? fallback : '');
+}
+function paperReviewEffectiveProcess(state, fallback = '') {
+  const override = paperTeacherOverrideField(state, 'processStage');
+  return override.found ? (PROCESS_STAGE_LABELS[override.value] ? override.value : '')
+    : (PROCESS_STAGE_LABELS[fallback] ? fallback : learningProcessStage(fallback));
+}
+function paperTeacherOverrideAppend(state, input, fallback = {}) {
+  if (!state || !input || !String(input.reviewer || '').trim() || !String(input.reason || '').trim()) return null;
+  const now = Number(input.at) || Date.now();
+  const entry = {
+    id:`teacher-override-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    at:now,
+    reviewer:String(input.reviewer).trim().slice(0, 80),
+    source:String(input.source || '老師面談').trim().slice(0, 80),
+    reason:String(input.reason).trim().slice(0, 500),
+    previous:{
+      topic:paperReviewEffectiveTopic(state, fallback.topic || state.topic || ''),
+      processStage:paperReviewEffectiveProcess(state, fallback.processStage || fallback.errorKind || state.aiErrorKind || state.errorKind || ''),
+      aiTopic:String(fallback.topic || state.topic || ''),
+      aiProcessStage:learningProcessStage(fallback.errorKind || state.aiErrorKind || state.aiDetail && state.aiDetail.errorKind || state.errorKind || ''),
+      priorOverrideId:String(paperTeacherOverrideLatest(state)?.id || ''),
+    },
+  };
+  if (Object.prototype.hasOwnProperty.call(input, 'topic')) entry.topic = TOPICS[input.topic] ? input.topic : '';
+  if (Object.prototype.hasOwnProperty.call(input, 'processStage')) entry.processStage = PROCESS_STAGE_LABELS[input.processStage] ? input.processStage : '';
+  if (!Object.prototype.hasOwnProperty.call(entry, 'topic') && !Object.prototype.hasOwnProperty.call(entry, 'processStage')) return null;
+  state.teacherOverrideHistory = paperTeacherOverrideHistory(state);
+  state.teacherOverrideHistory.push(entry);
+  state.teacherOverride = entry;
+  if (entry.processStage) processEvidenceAppend(state, entry.processStage, {
+    ts:now, status:'blocked', source:'teacher-override', confidence:'verified',
+    note:entry.reason, evidence:`${entry.reviewer}｜${entry.source}`,
+  });
+  state.mt = Math.max(Number(state.mt) || 0, now);
+  return entry;
+}
 function learningErrorClass(value) {
   const text = String(value || '').trim();
   if (!text || /^(null|無|答對)$/i.test(text)) return '';
@@ -3692,7 +3761,8 @@ function learningEvidenceLedger() {
     if (clean.score != null && !Number.isFinite(Number(clean.score))) clean.score = null;
     clean.weight = Number.isFinite(Number(clean.weight)) && Number(clean.weight) > 0 ? Number(clean.weight) : 1;
     const structured = processEvidencePrimary(clean);
-    clean.processStage = PROCESS_STAGE_LABELS[clean.processStage] ? clean.processStage
+    clean.processStage = clean.processStageLocked ? (PROCESS_STAGE_LABELS[clean.processStage] ? clean.processStage : '')
+      : PROCESS_STAGE_LABELS[clean.processStage] ? clean.processStage
       : structured && PROCESS_STAGE_LABELS[structured.stage] ? structured.stage
       : ['recognition', 'direction', 'retention'].includes(clean.stage) ? clean.stage
         : ['concept', 'recall'].includes(clean.stage) ? ''
@@ -3703,6 +3773,7 @@ function learningEvidenceLedger() {
       clean.processEvidenceNote = structured.note || structured.evidence || '';
     }
     delete clean.processEvidence;
+    delete clean.processStageLocked;
     delete clean.processText;
     out.push(clean);
   };
@@ -3841,8 +3912,9 @@ function learningEvidenceLedger() {
     for (const item of grade.questions || []) {
       const no = Number(item.no), state = run.review && run.review[no] || {};
       const meta = paperQuestionMeta(run, source, no);
-      const topic = item.topic || state.topic || meta && meta.topic || '';
+      const topic = paperReviewEffectiveTopic(state, item.topic || state.topic || meta && meta.topic || '');
       if (!TOPICS[topic]) continue;
+      const processOverride = paperTeacherOverrideField(state, 'processStage');
       const max = Math.max(1, Number(meta && meta.points) || 1), rawPoints = Number(item.points);
       const score = item.points != null && Number.isFinite(rawPoints) ? Math.max(0, Math.min(1, rawPoints / max))
         : item.status === 'correct' ? 1 : ['incorrect', 'unanswered'].includes(item.status) ? 0 : null;
@@ -3872,7 +3944,8 @@ function learningEvidenceLedger() {
           errorKind:log.topic === topic ? '' : '條件或題意轉譯', selfTopic:TOPICS[log.topic] ? log.topic : '',
         });
       }
-      for (const [index, event] of processEvidenceRows(state).entries()) if (event.status === 'blocked') push({
+      for (const [index, event] of processEvidenceRows(state).entries()) if (event.status === 'blocked'
+        && (!processOverride.found || (event.source === 'teacher-override' && event.stage === processOverride.value))) push({
         id:`paper-process:${run.id}:${no}:${event.ts || index}:${event.stage}`,
         ts:Number(event.ts) || 0, d:run.due || run.d || '', source:'paper-detail', stage:'correction',
         qid:`${run.id}:${no}`, topic, score:0,
@@ -3885,6 +3958,7 @@ function learningEvidenceLedger() {
         id:`paper-review-open:${run.id}:${no}`, ts:Number(state.mt || grade.gradedAt || run.submittedAt) || 0,
         d:run.due || run.d || '', source:'paper-correction', stage:'correction', qid:`${run.id}:${no}`,
         topic, score:0, weight:.4, supportLevel:0,
+        processStage:processOverride.value, processStageLocked:processOverride.found,
         processText:state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind,
         errorKind:learningErrorClass(state.aiErrorKind || state.errorKind),
       });
@@ -3892,6 +3966,7 @@ function learningEvidenceLedger() {
         id:`paper-review:${run.id}:${no}`, ts:Number(state.completedAt || state.mt) || 0,
         d:run.due || run.d || '', source:'paper-correction', stage:'correction', qid:`${run.id}:${no}`,
         topic, score:level === 2 ? .7 : .35, weight:.75, supportLevel:level,
+        processStage:processOverride.value, processStageLocked:processOverride.found,
         processText:state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind || (level === 3 ? '方法選錯' : ''),
         errorKind:learningErrorClass(state.aiErrorKind || state.errorKind || (level === 3 ? '方法選錯' : '')),
         detailViewed:!!state.detailFirstOpenedAt,
@@ -7740,7 +7815,8 @@ function paperRunLearningTags(run) {
   const errors = new Set(Array.isArray(run && run.errors) ? run.errors : []);
   for (const state of Object.values(run && run.review || {})) {
     if (!state || typeof state !== 'object') continue;
-    if (state.topic) topics.add(state.topic);
+    const topic = paperReviewEffectiveTopic(state, state.topic || '');
+    if (topic) topics.add(topic);
     if (state.errorKind) errors.add(state.errorKind);
     if (state.aiErrorKind) errors.add(state.aiErrorKind);
     for (const log of state.logs || []) {
@@ -8462,16 +8538,65 @@ function teacherReportPrint(summaryOnly = false) {
   window.print();
   setTimeout(cleanup, 1500);
 }
+function paperTeacherOverrideOpen(runId, no) {
+  const run = (S.paperRuns || []).find((row) => row && row.id === runId);
+  const source = run && paperSourceById(run.sourceId);
+  const item = run && run.aiGrade && (run.aiGrade.questions || []).find((row) => Number(row.no) === Number(no));
+  const state = run && (run.review = run.review || {}) && (run.review[no] = run.review[no] || { done:false, attempts:0, logs:[] });
+  if (!run || !source || !item || !state) return;
+  const currentTopic = paperReviewEffectiveTopic(state, state.topic || item.topic || '');
+  const currentProcess = paperReviewEffectiveProcess(state, state.aiErrorKind || state.aiDetail && state.aiDetail.errorKind || state.errorKind || '');
+  const topicOptions = [`<option value="__keep__">不修改單元（目前：${escH(TOPICS[currentTopic] || '未知')}）</option>`, '<option value="">改為未知／證據不足</option>',
+    ...Object.entries(TOPICS).map(([key, label]) => `<option value="${escH(key)}">${escH(label)}</option>`)].join('');
+  const processOptions = [`<option value="__keep__">不修改流程（目前：${escH(PROCESS_STAGE_LABELS[currentProcess] || '未知')}）</option>`, '<option value="">改為未知／證據不足</option>',
+    ...PROCESS_EVIDENCE_STAGES.map((key) => `<option value="${key}">${escH(PROCESS_STAGE_LABELS[key])}</option>`)].join('');
+  const history = paperTeacherOverrideHistory(state);
+  const historyHTML = history.length ? `<details><summary>查看既有 ${history.length} 次具名修正</summary><ol>${history.map((row) =>
+    `<li><b>${escH(row.reviewer)}</b>｜${escH(row.source)}｜${escH(new Date(Number(row.at)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}<br>${Object.prototype.hasOwnProperty.call(row, 'topic') ? `單元：${escH(TOPICS[row.topic] || '未知')}；` : ''}${Object.prototype.hasOwnProperty.call(row, 'processStage') ? `流程：${escH(PROCESS_STAGE_LABELS[row.processStage] || '未知')}；` : ''}${escH(row.reason)}</li>`).join('')}</ol></details>` : '';
+  modal(`<div class="paper-grade-audit"><span class="eyebrow">第 ${Number(no)} 題｜老師具名修正</span><h2>保留原判定，再新增一筆修正</h2><p>這裡不會覆蓋 AI 或前次老師判定。最新具名修正會用於選題與週報，完整歷史仍可稽核。</p>
+    <label>實際修改人<input id="teacher-override-reviewer" type="text" maxlength="80" value="${escH(S.teacherReviewerName || '王老師')}" placeholder="例如：王老師"></label>
+    <label>依據來源<select id="teacher-override-source"><option>老師面談</option><option>老師卷面批註</option><option>老師講義／答案</option><option>學生當面說明</option><option>其他可核對來源</option></select></label>
+    <label>修正單元<select id="teacher-override-topic">${topicOptions}</select></label>
+    <label>修正第一個流程斷點<select id="teacher-override-process">${processOptions}</select></label>
+    <label>修正理由<textarea id="teacher-override-reason" rows="3" maxlength="500" placeholder="請寫可讓下次回頭理解的具體理由"></textarea></label>
+    ${historyHTML}<button class="btn primary" onclick="paperTeacherOverrideSave('${jsA(runId)}',${Number(no)})">保存具名修正</button></div>`, [['取消']]);
+}
+function paperTeacherOverrideSave(runId, no) {
+  const run = (S.paperRuns || []).find((row) => row && row.id === runId);
+  const source = run && paperSourceById(run.sourceId);
+  const item = run && run.aiGrade && (run.aiGrade.questions || []).find((row) => Number(row.no) === Number(no));
+  const state = run && run.review && run.review[no];
+  if (!run || !source || !item || !state) return;
+  const reviewer = String(($('#teacher-override-reviewer') || {}).value || '').trim();
+  const provenance = String(($('#teacher-override-source') || {}).value || '').trim();
+  const topic = String(($('#teacher-override-topic') || {}).value ?? '__keep__');
+  const processStage = String(($('#teacher-override-process') || {}).value ?? '__keep__');
+  const reason = String(($('#teacher-override-reason') || {}).value || '').trim();
+  if (reviewer.length < 2 || reason.length < 4) { alert('請留下實際修改人與至少 4 個字的具體理由。'); return; }
+  if (topic === '__keep__' && processStage === '__keep__') { alert('請至少修正單元或第一個流程斷點其中一項。'); return; }
+  const input = { reviewer, source:provenance, reason };
+  if (topic !== '__keep__') input.topic = topic;
+  if (processStage !== '__keep__') input.processStage = processStage;
+  const entry = paperTeacherOverrideAppend(state, input, {
+    topic:item.topic || state.topic || '',
+    errorKind:state.aiErrorKind || state.aiDetail && state.aiDetail.errorKind || state.errorKind || '',
+  });
+  if (!entry) { alert('這次修正資料不完整，沒有保存。'); return; }
+  S.teacherReviewerName = reviewer;
+  run.mt = Math.max(Number(run.mt) || 0, Number(entry.at));
+  paperRunRefreshLearningTags(run); paperSourceUpdateExtMock(source, run); save();
+  modalClose(); renderPaperTeacherReport(runId);
+}
 function paperTeacherSummaryHTML(run, source, grade, levels) {
   const topicCounts = {}, errorCounts = {}, processCounts = {};
   const discuss = [];
   for (const item of grade.questions || []) {
     const no = Number(item.no), state = run.review && run.review[no] || {};
-    const topic = state.topic || item.topic;
+    const topic = paperReviewEffectiveTopic(state, state.topic || item.topic || '');
     const error = state.aiErrorKind || state.errorKind || [...(state.logs || [])].reverse().find((log) => log && log.errorKind)?.errorKind;
     if (topic && TOPICS[topic]) topicCounts[topic] = (topicCounts[topic] || 0) + 1;
     if (error) errorCounts[error] = (errorCounts[error] || 0) + 1;
-    const processStage = learningProcessStage(error);
+    const processStage = paperReviewEffectiveProcess(state, error);
     if (processStage) processCounts[processStage] = (processCounts[processStage] || 0) + 1;
     const level = item.status === 'correct' ? 1 : Number(state.level) || 0;
     if (level === 3 || level === 0) discuss.push(no);
@@ -8513,10 +8638,12 @@ function renderPaperTeacherReport(runId) {
     const detailGood = detail && Array.isArray(detail.goodWork) && detail.goodWork.length
       ? `<p>已做對：${detail.goodWork.map((row) => rtAi(row)).join('；')}</p>` : '';
     const detailConfidence = detail && (detail.confidence === 'high' ? '高' : detail.confidence === 'medium' ? '中' : '低');
+    const teacherOverride = paperTeacherOverrideLatest(state);
+    const teacherOverrideHTML = teacherOverride ? `<div class="teacher-attempt"><b>老師具名修正｜${escH(teacherOverride.reviewer)}</b><p>${escH(teacherOverride.source)}｜${escH(new Date(Number(teacherOverride.at)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}</p><p>${Object.prototype.hasOwnProperty.call(teacherOverride, 'topic') ? `單元：${escH(TOPICS[teacherOverride.topic] || '未知')}；` : ''}${Object.prototype.hasOwnProperty.call(teacherOverride, 'processStage') ? `流程：${escH(PROCESS_STAGE_LABELS[teacherOverride.processStage] || '未知')}；` : ''}${escH(teacherOverride.reason)}</p><small>完整歷史 ${paperTeacherOverrideHistory(state).length} 筆；AI 原判與前次修正均保留。</small></div>` : '';
     return `<article class="teacher-q level-${level}"><header><span>第 ${no} 題｜${statusName[item.status] || item.status}｜${Number(item.points) || 0}/${Number(item.maxPoints) || 0} 分</span><b>${levelName(level)}</b></header>
       <p class="teacher-answer">AI 讀到：${escH(item.read || '（未辨識）')}｜正確答案：${escH(item.answer || '')}</p>
       ${logs || (level === 1 ? '<p class="dim">考場直接答對，不需隔日重想。</p>' : '<p class="dim">尚未留下隔日重想紀錄。</p>')}
-      ${detail ? `<div class="teacher-attempt"><b>逐題 AI 詳解｜診斷信心 ${detailConfidence}</b>${state.detailFirstOpenedAt ? `<p>首次查看：${escH(new Date(Number(state.detailFirstOpenedAt)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}｜開啟 ${Number(state.detailViewCount) || 1} 次</p>` : ''}${detailGood}${detail.errorKind ? `<p>AI 錯因：${escH(detail.errorKind)}</p>` : ''}${detail.firstErrorEvidence ? `<p>錯誤證據：${rtAi(detail.firstErrorEvidence)}</p>` : ''}${detail.firstError ? `<p>第一個錯誤：${rtAi(detail.firstError)}</p>` : ''}${detail.nextTime ? `<p>下次訊號：${rtAi(detail.nextTime)}</p>` : ''}</div>` : ''}</article>`;
+      ${detail ? `<div class="teacher-attempt"><b>逐題 AI 詳解｜診斷信心 ${detailConfidence}</b>${state.detailFirstOpenedAt ? `<p>首次查看：${escH(new Date(Number(state.detailFirstOpenedAt)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}｜開啟 ${Number(state.detailViewCount) || 1} 次</p>` : ''}${detailGood}${detail.errorKind ? `<p>AI 錯因：${escH(detail.errorKind)}</p>` : ''}${detail.firstErrorEvidence ? `<p>錯誤證據：${rtAi(detail.firstErrorEvidence)}</p>` : ''}${detail.firstError ? `<p>第一個錯誤：${rtAi(detail.firstError)}</p>` : ''}${detail.nextTime ? `<p>下次訊號：${rtAi(detail.nextTime)}</p>` : ''}</div>` : ''}${teacherOverrideHTML}<div class="actr"><button class="btn sm" onclick="paperTeacherOverrideOpen('${jsA(run.id)}',${no})">老師修正單元／流程</button></div></article>`;
   }).join('');
   const calibration = source.calibrationEligible === false
     ? '本卷原始結構為 19 題，只作練習與訂正分析，不列入正式級分校準。'
@@ -9478,7 +9605,7 @@ function paperLearningSummaryCard() {
     for (const key of Object.keys(recovery)) recovery[key] += runRecovery[key];
     for (const state of Object.values(run.review || {})) {
       if (!state || typeof state !== 'object') continue;
-      const topic = state.topic || [...(state.logs || [])].reverse().find((log) => log && log.topic)?.topic;
+      const topic = paperReviewEffectiveTopic(state, state.topic || [...(state.logs || [])].reverse().find((log) => log && log.topic)?.topic || '');
       const error = state.aiErrorKind || state.errorKind || [...(state.logs || [])].reverse().find((log) => log && log.errorKind)?.errorKind;
       if (topic && TOPICS[topic]) topicCount[topic] = (topicCount[topic] || 0) + 1;
       if (error) errorCount[error] = (errorCount[error] || 0) + 1;
@@ -9945,6 +10072,16 @@ function mergePaperReviewState(A, B) {
     if (!seen.has(key)) { seen.add(key); logs.push(log); }
   }
   logs.sort((x, y) => Number(x && x.ts || 0) - Number(y && y.ts || 0));
+  const teacherOverrideHistory = [], overrideIds = new Set();
+  for (const row of [
+    ...(A && A.teacherOverrideHistory || []), ...(A && A.teacherOverride ? [A.teacherOverride] : []),
+    ...(B && B.teacherOverrideHistory || []), ...(B && B.teacherOverride ? [B.teacherOverride] : []),
+  ]) {
+    if (!row || typeof row !== 'object') continue;
+    const key = String(row.id || `${row.at || ''}|${row.reviewer || ''}|${row.reason || ''}`);
+    if (!overrideIds.has(key)) { overrideIds.add(key); teacherOverrideHistory.push(row); }
+  }
+  teacherOverrideHistory.sort((x, y) => Number(x.at || 0) - Number(y.at || 0));
   return {
     ...(older || {}), ...(newer || {}),
     attempts: Math.max(
@@ -9953,6 +10090,9 @@ function mergePaperReviewState(A, B) {
       paperReviewRetryLogCount(logs, A, B),
     ),
     logs,
+    processEvidence:mergeProcessEvidence(A && A.processEvidence, B && B.processEvidence),
+    teacherOverrideHistory,
+    teacherOverride:teacherOverrideHistory[teacherOverrideHistory.length - 1] || null,
     done: !!(A && A.done || B && B.done),
     completedAt: Math.max(Number(A && A.completedAt || 0), Number(B && B.completedAt || 0)) || null,
     solutionUnlockedAt: Math.max(
