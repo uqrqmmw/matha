@@ -1641,6 +1641,47 @@ test('原版模考隔日訂正會累積單元、卡點與老師逐題報告', ()
   assert.match(result.card, /條件翻譯不完整|推理缺口/);
 });
 
+test('老師單頁顯示三回趨勢、明確無方向題，且兩道後續新題才算修正已驗證', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES[0];
+    const prob = BANK.filter((q) => q.topic === 'prob').slice(0, 3);
+    const grade = { score:70, questions:[
+      { no:1, status:'unanswered', points:0, maxPoints:5, topic:'prob' },
+      { no:2, status:'incorrect', points:0, maxPoints:5, topic:'prob' },
+    ] };
+    const state = { done:false, topic:'prob', logs:[] };
+    paperTeacherOverrideAppend(state, {
+      at:250, reviewer:'王老師', source:'老師面談', reason:'先練條件機率的樣本空間', topic:'prob', processStage:'direction',
+    }, { topic:'prob', errorKind:'找不到破題方向' });
+    const current = { id:'current-paper', sourceId:source.id, d:'2026-08-20', submittedAt:200, status:'completed', score:70,
+      aiGrade:grade, review:{ 1:state, 2:{ done:false, topic:'prob', logs:[{ ts:210, topic:'prob', concept:'條件機率', direction:'' }] } } };
+    S.paperRuns = [
+      { id:'prior-paper', sourceId:source.id, d:'2026-08-13', submittedAt:100, status:'completed', score:60, aiGrade:{ score:60, questions:[] }, review:{} },
+      current,
+    ];
+    S.attempts = [
+      { qid:prob[0].id, ok:true, d:today(), mode:'adaptive-textbook', ts:300 },
+      { qid:prob[1].id, ok:true, d:today(), mode:'adaptive-textbook', ts:400 },
+    ];
+    const cross = paperTeacherCrossRunSummary(current, source, grade);
+    const html = paperTeacherSummaryHTML(current, source, grade, { l1:0, l2:0, l3:0, open:2 });
+    S.attempts.push({ qid:prob[2].id, ok:false, err:'找不到破題方向', d:today(), mode:'adaptive-textbook', ts:500 });
+    const afterFailure = paperTeacherCrossRunSummary(current, source, grade);
+    return { cross, html, afterFailure };
+  })()`));
+  assert.deepEqual(result.cross.scoreTrend, ['2026-08-13 60分', '2026-08-20 70分']);
+  assert.deepEqual(result.cross.noDirectionNos, [1, 2]);
+  assert.equal(result.cross.verified, 1);
+  assert.equal(result.cross.waiting, 0);
+  assert.match(result.html, /最近正式卷趨勢/);
+  assert.match(result.html, /2026-08-13 60分 → 2026-08-20 70分/);
+  assert.match(result.html, /明確仍無方向.*第 1、2 題/);
+  assert.match(result.html, /下週只優先討論.*第 1、2 題/);
+  assert.equal(result.afterFailure.verified, 0);
+  assert.equal(result.afterFailure.stillBlocked, 1);
+});
+
 test('失分回收只計官方配分：第二級、第三級與未完成分開，不把訂正冒充穩定得分', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

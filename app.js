@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829k'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829l'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -8615,6 +8615,54 @@ function paperTeacherOverrideSave(runId, no) {
   paperRunRefreshLearningTags(run); paperSourceUpdateExtMock(source, run); save();
   modalClose(); renderPaperTeacherReport(runId);
 }
+function paperQuestionHasDirectionGap(item, state) {
+  if (item && item.status === 'unanswered') return true;
+  const error = state && (state.aiErrorKind || state.aiDetail && state.aiDetail.errorKind || state.errorKind) || '';
+  if (paperReviewEffectiveProcess(state, error) === 'direction') return true;
+  return (state && state.logs || []).some((log) => log && String(log.kind || '') !== 'complete'
+    && !String(log.direction || '').trim() && (TOPICS[log.topic] || String(log.concept || '').trim()));
+}
+function paperTeacherOverrideFollowups(run) {
+  const evidence = learningEvidenceLedger();
+  const rows = [];
+  for (const [noText, state] of Object.entries(run && run.review || {})) {
+    const override = paperTeacherOverrideLatest(state);
+    if (!override) continue;
+    const qid = `${run.id}:${Number(noText)}`;
+    const topic = paperReviewEffectiveTopic(state, state.topic || '');
+    const later = !topic ? [] : evidence.filter((row) => row.independent && Number(row.ts || 0) > Number(override.at || 0)
+      && row.qid !== qid && row.topic === topic);
+    const correctQuestions = new Set(later.filter((row) => Number(row.score) >= .75).map((row) => row.qid).filter(Boolean));
+    const failedQuestions = new Set(later.filter((row) => Number(row.score) < .5).map((row) => row.qid).filter(Boolean));
+    const status = failedQuestions.size ? 'still-blocked' : correctQuestions.size >= 2 ? 'verified' : 'waiting';
+    rows.push({
+      no:Number(noText), reviewer:String(override.reviewer || ''), at:Number(override.at) || 0,
+      topic, processStage:paperReviewEffectiveProcess(state, ''), status,
+      correctQuestions:correctQuestions.size, failedQuestions:failedQuestions.size,
+    });
+  }
+  return rows;
+}
+function paperTeacherCrossRunSummary(run, source, grade) {
+  const formalRuns = (S.paperRuns || []).filter((row) => row && paperRunInCurrentBaseline(row) && row.aiGrade
+    && Number(row.submittedAt || 0) <= Number(run.submittedAt || Infinity)
+    && paperSourceById(row.sourceId)?.questions === 20 && paperSourceById(row.sourceId)?.calibrationEligible !== false)
+    .sort((a, b) => Number(a.submittedAt || 0) - Number(b.submittedAt || 0)).slice(-3);
+  const scoreTrend = formalRuns.map((row) => `${row.d || '未記日期'} ${Number(row.score ?? row.aiGrade.score) || 0}分`);
+  const noDirectionNos = (grade && grade.questions || []).filter((item) => {
+    const state = run.review && run.review[Number(item.no)] || {};
+    return item.status !== 'correct' && paperQuestionHasDirectionGap(item, state);
+  }).map((item) => Number(item.no));
+  const followups = paperTeacherOverrideFollowups(run);
+  return {
+    scoreTrend,
+    noDirectionNos,
+    followups,
+    verified:followups.filter((row) => row.status === 'verified').length,
+    stillBlocked:followups.filter((row) => row.status === 'still-blocked').length,
+    waiting:followups.filter((row) => row.status === 'waiting').length,
+  };
+}
 function paperTeacherSummaryHTML(run, source, grade, levels) {
   const topicCounts = {}, errorCounts = {}, processCounts = {};
   const discuss = [];
@@ -8638,9 +8686,13 @@ function paperTeacherSummaryHTML(run, source, grade, levels) {
     .sort((a, b) => Number(b.submittedAt || 0) - Number(a.submittedAt || 0))[0];
   const delta = prior ? Number(run.score) - Number(prior.score) : null;
   const recovery = paperRunRecoveryPoints(run);
+  const cross = paperTeacherCrossRunSummary(run, source, grade);
+  const priorityNos = [...new Set([...cross.noDirectionNos, ...discuss])].slice(0, 3);
+  const followupText = !cross.followups.length ? '本回尚無老師具名修正'
+    : `已由後續不同題驗證 ${cross.verified} 題；仍出現同單元失誤 ${cross.stillBlocked} 題；尚待新題 ${cross.waiting} 題`;
   return `<section class="teacher-one-page"><header><div><span class="eyebrow">給王老師的單頁摘要</span><h2>${escH(source.title)}｜${escH(run.d || '')}</h2></div><b class="teacher-summary-score">${run.score}<small>/100</small></b></header>
     <div class="teacher-summary-grid"><div><span>三級分布</span><b>${levels.l1}／${levels.l2}／${levels.l3}</b><small>直接會／只看答案會／需詳解；待訂正 ${levels.open} 題</small></div><div><span>失分回收</span><b>${recovery.reconstructed}／${recovery.lost} 分</b><small>訂正已重建；尚待 ${recovery.open} 分</small></div><div><span>考試剩餘</span><b>${Math.max(0, Math.round(Number(run.remainingMs || 0) / 60000))} 分</b><small>不拿單題速度作主要診斷</small></div><div><span>相較前一回</span><b>${delta == null ? '尚無前一回' : `${delta > 0 ? '+' : ''}${delta} 分`}</b><small>只比較完整正式卷</small></div></div>
-    <div class="teacher-summary-findings"><p><b>較常失分單元：</b>${escH(top(topicCounts, (key) => TOPICS[key] || key))}</p><p><b>跨題流程斷點：</b>${escH(top(processCounts, (key) => PROCESS_STAGE_LABELS[key] || key, 2))}</p><p><b>反覆卡點：</b>${escH(top(errorCounts, (key) => key, 2))}</p><p><b>建議優先討論：</b>${discuss.length ? `第 ${discuss.slice(0, 8).join('、')} 題${discuss.length > 8 ? '等' : ''}` : '本回沒有第三級或尚未完成題'}</p></div>
+    <div class="teacher-summary-findings"><p><b>最近正式卷趨勢：</b>${cross.scoreTrend.length ? escH(cross.scoreTrend.join(' → ')) : '尚無完整正式卷'}</p><p><b>明確仍無方向：</b>${cross.noDirectionNos.length ? `第 ${cross.noDirectionNos.join('、')} 題` : '本回沒有可確認的無方向紀錄'}</p><p><b>較常失分單元：</b>${escH(top(topicCounts, (key) => TOPICS[key] || key))}</p><p><b>跨題流程斷點：</b>${escH(top(processCounts, (key) => PROCESS_STAGE_LABELS[key] || key, 2))}</p><p><b>反覆卡點：</b>${escH(top(errorCounts, (key) => key, 2))}</p><p><b>老師修正後驗證：</b>${escH(followupText)}</p><p><b>下週只優先討論：</b>${priorityNos.length ? `第 ${priorityNos.join('、')} 題` : '本回沒有第三級、未完成或明確無方向題'}</p></div>
     <p class="teacher-summary-note">判讀原則：第一級是考場直接會寫；第二級是隔日只看答案即可重建；第三級是努力重想後仍需詳解。「訂正已重建」不等於下次考試已穩定拿回，仍要由 2／7 日新題或下一回正式卷驗證。AI 的第一錯步只有在卷面證據可逐字核對時才列入。</p>
   </section>`;
 }
