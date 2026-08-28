@@ -199,10 +199,12 @@ class HandwritingRecropTests(unittest.TestCase):
             record = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
             self.assertEqual(record["cleanedPageCount"], 0)
             self.assertEqual(record["quarantinedPageCount"], 1)
+            self.assertEqual(record["quarantinedQuestionCount"], 1)
             self.assertEqual(record["questions"], 0)
             self.assertEqual(record["quarantinedPages"], [{
                 "id": "book-pdf-0001",
                 "reason": "provider changed page geometry",
+                "unresolvedQuestionIds": ["q1"],
             }])
             self.assertFalse(record["releaseAuthority"])
 
@@ -230,12 +232,54 @@ class HandwritingRecropTests(unittest.TestCase):
             )
             record = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
             self.assertEqual(record["rescuedPageCount"], 1)
+            self.assertEqual(record["fullyRescuedPageCount"], 1)
             self.assertEqual(record["fallbackQuestionCount"], 1)
             self.assertEqual(record["quarantinedPageCount"], 0)
             self.assertEqual(record["items"][0]["cleanupMode"], "question-fallback")
             self.assertEqual(record["items"][0]["cleanedSha256"], sha(
                 Path(record["items"][0]["cleaned"])
             ))
+
+    def test_partial_question_fallback_preserves_success_and_quarantines_only_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work, queue, manifest, _ = self.fixture(root)
+            source2 = work / "book" / "crops" / "q2" / "stem.png"
+            source2.parent.mkdir(parents=True)
+            Image.new("RGB", (200, 100), "white").save(source2)
+            crop_manifest = work / "book" / "crops-manifest.json"
+            crop_data = json.loads(crop_manifest.read_text(encoding="utf-8"))
+            crop_data["crops"]["q2"] = {"stemRegion": [10, 80, 110, 130]}
+            crop_manifest.write_text(json.dumps(crop_data), encoding="utf-8")
+            queue_data = json.loads(queue.read_text(encoding="utf-8"))
+            queue_data["items"][0]["questionIds"] = ["q1", "q2"]
+            queue.write_text(json.dumps(queue_data), encoding="utf-8")
+            manifest.write_text(json.dumps({"items": [], "failures": [{
+                "id": "book-pdf-0001", "error": "full page geometry changed",
+            }]}), encoding="utf-8")
+            fallback_image = root / "fallback-q1.png"
+            Image.new("RGB", (200, 100), "white").save(fallback_image)
+            fallback = root / "fallback.json"
+            fallback.write_text(json.dumps({
+                "items": [{
+                    "id": "q1", "sourceSha256": sha(work / "book" / "crops" / "q1" / "stem.png"),
+                    "cleaned": str(fallback_image), "cleanedSha256": sha(fallback_image),
+                }],
+                "failures": [{"id": "q2", "error": "question geometry changed"}],
+            }), encoding="utf-8")
+            result = recrop_pages.recrop(
+                work, queue, manifest, root / "out",
+                quarantine_incomplete=True,
+                fallback_cleanup_manifest=fallback,
+            )
+            record = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+            self.assertEqual(record["fallbackQuestionCount"], 1)
+            self.assertEqual(record["quarantinedPageCount"], 1)
+            self.assertEqual(record["quarantinedQuestionCount"], 1)
+            self.assertEqual(record["quarantinedQuestions"], [{
+                "id": "q2", "pageId": "book-pdf-0001",
+                "reason": "question geometry changed",
+            }])
 
     def test_fallback_cleanup_with_wrong_source_hash_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

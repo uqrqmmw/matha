@@ -225,7 +225,7 @@ python scripts/ingest/erase-handwriting-yescanner.py \
 
 整頁去筆跡後可用 `recrop-cleaned-handwriting-pages.py` 依原始 crop manifest 重裁題目。預設只要少一頁就失敗；全量批次若有供應商幾何異常頁，必須明確加 `--quarantine-incomplete`，輸出 manifest 會逐頁記錄隔離原因，只有通過來源雜湊、清理成品雜湊與頁面幾何驗證的頁會被重裁。這個旗標不會讓隔離頁進入題庫，所有成品仍維持 `releaseAuthority:false` 與人工像素複核要求。
 
-若供應商只對少數整頁做了不可接受的幾何校正，不放寬比例門檻；改用同一工具對該頁實際候選題的原始 `stem.png` 逐題清理，再以 `--fallback-cleanup-manifest` 交給重裁器補回。補回時會重新核對原題裁圖雜湊、清理圖雜湊與尺寸，manifest 也分別標成 `question-fallback`，其餘沒完整補回的頁仍留在 quarantine。
+若供應商只對少數整頁做了不可接受的幾何校正，不放寬比例門檻；改用同一工具對該頁實際候選題的原始 `stem.png` 逐題清理，再以 `--fallback-cleanup-manifest` 交給重裁器補回。補回時會重新核對原題裁圖雜湊、清理圖雜湊與尺寸，manifest 也分別標成 `question-fallback`。同一頁若只有部分題補回成功，已驗證的題仍會保留，失敗題則逐題列入 `quarantinedQuestions`，並在所屬頁的 `unresolvedQuestionIds` 留下稽核記錄；不會因為同頁一題失敗就丟棄其他已安全清理的題。
 
 先前預備的 TextIn 工具仍保留作供應商備援，但目前不作主線：
 

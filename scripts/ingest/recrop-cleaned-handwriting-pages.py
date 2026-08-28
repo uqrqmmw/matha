@@ -52,6 +52,11 @@ def recrop(
         for item in (fallback.get("cacheItems") or fallback.get("items") or [])
         if item.get("id") and item.get("cleaned")
     }
+    fallback_failures_by_id = {
+        str(item.get("id")): item
+        for item in (fallback.get("cacheFailures") or fallback.get("failures") or [])
+        if item.get("id")
+    }
     queue_items = queue.get("items") or []
     failures_by_id = {
         str(item.get("id")): item
@@ -63,14 +68,28 @@ def recrop(
         for page in queue_items
         if page.get("id") not in cleaned_items
     ]
-    rescued_pages = [
-        str(page.get("id"))
+    fallback_coverage = {
+        str(page.get("id")): [
+            question_id
+            for question_id in page.get("questionIds") or []
+            if question_id in fallback_items
+        ]
         for page in queue_items
         if page.get("id") in missing_pages
-        and page.get("questionIds")
-        and all(question_id in fallback_items for question_id in page.get("questionIds") or [])
+    }
+    rescued_pages = [page_id for page_id, question_ids in fallback_coverage.items() if question_ids]
+    unresolved_questions_by_page = {
+        str(page.get("id")): [
+            question_id
+            for question_id in page.get("questionIds") or []
+            if question_id not in fallback_items
+        ]
+        for page in queue_items
+        if page.get("id") in missing_pages
+    }
+    unresolved_pages = [
+        page_id for page_id, question_ids in unresolved_questions_by_page.items() if question_ids
     ]
-    unresolved_pages = [page_id for page_id in missing_pages if page_id not in rescued_pages]
     if unresolved_pages and not quarantine_incomplete:
         raise RecropError(
             f"Cleaned manifest is incomplete: {len(unresolved_pages)} page(s) missing; "
@@ -84,7 +103,7 @@ def recrop(
         cleaned_item = cleaned_items.get(page_id)
         if cleaned_item is None:
             if page_id in rescued_pages:
-                for question_id in page.get("questionIds") or []:
+                for question_id in fallback_coverage[page_id]:
                     fallback_item = fallback_items[question_id]
                     book_id = str(page["bookId"])
                     if book_id not in crop_manifests:
@@ -207,6 +226,9 @@ def recrop(
         "pageSelectionCount": len(queue_items),
         "cleanedPageCount": len(queue_items) - len(missing_pages),
         "rescuedPageCount": len(rescued_pages),
+        "fullyRescuedPageCount": sum(
+            1 for page_id in rescued_pages if not unresolved_questions_by_page[page_id]
+        ),
         "fallbackQuestionCount": sum(
             1 for item in question_records if item.get("cleanupMode") == "question-fallback"
         ),
@@ -215,8 +237,24 @@ def recrop(
             {
                 "id": page_id,
                 "reason": str((failures_by_id.get(page_id) or {}).get("error") or "missing-cleaned-page"),
+                "unresolvedQuestionIds": unresolved_questions_by_page[page_id],
             }
             for page_id in unresolved_pages
+        ],
+        "quarantinedQuestionCount": sum(
+            len(question_ids) for question_ids in unresolved_questions_by_page.values()
+        ),
+        "quarantinedQuestions": [
+            {
+                "id": question_id,
+                "pageId": page_id,
+                "reason": str(
+                    (fallback_failures_by_id.get(question_id) or {}).get("error")
+                    or "missing-question-level-cleanup"
+                ),
+            }
+            for page_id, question_ids in unresolved_questions_by_page.items()
+            for question_id in question_ids
         ],
         "questions": len(question_records),
         "items": question_records,
