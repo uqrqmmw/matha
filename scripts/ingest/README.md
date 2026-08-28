@@ -252,9 +252,25 @@ python scripts/ingest/prepare-cleaned-answer-review.py \
 
 每題都會重新核對 catalog PDF 雜湊、book/page/question 關係、原題 crop 像素、清理題雜湊、答案所在 PDF 頁與 answer crop 像素；不以 OCR 文字填答案。缺官方答案或像素不符的題會明確隔離。輸出工作包並排顯示清理題與原書答案，要求真人核對題號、所有小題、圖形條件與數學正確性。這關完成後仍為 `releaseAuthority:false`，必須再與去筆跡人工像素審核交集才有晉級資格。
 
+### 5c. `intersect-cleaned-human-reviews.py` — 雙真人審核交集（仍不發布）
+
+兩份工作包都由可辨識真人逐題完成並下載 JSON 後，才能執行：
+
+```bash
+python scripts/ingest/intersect-cleaned-human-reviews.py \
+  --candidate-manifest "<repo 外>/cleaned-question-candidates.json" \
+  --pixel-template "<repo 外>/handwriting-review/cleaned-handwriting-human-review.template.json" \
+  --pixel-review "<真人下載>/cleaned-handwriting-human-review.json" \
+  --answer-binding "<repo 外>/answer-review/answer-binding-candidates.json" \
+  --answer-review "<真人下載>/cleaned-answer-human-review.json" \
+  --out "<repo 外>/cleaned-dual-review-candidates.json"
+```
+
+驗證器會拒絕未完成審核、AI／bot 審核者、無時區時間戳、題目缺漏或重複、來源／題面／答案／紅圖雜湊漂移、通過題仍有未勾安全項，以及答案綁定隔離題。只有去筆跡像素 QA 與答案數學 QA 都通過的題會進交集。輸出仍固定 `releaseAuthority:false`、`uploadPerformed:false`；還需要另一道具名真人發布簽核及私有素材部署，不能直接被正式 app 載入。
+
 先前預備的 TextIn 工具仍保留作供應商備援，但目前不作主線：
 
-### 5c. `erase-handwriting-textin.py` — 備援去手寫
+### 5d. `erase-handwriting-textin.py` — 備援去手寫
 
 若原卷只有答案格或頁邊空白上的手寫，可使用 [TextIn 官方「自動擦除手寫文字」API](https://www.textin.com/document/text_auto_removal) 產生待複核衍生圖：
 

@@ -11,7 +11,7 @@
 
 ## 驗證結果
 
-- Python 圖片／匯入／去筆跡測試：179/179 通過。
+- Python 圖片／匯入／去筆跡測試：190/190 通過。
 - Web 全套測試：226/226 通過。
 - 人工抽查候選類型包含：中文密集題幹、根號與指數公式、矩陣、座標圖、函數曲線、灰階圖表、印刷圖形，以及逐題 fallback。抽查中印刷內容與圖線保留，舊筆跡被移除。
 
@@ -31,3 +31,23 @@
 - 重裁題面 manifest：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-cleaned-question-candidates-v2-20260828\cleaned-question-candidates.json`
 - 逐題人工像素 QA 工作包：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-human-review-v6-20260828`（在資料夾執行 `python serve-review.py`，再開啟 `http://127.0.0.1:8765/review.html`）。原題、清理題與紅色移除區皆以 repo 外的雜湊綁定資產在 localhost 同源提供，已實測 HTML 與三種 PNG 均回應 HTTP 200，不依賴會被瀏覽器擋下的 `file://` 跨源圖片。
 - 答案與數學 QA 工作包：`C:\Users\yenke\Desktop\數學檔案\yescanner-answer-binding-review-v2-20260828`（執行 `python serve-review.py`，再開啟 `http://127.0.0.1:8767/review.html`）。1,952 題的題號／書籍／PDF 頁碼／原題 crop 全數重新綁定；1,919 題的原書答案 crop 與 catalog PDF 像素完整一致，33 題因原資料沒有官方答案 crop 隔離。組成為 answer-key 825 題、題後 inline 672 題、續頁詳解 422 題；不採信 OCR 題文或 OCR 答案。
+
+## 雙審核交集與發布狀態
+
+已新增 `scripts/ingest/intersect-cleaned-human-reviews.py` 作為 fail-closed 晉級驗證器。它會重新驗證兩份審核 JSON 的完整覆蓋、具名真人身分、帶時區的審核時間、所有安全勾選、candidate／題面／答案／紅圖與來源 PDF 雜湊，以及 33 題答案隔離清單。只有像素 QA 和答案數學 QA 都通過的題會進入交集；任何缺審、AI/bot 審核者、hash drift、缺圖、答案錯綁或隔離項都會整批拒絕或留在 quarantine。
+
+驗證器已對實際工作包做唯讀資產稽核：1,952 份來源題面與清理題、1,952 組 localhost 原題／清理題／紅圖（共 5,856 個檔案），以及 1,919 組題面／答案與其宣告圖形雜湊均通過。這只證明檔案未漂移，不冒充真人對題意與數學正確性的逐題判讀。
+
+目前兩份真人審核尚未完成，因此**尚未產生正式交集，也沒有題目接入學生題庫**。待真人在上面兩個 localhost 工作包逐題完成後，執行：
+
+```powershell
+python scripts/ingest/intersect-cleaned-human-reviews.py `
+  --candidate-manifest "C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-cleaned-question-candidates-v2-20260828\cleaned-question-candidates.json" `
+  --pixel-template "C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-human-review-v6-20260828\cleaned-handwriting-human-review.template.json" `
+  --pixel-review "<真人下載的 cleaned-handwriting-human-review.json>" `
+  --answer-binding "C:\Users\yenke\Desktop\數學檔案\yescanner-answer-binding-review-v2-20260828\answer-binding-candidates.json" `
+  --answer-review "<真人下載的 cleaned-answer-human-review.json>" `
+  --out "C:\Users\yenke\Desktop\數學檔案\yescanner-cleaned-dual-review-candidates-20260828.json"
+```
+
+即使交集成功，輸出仍固定為 `releaseAuthority:false`、`uploadPerformed:false`，並明示 `humanReleaseSignoffStillRequired:true` 與 `privateAssetDeploymentStillRequired:true`。下一道關卡是對交集 manifest 的精確雜湊做另一份具名真人最終發布簽核，再由私有素材部署流程上傳；不能把未簽核教材放入 GitHub Pages 或公開 repo。

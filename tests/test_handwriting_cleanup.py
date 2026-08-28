@@ -32,6 +32,9 @@ prepare_clean_review = load(
 prepare_answer_review = load(
     "prepare_cleaned_answer_review", "prepare-cleaned-answer-review.py"
 )
+intersect_clean_reviews = load(
+    "intersect_cleaned_human_reviews", "intersect-cleaned-human-reviews.py"
+)
 
 
 def sha(path: Path) -> str:
@@ -570,6 +573,191 @@ class CleanedAnswerReviewPacketTests(unittest.TestCase):
                 prepare_clean_review.prepare(
                     manifest, page_cleanup, fallback_cleanup, root / "review"
                 )
+
+
+class CleanedDualHumanReviewTests(unittest.TestCase):
+    def fixture(self, root: Path):
+        ids = ["book-p001-q1", "book-p001-q2"]
+        assets = root / "assets"
+        overlays = root / "pixel-packet" / "removed-overlays"
+        assets.mkdir()
+        overlays.mkdir(parents=True)
+        candidate_items = []
+        pixel_questions = []
+        answer_items = []
+        answer_questions = []
+        for index, qid in enumerate(ids, 1):
+            source = assets / f"source-{index}.png"
+            cleaned = assets / f"cleaned-{index}.png"
+            answer = assets / f"answer-{index}.png"
+            overlay = overlays / f"{qid}.png"
+            for path, color in (
+                (source, (index * 20, 20, 20)),
+                (cleaned, (255, 255, 255)),
+                (answer, (20, index * 20, 20)),
+                (overlay, (200, 40, 40)),
+            ):
+                Image.new("RGB", (20, 20), color).save(path)
+            candidate_items.append({
+                "id": qid, "bookId": "book", "pdfPage": 1,
+                "stemRegion": [0, 0, 20, 20], "source": str(source),
+                "sourceSha256": sha(source), "cleaned": str(cleaned),
+                "cleanedSha256": sha(cleaned),
+            })
+            pixel_questions.append({
+                "id": qid, "sourceSha256": sha(source),
+                "cleanedSha256": sha(cleaned),
+                "removedOverlaySha256": sha(overlay), "decision": "pass",
+                "visual": {key: True for key in intersect_clean_reviews.PIXEL_CHECKS},
+                "notes": "",
+            })
+            answer_items.append({
+                "id": qid, "bookId": "book", "chapter": "test",
+                "role": "drill", "questionType": "calculation", "pdfPage": 1,
+                "answerPdfPage": 2, "answerRegion": [0, 0, 20, 20],
+                "answerSource": "answer-key", "sourcePdfSha256": sha(source),
+                "sourceSha256": sha(source), "cleanedSha256": sha(cleaned),
+                "answerSha256": sha(answer), "figureCount": 0, "figureSha256": [],
+            })
+            packet_assets = root / "assets" / qid
+            packet_assets.mkdir(parents=True)
+            (packet_assets / "question.png").write_bytes(cleaned.read_bytes())
+            (packet_assets / "answer.png").write_bytes(answer.read_bytes())
+            pixel_assets = root / "pixel-packet" / "assets" / qid
+            pixel_assets.mkdir(parents=True)
+            (pixel_assets / "source.png").write_bytes(source.read_bytes())
+            (pixel_assets / "cleaned.png").write_bytes(cleaned.read_bytes())
+            answer_questions.append({
+                "id": qid, "cleanedSha256": sha(cleaned),
+                "answerSha256": sha(answer), "sourcePdfSha256": sha(source),
+                "decision": "pass",
+                "visual": {key: True for key in intersect_clean_reviews.ANSWER_CHECKS},
+                "notes": "",
+            })
+        candidate = root / "candidates.json"
+        candidate.write_text(json.dumps({
+            "kind": "cleaned-page-question-candidates", "releaseAuthority": False,
+            "humanPixelReviewRequired": True,
+            "cleanupManifestSha256": "a" * 64,
+            "fallbackCleanupManifestSha256": "b" * 64,
+            "items": candidate_items,
+        }), encoding="utf-8")
+        candidate_hash = sha(candidate)
+        pixel_template = root / "pixel-packet" / "cleaned-handwriting-human-review.template.json"
+        pixel_template.write_text(json.dumps({
+            "kind": "matha-private-cleaned-handwriting-human-review", "version": 1,
+            "releaseAuthority": False, "candidateManifestSha256": candidate_hash,
+            "questions": pixel_questions,
+        }), encoding="utf-8")
+        pixel_review = root / "pixel-review.json"
+        pixel_document = {
+            "kind": "matha-private-cleaned-handwriting-human-review", "version": 1,
+            "releaseAuthority": False, "humanReviewerRequired": True,
+            "candidateManifestSha256": candidate_hash,
+            "pageCleanupManifestSha256": "a" * 64,
+            "fallbackCleanupManifestSha256": "b" * 64,
+            "reviewer": "王小明", "reviewedAt": "2026-08-28T18:00:00+08:00",
+            "summary": {"passed": 1, "rejected": 1, "unreviewed": 0},
+            "questions": pixel_questions,
+        }
+        pixel_document["questions"][1]["decision"] = "reject"
+        pixel_review.write_text(json.dumps(pixel_document), encoding="utf-8")
+        binding = root / "binding.json"
+        binding.write_text(json.dumps({
+            "kind": "cleaned-answer-binding-candidates", "version": 1,
+            "releaseAuthority": False, "humanAnswerReviewRequired": True,
+            "handwritingPixelReviewAlsoRequired": True,
+            "candidateManifestSha256": candidate_hash,
+            "total": 2, "reviewableCount": 2, "quarantinedCount": 0,
+            "quarantined": [], "items": answer_items,
+        }), encoding="utf-8")
+        answer_review = root / "answer-review.json"
+        answer_review.write_text(json.dumps({
+            "kind": "matha-private-cleaned-answer-human-review", "version": 1,
+            "releaseAuthority": False, "humanReviewerRequired": True,
+            "candidateManifestSha256": candidate_hash,
+            "answerBindingSha256": sha(binding), "reviewer": "陳老師",
+            "reviewedAt": "2026-08-28T19:00:00+08:00",
+            "summary": {"passed": 2, "rejected": 0, "unreviewed": 0},
+            "questions": answer_questions,
+        }), encoding="utf-8")
+        return candidate, pixel_template, pixel_review, binding, answer_review
+
+    def run_fixture(self, root: Path):
+        inputs = self.fixture(root)
+        output = root / "dual-review.json"
+        result = intersect_clean_reviews.intersect(*inputs, output)
+        return result, output, inputs
+
+    def test_only_double_passed_questions_are_staged_without_release_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, output, _ = self.run_fixture(Path(tmp))
+            self.assertTrue(output.is_file())
+            self.assertFalse(result["releaseAuthority"])
+            self.assertTrue(result["humanReleaseSignoffStillRequired"])
+            self.assertFalse(result["uploadPerformed"])
+            self.assertEqual(result["counts"]["eligibleAfterBothReviews"], 1)
+            self.assertEqual([row["id"] for row in result["items"]], ["book-p001-q1"])
+            self.assertEqual(result["quarantine"][0]["reasons"], ["pixel-review-rejected"])
+
+    def test_ai_reviewer_and_incomplete_review_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self.fixture(root)
+            review = json.loads(inputs[2].read_text(encoding="utf-8"))
+            review["reviewer"] = "Claude AI"
+            inputs[2].write_text(json.dumps(review), encoding="utf-8")
+            with self.assertRaises(intersect_clean_reviews.DualReviewError):
+                intersect_clean_reviews.intersect(*inputs, root / "out.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self.fixture(root)
+            review = json.loads(inputs[4].read_text(encoding="utf-8"))
+            review["questions"][0]["decision"] = ""
+            inputs[4].write_text(json.dumps(review), encoding="utf-8")
+            with self.assertRaises(intersect_clean_reviews.DualReviewError):
+                intersect_clean_reviews.intersect(*inputs, root / "out.json")
+
+    def test_hash_drift_and_unchecked_pass_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self.fixture(root)
+            Image.new("RGB", (20, 20), "black").save(
+                root / "pixel-packet" / "removed-overlays" / "book-p001-q1.png"
+            )
+            with self.assertRaises(intersect_clean_reviews.DualReviewError):
+                intersect_clean_reviews.intersect(*inputs, root / "out.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self.fixture(root)
+            review = json.loads(inputs[4].read_text(encoding="utf-8"))
+            review["questions"][0]["visual"]["mathematicallyCorrect"] = False
+            inputs[4].write_text(json.dumps(review), encoding="utf-8")
+            with self.assertRaises(intersect_clean_reviews.DualReviewError):
+                intersect_clean_reviews.intersect(*inputs, root / "out.json")
+
+    def test_answer_quarantine_cannot_enter_the_intersection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self.fixture(root)
+            binding = json.loads(inputs[3].read_text(encoding="utf-8"))
+            removed = binding["items"].pop()
+            binding["reviewableCount"] = 1
+            binding["quarantinedCount"] = 1
+            binding["quarantined"] = [{
+                "id": removed["id"], "bookId": removed["bookId"],
+                "reason": "official-answer-crop-missing",
+            }]
+            inputs[3].write_text(json.dumps(binding), encoding="utf-8")
+            review = json.loads(inputs[4].read_text(encoding="utf-8"))
+            review["answerBindingSha256"] = sha(inputs[3])
+            review["questions"] = review["questions"][:1]
+            review["summary"] = {"passed": 1, "rejected": 0, "unreviewed": 0}
+            inputs[4].write_text(json.dumps(review), encoding="utf-8")
+            result = intersect_clean_reviews.intersect(*inputs, root / "out.json")
+            self.assertEqual([row["id"] for row in result["items"]], ["book-p001-q1"])
+            quarantined = {row["id"]: row["reasons"] for row in result["quarantine"]}
+            self.assertIn("official-answer-crop-missing", quarantined["book-p001-q2"])
 
 
 if __name__ == "__main__":
