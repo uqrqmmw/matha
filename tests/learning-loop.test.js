@@ -1047,7 +1047,7 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
     const state = { done:false, attempts:0, logs:[] };
     const row = { id:'detail-flow', sourceId:source.id, due:today(), mt:1, review:{ [no]:state } };
     paperReview = { source, run:row, urls:[], inkPages:{}, nos:[no], i:0, detailLoading:false, detailError:'' };
-    let calls = 0;
+    let calls = 0, officialCalls = 0;
     paperReviewPageComposite = async () => 'composite';
     paperReviewQuestionFocusImage = async () => 'focus';
     paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
@@ -1060,29 +1060,36 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
         nextTime:'先標出變數與常數', marks:[{box:[.1,.2,.3,.4],label:'模型洩漏文字'}],
       } };
     };
+    paperOfficialSolutionCall = async () => { officialCalls++; return ['https://rrihysbxhsbxjteqmtdu.supabase.co/storage/v1/object/sign/matha-solutions/paper-mock-1/q02.png?token=test']; };
     await paperReviewDetailed();
-    const lockedCalls = calls, lockedError = paperReview.detailError;
+    const lockedCalls = calls, lockedOfficialCalls = officialCalls, lockedError = paperReview.detailError;
     state.attempts = 1; state.logs.push({ ts:Date.now(), kind:'retry', direction:'先把條件改寫成內積再建式' });
     paperReview.detailError = '';
     await paperReviewDetailed();
     const firstCalls = calls;
     await paperReviewDetailed();
     const cachedCalls = calls;
+    paperReview.officialSolutionLoadedAt[no] -= 13 * 60 * 1000;
+    await paperReviewDetailed();
+    const refreshedOfficialCalls = officialCalls;
     const detail = state.aiDetail;
     let verifyLevel = 0; paperReviewGrade = (level) => { verifyLevel = level; };
     paperReviewFinishDetailed();
     return {
-      lockedCalls, lockedError, firstCalls, cachedCalls, done:state.done, verifyLevel,
+      lockedCalls, lockedOfficialCalls, lockedError, firstCalls, cachedCalls, done:state.done, verifyLevel,
       firstError:detail.firstError, solution:detail.solution,
       answer:detail.answer, official:paperFinalAnswerText(source.key[no - 1]),
       mark:detail.marks[0].label, unlocked:!!state.solutionUnlockedAt,
-      detailViewCount:state.detailViewCount, firstOpened:!!state.detailFirstOpenedAt,
+      detailViewCount:state.detailViewCount, firstOpened:!!state.detailFirstOpenedAt, officialCalls, refreshedOfficialCalls,
     };
   })()`));
   assert.equal(result.lockedCalls, 0, '沒有重想紀錄時不得呼叫詳解 API');
+  assert.equal(result.lockedOfficialCalls, 0, '沒有重想紀錄時也不得請求官方詳解像素');
   assert.match(result.lockedError, /先在卷面留下新的重算|真實重想/);
   assert.equal(result.firstCalls, 1, '保存一次真實重想後才產生本題詳解');
   assert.equal(result.cachedCalls, 1, '再次打開沿用已保存詳解，不重複花 API');
+  assert.equal(result.officialCalls, 2, '短效網址到期前沿用，接近到期後安全刷新');
+  assert.equal(result.refreshedOfficialCalls, 2, '15 分鐘簽名網址不會在平板長時間訂正時永久卡死');
   assert.equal(result.done, false, '看完詳解不能直接算完成，仍要把重算寫回原卷');
   assert.equal(result.verifyLevel, 3, '第三級也必須再經一次卷面 AI 驗證');
   assert.equal(result.firstError, '把變數 x 當成常數');
@@ -1090,7 +1097,7 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
   assert.equal(result.answer, result.official, '正式答案必須以本地答案鍵覆蓋模型文字');
   assert.equal(result.mark, '第一個錯誤');
   assert.equal(result.unlocked, true);
-  assert.equal(result.detailViewCount, 2);
+  assert.equal(result.detailViewCount, 3);
   assert.equal(result.firstOpened, true);
 });
 
@@ -1143,6 +1150,7 @@ test('原版隔日訂正使用全頁可寫工作台，每題保留詳解入口�
     paperSourceSession = { source, run:row, inkRun, urls, baseInkPages:{}, inkPages:{}, page:0, zoom:1, inkMode:'pen', inkWidth:1, inkColor:'blue', reviewMode:true, durability:{pendingClientIds:new Set()} };
     renderPaperAnswerReview(); const locked = __app.innerHTML;
     state.aiDetail = { confidence:'high', goodWork:['第一行正確代入'], firstErrorEvidence:'2x+3=7', firstError:'第二行符號寫反', errorKind:'符號', whyWrong:'移項後正號應變負號', repair:'改寫為 2x=7−3', read:'', explanation:'移項時變號錯誤', solution:['正確移項'], answer:'(2)', nextTime:'先圈負號', marks:[] };
+    paperReview.officialSolutions = { [no]:['https://rrihysbxhsbxjteqmtdu.supabase.co/storage/v1/object/sign/matha-solutions/paper-mock-1/q02.png?token=test'] };
     renderPaperAnswerReview(); const detailed = __app.innerHTML;
     return { locked, detailed };
   })()`));
@@ -1166,6 +1174,9 @@ test('原版隔日訂正使用全頁可寫工作台，每題保留詳解入口�
   assert.match(result.detailed, /AI 看錯我的手寫/);
   assert.match(result.detailed, /重新分析這一題/);
   assert.match(result.detailed, /看完並回卷面重算/);
+  assert.match(result.detailed, /官方詳解原圖/);
+  assert.match(result.detailed, /不經 OCR 重打/);
+  assert.match(result.detailed, /AI 拆解與補充/);
   assert.doesNotMatch(result.detailed, /paper-review-direction/);
 });
 

@@ -224,6 +224,25 @@ create policy "approved read matha papers" on storage.objects
     and public.is_matha_user(auth.uid())
   );
 
+-- 官方詳解裁圖與題本分桶：沒有 authenticated select policy。只有 Edge Function
+-- 以 service role 在「隔日＋已保存真實重想」後簽發 15 分鐘網址，首輪 Network
+-- 與一般 Storage client 都無法取得內容。
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'matha-solutions',
+  'matha-solutions',
+  false,
+  8388608,
+  array['image/png', 'image/jpeg', 'image/webp']
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "authenticated read matha solutions" on storage.objects;
+drop policy if exists "approved read matha solutions" on storage.objects;
+
 -- Atomic AI budget accounting. One full-paper grade has a much larger weight
 -- than a small concept check, so accidental retries cannot silently burn cost.
 create table if not exists public.ai_daily_usage (

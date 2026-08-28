@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -8408,6 +8408,50 @@ ${learnerContextForAi(learnerTopic)}
   if (!payload.json || typeof payload.json !== 'object') throw new Error('OpenAI 沒有回傳完整詳批資料');
   return { json: payload.json, model: String(payload.model || '') };
 }
+async function paperOfficialSolutionCall(source, no) {
+  const run = paperReview && paperReview.run;
+  if (!source || !run || !run.id) throw new Error('找不到本次訂正紀錄');
+  const payload = await openAiInvoke({
+    responseType: 'paper_solution',
+    context: { paperRunId: run.id, sourceId: source.id, questionNo: no },
+  }, 30000);
+  const rows = payload && payload.paperSolution && payload.paperSolution.images;
+  if (!Array.isArray(rows)) throw new Error('官方詳解後端沒有回傳有效資料');
+  return rows.map((row) => String(row && row.url || '')).filter((url) =>
+    /^https:\/\/rrihysbxhsbxjteqmtdu\.supabase\.co\/storage\/v1\/object\/sign\//.test(url));
+}
+async function paperOfficialSolutionLoad(review, no) {
+  if (!review) return [];
+  review.officialSolutions = review.officialSolutions || {};
+  review.officialSolutionLoadedAt = review.officialSolutionLoadedAt || {};
+  review.officialSolutionErrors = review.officialSolutionErrors || {};
+  const cachedAt = Number(review.officialSolutionLoadedAt[no]) || 0;
+  if (Array.isArray(review.officialSolutions[no]) && Date.now() - cachedAt < 12 * 60 * 1000) {
+    return review.officialSolutions[no];
+  }
+  review.officialSolutionLoading = { ...(review.officialSolutionLoading || {}), [no]: true };
+  try {
+    const urls = await paperOfficialSolutionCall(review.source, no);
+    if (paperReview === review) {
+      review.officialSolutions[no] = urls;
+      review.officialSolutionLoadedAt[no] = Date.now();
+      delete review.officialSolutionErrors[no];
+    }
+    return urls;
+  } catch (error) {
+    if (paperReview === review) {
+      delete review.officialSolutions[no];
+      delete review.officialSolutionLoadedAt[no];
+      review.officialSolutionErrors[no] = (error && error.message) || String(error);
+    }
+    return [];
+  } finally {
+    if (paperReview === review) {
+      review.officialSolutionLoading[no] = false;
+      renderPaperAnswerReview();
+    }
+  }
+}
 function normalizePaperDetailEvidence(value) {
   return String(value == null ? '' : value)
     .normalize('NFKC')
@@ -8614,6 +8658,7 @@ async function paperReviewDetailed(force = false) {
     paperReviewRecordDetailOpen(state);
     review.detailOpen = true;
     review.detailError = '';
+    await paperOfficialSolutionLoad(review, no);
     renderPaperAnswerReview();
     return;
   }
@@ -8630,7 +8675,10 @@ async function paperReviewDetailed(force = false) {
     const image = await paperReviewPageComposite(page);
     const focus = await paperReviewQuestionFocusImage(image, review.source, no);
     if (paperReview !== review) return;
-    const response = await paperReviewDetailCallCompat(review, no, state, image, focus);
+    const [response] = await Promise.all([
+      paperReviewDetailCallCompat(review, no, state, image, focus),
+      paperOfficialSolutionLoad(review, no),
+    ]);
     if (paperReview !== review) return;
     state.aiDetail = paperNormalizeAiDetail(review.source, no, response.json, response.model);
     state.solutionUnlockedAt = Number(state.solutionUnlockedAt) || Date.now();
@@ -8660,6 +8708,16 @@ function paperReviewDetailDrawerHTML(state) {
   if (!detail || !paperReview || paperReview.detailOpen === false) return '';
   const no = Number(detail.no) || Number(paperReview.nos[paperReview.i]);
   const confidenceLabel = detail.confidence === 'high' ? '高信心' : detail.confidence === 'medium' ? '中等信心' : '低信心，不列入弱點統計';
+  const officialUrls = paperReview.officialSolutions && paperReview.officialSolutions[no];
+  const officialLoading = paperReview.officialSolutionLoading && paperReview.officialSolutionLoading[no];
+  const officialError = paperReview.officialSolutionErrors && paperReview.officialSolutionErrors[no];
+  const officialSolution = Array.isArray(officialUrls) && officialUrls.length
+    ? `<section class='paper-official-solution' aria-label='第 ${no} 題官方詳解原圖'><h3>官方詳解原圖</h3><p>直接保留答案本的公式與圖形，不經 OCR 重打。</p>${officialUrls.map((url, index) => `<img src='${escH(url)}' alt='第 ${no} 題官方詳解${officialUrls.length > 1 ? `第 ${index + 1} 段` : ''}' loading='lazy'>`).join('')}</section>`
+    : officialLoading
+      ? `<section class='paper-official-solution'><h3>官方詳解原圖</h3><p>正在安全載入…</p></section>`
+      : officialError
+        ? `<section class='paper-official-solution warn'><h3>官方詳解原圖暫時無法載入</h3><p>${escH(officialError)}</p></section>`
+        : '';
   const goodWork = detail.goodWork && detail.goodWork.length
     ? `<ul class='paper-detail-good-list'>${detail.goodWork.map((row) => `<li>${rtAi(row)}</li>`).join('')}</ul>`
     : '<p class="dim">卷面不足以可靠指出具體做對的步驟。</p>';
@@ -8676,7 +8734,8 @@ function paperReviewDetailDrawerHTML(state) {
       ${detail.repair ? `<section class='paper-detail-repair'><h3>先只修這一步</h3><p>${rtAi(detail.repair)}</p></section>` : ''}
       ${detail.read ? `<details><summary>核對 AI 實際讀到的作答</summary><p>${rtAi(detail.read)}</p></details>` : ''}
       ${detail.explanation ? `<section><h3>這次真正卡住的機制</h3><div>${rtAi(detail.explanation)}</div></section>` : ''}
-      <details class='paper-detail-full-solution' open><summary>完整正確解法</summary>${detail.solution.length ? `<ol class='paper-detail-steps'>${detail.solution.map((step) => `<li>${rtAi(step)}</li>`).join('')}</ol>` : '<p class="warnc">AI 沒有產生足夠步驟，請補充辨識後重新詳批。</p>'}<p class='blind-answer'>正式答案：<b>${escH(detail.answer)}</b></p></details>
+      ${officialSolution}
+      <details class='paper-detail-full-solution'${officialSolution ? '' : ' open'}><summary>AI 拆解與補充</summary>${detail.solution.length ? `<ol class='paper-detail-steps'>${detail.solution.map((step) => `<li>${rtAi(step)}</li>`).join('')}</ol>` : '<p class="warnc">AI 沒有產生足夠步驟，請補充辨識後重新詳批。</p>'}<p class='blind-answer'>正式答案：<b>${escH(detail.answer)}</b></p></details>
       ${detail.nextTime ? `<div class='next-step'><b>下次看到什麼要立刻反應</b>${rtAi(detail.nextTime)}</div>` : ''}
       <details class='paper-detail-correction'><summary>AI 看錯我的手寫</summary><label>補一句正確辨識，重新詳批<textarea id='paper-detail-user-note' rows='2' placeholder='例如：第二行其實寫的是 2x−3，不是 2x+3。'>${userNote}</textarea></label><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新分析中…' : '帶著更正重新分析'}</button></details>
       <div class='actr'><button class='btn primary' onclick='paperReviewFinishDetailed()'>看完並回卷面重算</button><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新分析中…' : '重新分析這一題'}</button></div>

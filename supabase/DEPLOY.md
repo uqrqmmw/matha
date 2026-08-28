@@ -92,7 +92,9 @@ npx supabase functions deploy device-pair  --project-ref rrihysbxhsbxjteqmtdu --
      -ContentType "application/json" -Body '{}' | Select-Object StatusCode, Content
    ```
 
-3. 端到端:開正式站登入,任一題手寫送 AI 批改一次,正常回饋即完成。
+3. 若本次變更包含官方詳解，核對 `matha-solutions` 為 private、沒有 Storage select policy，且直接用 anon／authenticated Storage URL 無法下載。`paper_solution` 未登入應為 401；同一題尚未完成隔日重想應為 403；完成重想後才回 15 分鐘簽名網址。簽名網址不得寫入 `app_state`、IndexedDB 或 Service Worker。
+
+4. 端到端:開正式站登入,任一題手寫送 AI 批改一次,正常回饋即完成。
 
 ## 部署前的本機檢查
 

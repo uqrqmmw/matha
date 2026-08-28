@@ -2,12 +2,13 @@
 
 這個 Edge Function 是數A前端與 OpenAI Responses API 之間的安全代理。`OPENAI_API_KEY` 只存在 Supabase Secret，不會進入 `app.js`、localStorage、`app_state`、備份或公開 GitHub 程式碼。
 
-目前支援六種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）、定義語意理解（`concept`）、原版掃描卷整卷批改（`paper_grade`）與逐題詳批（`paper_detail`，由後端驗證隔日＋至少一次獨立重想才解鎖）。另有不呼叫 OpenAI 的 `paper_key`：只有伺服器端 `app_state` 已保存同一回 `grading` 與 `submittedAt` 後，才從 Edge Secret 回傳該卷正式答案。逐題詳批固定回傳診斷信心、可驗證的正確前綴、第一錯步原式、錯因、最小修正與完整解法；低信心結果不寫入弱點模型。所有密集卷面都以 Responses API 圖片輸入的 `detail: original` 傳入，不先縮成低解析度；大綱原文只來自使用者的私人內容層。
+目前支援六種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）、定義語意理解（`concept`）、原版掃描卷整卷批改（`paper_grade`）與逐題詳批（`paper_detail`，由後端驗證隔日＋至少一次獨立重想才解鎖）。另有兩種不呼叫 OpenAI 的私有素材路由：`paper_key` 只在伺服器端 `app_state` 已保存同一回交卷狀態後回傳正式答案；`paper_solution` 只在同一回、同一題已到隔日且保存至少一次真實重想後，從私有 `matha-solutions` bucket 簽發 15 分鐘官方詳解圖網址。逐題詳批固定回傳診斷信心、可驗證的正確前綴、第一錯步原式、錯因、最小修正與完整解法；低信心結果不寫入弱點模型。所有密集卷面都以 Responses API 圖片輸入的 `detail: original` 傳入，不先縮成低解析度；大綱原文只來自使用者的私人內容層。
 
 ## 專案配置
 
 - 可管理的 Supabase 專案 `rrihysbxhsbxjteqmtdu` 同時負責登入、學習資料、私有題庫 Storage、`openai-proxy` 與 OpenAI Secret，不再依賴舊專案。
 - Edge Function 的「Verify JWT with legacy secret」必須關閉；函式會自行把 Bearer token 交給同一專案 `/auth/v1/user` 驗證，未登入者一律回傳 401。
+- `matha-solutions` bucket 必須維持 private 且不得建立 authenticated select policy；一般 Storage client 不能讀取，只有通過訂正閘門的 Edge Function 可用 service role 簽短效網址。物件路徑對照只存在後端，不進前端、離線快取或學習狀態。
 
 ## Secrets
 

@@ -20,11 +20,14 @@ function assertThrows(fn: () => unknown) {
   if (!threw) throw new Error("expected function to throw");
 }
 import {
+  absoluteStorageSignedUrl,
   MAX_TEXT_CHARS,
   normalizeMessages,
   outputText,
   paperDetailGateAllows,
   paperKeyGateAllows,
+  paperSolutionFiles,
+  paperSolutionGateAllows,
   parsePaperAnswerKeys,
   requestWeights,
   responseSchemas,
@@ -227,6 +230,52 @@ Deno.test("paper_key 只接受伺服器已保存的同一回 grading 交卷", ()
       "run-3",
       "paper-mock-3",
     ),
+  );
+});
+
+Deno.test("paper_solution 只接受同一來源且已完成隔日重想的題", () => {
+  const state = gateData("2026-07-17", {
+    attempts: 1,
+    logs: [{ kind: "retry", direction: "先重畫圖再建式" }],
+  });
+  const runs = state.paperRuns as Array<Record<string, unknown>>;
+  runs[0].sourceId = "paper-mock-1";
+  assert(
+    paperSolutionGateAllows(
+      state,
+      "run-1",
+      "paper-mock-1",
+      3,
+      "2026-07-18",
+    ),
+  );
+  assert(
+    !paperSolutionGateAllows(
+      state,
+      "run-1",
+      "paper-mock-2",
+      3,
+      "2026-07-18",
+    ),
+  );
+  assertEquals(paperSolutionFiles("paper-mock-1", 12), [
+    "paper-mock-1/q12-a.png",
+    "paper-mock-1/q12-b.png",
+  ]);
+  assertEquals(paperSolutionFiles("paper-mock-1", 10), []);
+  assertEquals(paperSolutionFiles("../paper-mock-1", 12), []);
+  assertEquals(
+    absoluteStorageSignedUrl(
+      "https://example.supabase.co",
+      "/object/sign/matha-solutions/q.png?token=x",
+    ),
+    "https://example.supabase.co/storage/v1/object/sign/matha-solutions/q.png?token=x",
+  );
+  assertThrows(() =>
+    absoluteStorageSignedUrl(
+      "https://example.supabase.co",
+      "//evil.example/q.png",
+    )
   );
 });
 

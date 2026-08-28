@@ -1,8 +1,11 @@
 import {
+  absoluteStorageSignedUrl,
   normalizeMessages,
   outputText,
   paperDetailGateAllows,
   paperKeyGateAllows,
+  paperSolutionFiles,
+  paperSolutionGateAllows,
   parsePaperAnswerKeys,
   requestWeights,
   responseSchemas,
@@ -15,6 +18,7 @@ const OPENAI_URL = "https://api.openai.com/v1/responses";
 const APP_SUPABASE_URL = "https://rrihysbxhsbxjteqmtdu.supabase.co";
 const APP_SUPABASE_KEY = "sb_publishable_p6ThWGf5DLp6XRCovZMVDQ_9vJG_Y41";
 const MAX_BODY_BYTES = 14_000_000;
+const PAPER_SOLUTION_BUCKET = "matha-solutions";
 
 const allowedOrigins = new Set([
   "https://uqrqmmw.github.io",
@@ -137,6 +141,54 @@ async function paperAnswerKeyAfterSubmit(userId: string, rawContext: unknown) {
   return keys[sourceId] || null;
 }
 
+async function paperSolutionAfterRetry(userId: string, rawContext: unknown) {
+  const context = rawContext && typeof rawContext === "object"
+    ? rawContext as Record<string, unknown>
+    : {};
+  const runId = String(context.paperRunId || "");
+  const sourceId = String(context.sourceId || "");
+  const questionNo = Number(context.questionNo);
+  const data = await loadAppState(userId);
+  if (
+    !paperSolutionGateAllows(
+      data,
+      runId,
+      sourceId,
+      questionNo,
+      taipeiDate(),
+    )
+  ) return null;
+  const files = paperSolutionFiles(sourceId, questionNo);
+  if (!files.length) return { images: [] };
+  if (!serviceRoleKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  const images = [];
+  for (const file of files) {
+    const response = await fetch(
+      `${APP_SUPABASE_URL}/storage/v1/object/sign/${PAPER_SOLUTION_BUCKET}/${file}`,
+      {
+        method: "POST",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ expiresIn: 900 }),
+      },
+    );
+    const payload = await response.json().catch(() => null) as
+      | Record<string, unknown>
+      | null;
+    if (!response.ok || !payload) {
+      throw new Error(`Cannot sign official solution (${response.status})`);
+    }
+    const rawUrl = String(payload.signedURL || payload.signedUrl || "");
+    if (!rawUrl) throw new Error("Official solution URL missing");
+    const url = absoluteStorageSignedUrl(APP_SUPABASE_URL, rawUrl);
+    images.push({ url });
+  }
+  return { images };
+}
+
 function corsHeaders(origin: string) {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Headers":
@@ -223,6 +275,7 @@ Deno.serve(async (req: Request) => {
         "outline",
         "concept",
         "paper_key",
+        "paper_solution",
         "paper_grade",
         "paper_detail",
         "text",
@@ -245,6 +298,21 @@ Deno.serve(async (req: Request) => {
         });
       }
       return reply(origin, 200, { paperKey });
+    }
+
+    if (responseType === "paper_solution") {
+      let paperSolution;
+      try {
+        paperSolution = await paperSolutionAfterRetry(userId, body.context);
+      } catch (_) {
+        return reply(origin, 500, { message: "官方詳解像素暫時無法載入" });
+      }
+      if (!paperSolution) {
+        return reply(origin, 403, {
+          message: "官方詳解尚未開放：請先完成隔日重想。",
+        });
+      }
+      return reply(origin, 200, { paperSolution });
     }
 
     const apiKey = Deno.env.get("OPENAI_API_KEY");

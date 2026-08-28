@@ -53,6 +53,23 @@ test('GitHub Pages 以 meta CSP 與 no-referrer 補足可控的瀏覽器安全�
   assert.doesNotMatch(html, /script-src[^;]*https?:\/\/(?!rrihysbxhsbxjteqmtdu\.supabase\.co)/);
 });
 
+test('官方詳解 bucket 為私有且 schema 不授權一般登入者直接讀取', () => {
+  const schema = fs.readFileSync(path.join(ROOT, 'supabase', 'schema.sql'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
+  assert.match(schema, /'matha-solutions',\s*'matha-solutions',\s*false,/);
+  const createPolicies = [...schema.matchAll(/create policy[\s\S]*?;/gi)].map((match) => match[0]);
+  assert.equal(createPolicies.some((policy) => /matha-solutions/i.test(policy)), false,
+    'matha-solutions 不得建立 authenticated select policy；只能由 Edge 簽短效網址');
+  assert.match(html, /img-src 'self' data: blob: https:\/\/rrihysbxhsbxjteqmtdu\.supabase\.co/,
+    'CSP 必須允許顯示 Supabase 短效簽名詳解圖');
+  for (const publicSource of [html, app, sw]) {
+    assert.doesNotMatch(publicSource, /paper-mock-1\/q(?:03|04|11|12-a|12-b|13|14|16)\.png/,
+      '公開前端與離線快取不得含官方詳解物件路徑');
+  }
+});
+
 test('原版模考掃描不進公開站資產或離線快取', () => {
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');

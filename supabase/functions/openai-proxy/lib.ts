@@ -462,6 +462,55 @@ export function paperDetailGateAllows(
   return attempts >= 1 && hasRetryLog;
 }
 
+/* 官方詳解像素與 AI 詳批共用同一個「隔日＋真實重想」門檻，另外必須
+   綁定同一回的 sourceId，避免拿已解鎖的舊 run 猜別回題本的檔名。 */
+export function paperSolutionGateAllows(
+  data: Record<string, unknown> | undefined,
+  runId: string,
+  sourceId: string,
+  questionNo: number,
+  today: string,
+) {
+  if (!paperDetailGateAllows(data, runId, questionNo, today)) return false;
+  const rawRuns = data?.paperRuns;
+  const runs: unknown[] = Array.isArray(rawRuns) ? rawRuns : [];
+  const run = runs.find((item) =>
+    item && typeof item === "object" &&
+    String((item as Record<string, unknown>).id || "") === runId
+  ) as Record<string, unknown> | undefined;
+  return !!run && String(run.sourceId || "") === sourceId;
+}
+
+const paperSolutionMap: Record<string, Record<number, string[]>> = {
+  "paper-mock-1": {
+    3: ["paper-mock-1/q03.png"],
+    4: ["paper-mock-1/q04.png"],
+    11: ["paper-mock-1/q11.png"],
+    12: ["paper-mock-1/q12-a.png", "paper-mock-1/q12-b.png"],
+    13: ["paper-mock-1/q13.png"],
+    14: ["paper-mock-1/q14.png"],
+    16: ["paper-mock-1/q16.png"],
+  },
+};
+
+export function paperSolutionFiles(sourceId: string, questionNo: number) {
+  if (!/^paper-[a-z0-9-]{1,50}$/.test(sourceId)) return [];
+  if (!Number.isInteger(questionNo) || questionNo < 1 || questionNo > 20) {
+    return [];
+  }
+  return [...(paperSolutionMap[sourceId]?.[questionNo] || [])];
+}
+
+export function absoluteStorageSignedUrl(baseUrl: string, rawUrl: string) {
+  const base = String(baseUrl || "").replace(/\/$/, "");
+  const raw = String(rawUrl || "");
+  if (!/^https:\/\//.test(base) || !raw) throw new Error("Signed URL 不合法");
+  if (/^https:\/\//.test(raw)) return raw;
+  if (raw.startsWith("/storage/v1/")) return `${base}${raw}`;
+  if (raw.startsWith("/object/")) return `${base}/storage/v1${raw}`;
+  throw new Error("Signed URL 路徑不合法");
+}
+
 /* 正式答案只能在 app_state 已保存同一回交卷狀態後解鎖。前端聲稱已交卷不算數；
    Edge Function 必須以 service role 讀回伺服器端狀態再判斷。 */
 export function paperKeyGateAllows(

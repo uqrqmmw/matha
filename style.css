@@ -1681,6 +1681,10 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .paper-detail-repair h3 { border-top: 0; }
 .paper-detail-full-solution { margin-top: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: #f8f6f1; }
 .paper-detail-full-solution summary, .paper-detail-correction summary { cursor: pointer; font-weight: 650; }
+.paper-official-solution { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.paper-official-solution h3 { margin: 0 0 4px; font-size: 1rem; }
+.paper-official-solution p { margin: 0 0 10px; color: var(--muted); }
+.paper-official-solution img { display: block; width: 100%; height: auto; margin-top: 8px; border-radius: 6px; border: 1px solid var(--border); background: #fff; }
 .paper-detail-correction { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .paper-detail-correction label { display: grid; gap: 6px; margin: 10px 0; color: var(--dim); font-size: 12px; }
 .paper-detail-correction textarea { width: 100%; resize: vertical; min-height: 66px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); font: inherit; font-size: 14px; }
