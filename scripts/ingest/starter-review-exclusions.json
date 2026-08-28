@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "kind": "matha-starter-review-exclusions",
+  "releaseAuthority": false,
+  "items": [
+    {
+      "id": "matrix-equation-p102-ex19",
+      "reason": "cleaned-pixel-artifact-near-n-equals-zero",
+      "evidence": "Codex visual pixel QA on source-cleaned pair; keep isolated until a human confirms a corrected asset"
+    }
+  ]
+}
