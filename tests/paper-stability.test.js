@@ -530,7 +530,112 @@ test('救援檔含本回所有增量紀錄、恢復資訊與版本識別', () =>
   const { ROOT } = require('./helpers/load-app');
   const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   assert.match(source, /kind:\s*'matha-paper-rescue-v1'/);
-  assert.match(source, /records,\s*\n\s*\};/);
+  assert.match(source, /records,\s*\n\s*runtimeAudit:session\.run\.runtimeAudit \|\| null,\s*\n\s*\};/);
   assert.match(source, /paperRecoveryRows\(session\)/);
   assert.match(source, /id="paper-ink-status"[^>]+paperRecoveryOpen\(\)/);
+});
+
+test('真機驗收用實際翻頁 P95、落筆保存、100 分鐘、恢復與 PDF 證據判定', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = paperSourceById('paper-mock-3');
+    const audit = {
+      schema:PAPER_RUNTIME_AUDIT_SCHEMA, appVersion:APP_VER, runId:'audit-pass', sourceId:source.id,
+      activeElapsedMs:source.minutes * 60000, sessions:2, crashRecoveries:1, pdfPreparedAt:Date.now(),
+      pageSwitches:[100, 180, 220, 430].map((ms, index) => ({ from:index % 2, to:(index + 1) % 2, ms })),
+      localSaveMs:[25, 80, 130, 850], localSaveFailures:0,
+      maxSingleCanvasPixels:PAPER_CANVAS_MAX_PIXELS, maxLiveCanvasCount:2,
+      samples:[100, 122, 131].map((mb) => ({ heapBytes:mb * 1048576 })), maxHeapBytes:131 * 1048576,
+    };
+    const passing = paperRuntimeAuditSummary({ id:'audit-pass', sourceId:source.id, runtimeAudit:audit });
+    const failing = paperRuntimeAuditSummary({ id:'audit-fail', sourceId:source.id, runtimeAudit:{
+      ...audit, runId:'audit-fail', pageSwitches:[100, 180, 220, 720].map((ms) => ({ ms })),
+      localSaveMs:[25, 2400], localSaveFailures:1,
+    } });
+    return {
+      pass:passing.passed,
+      pageP95:passing.pageP95Ms,
+      saveP95:passing.localSaveP95Ms,
+      statuses:Object.fromEntries(passing.checks.map((row) => [row.id, row.status])),
+      failed:failing.passed,
+      failedStatuses:Object.fromEntries(failing.checks.map((row) => [row.id, row.status])),
+    };
+  })()`));
+  assert.equal(result.pass, true);
+  assert.equal(result.pageP95, 430);
+  assert.equal(result.saveP95, 850);
+  assert.deepEqual(result.statuses, {
+    duration:'pass', page:'pass', save:'pass', canvas:'pass', resume:'pass', pdf:'pass', memory:'pass',
+  });
+  assert.equal(result.failed, false);
+  assert.equal(result.failedStatuses.page, 'fail');
+  assert.equal(result.failedStatuses.save, 'fail');
+});
+
+test('真機量測事件與樣本都有固定上限，換 app 版本也不會清掉同一回證據', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const runRow = { id:'bounded-audit', sourceId:'paper-mock-3', remainingMs:6000000, runtimeAudit:{
+      schema:PAPER_RUNTIME_AUDIT_SCHEMA, appVersion:'older-version', runId:'bounded-audit', sourceId:'paper-mock-3',
+      pageSwitches:[], localSaveMs:[], cloudSyncMs:[], samples:[],
+    } };
+    const session = { run:runRow, source:paperSourceById('paper-mock-3'), durability:{ pendingClientIds:new Set() } };
+    const same = paperRuntimeAuditFor(session);
+    for (let i = 0; i < 400; i++) paperRuntimeAuditPush(same.pageSwitches, { ms:i });
+    for (let i = 0; i < 300; i++) paperRuntimeAuditPush(same.samples, { at:i }, PAPER_RUNTIME_AUDIT_SAMPLE_CAP);
+    return {
+      sameObject:same === runRow.runtimeAudit,
+      originalVersion:same.appVersion,
+      lastVersion:same.lastAppVersion,
+      events:same.pageSwitches.length,
+      firstEvent:same.pageSwitches[0].ms,
+      samples:same.samples.length,
+      firstSample:same.samples[0].at,
+    };
+  })()`));
+  assert.deepEqual(result, {
+    sameObject:true,
+    originalVersion:'older-version',
+    lastVersion:'0829n',
+    events:240,
+    firstEvent:160,
+    samples:220,
+    firstSample:80,
+  });
+});
+
+test('真機驗收只量完成筆畫的本機保存時間，重試失敗依 client_id 去重', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const session = {
+      run:{ id:'save-audit', sourceId:'paper-mock-3', remainingMs:5000000 },
+      source:paperSourceById('paper-mock-3'), durability:{ pendingClientIds:new Set() },
+    };
+    const committedAt = Date.now() - 320;
+    const draft = { client_id:'draft', proc:{ draft:true, committedAt }, strokes:{} };
+    const final = { client_id:'final', proc:{ draft:false, committedAt }, strokes:{} };
+    paperRuntimeAuditLocalStored(draft, session);
+    paperRuntimeAuditLocalStored(final, session);
+    paperRuntimeAuditLocalFailure(final, session);
+    paperRuntimeAuditLocalFailure(final, session);
+    return {
+      latencies:session.run.runtimeAudit.localSaveMs,
+      failures:session.run.runtimeAudit.localSaveFailures,
+      pending:[...session.auditCloudPending.keys()],
+    };
+  })()`));
+  assert.equal(result.latencies.length, 1);
+  assert.ok(result.latencies[0] >= 300 && result.latencies[0] < 1000);
+  assert.equal(result.failures, 1);
+  assert.deepEqual(result.pending, ['final']);
+});
+
+test('第一次批改頁可打開並匯出本回真機驗收報告', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { ROOT } = require('./helpers/load-app');
+  const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  assert.match(source, /paperRuntimeAuditOpen\('\$\{jsA\(run\.id\)\}'\)/);
+  assert.match(source, /kind:'matha-paper-runtime-audit-v1'/);
+  assert.match(source, /paperRuntimeAuditSample\(\);[\s\S]*paperRecoveryHeartbeat\(\)/);
 });

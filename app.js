@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829m'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829n'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -6030,6 +6030,7 @@ async function startPaperSource(sourceId) {
       },
       recoveredNotice: recovered ? `已從 ${new Date(Number(recovered.updatedAt)).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 的安全點恢復` : '',
     };
+    if (run.status === 'active') paperRuntimeAuditSessionStart(paperSourceSession, recovered);
     paperSourceSession.page = Math.max(0, Math.min(source.scans.length - 1, paperSourceSession.page));
     sessionActive = true; sessionMode = run.status === 'grading' ? 'paper-grade' : 'paper-source';
     if (sessionMode === 'paper-source') paperRecoveryWrite(true);
@@ -6072,6 +6073,258 @@ const PAPER_INK_COLORS = {
   green: '#4f7158',
 };
 const PAPER_AI_RED = '#b43b32';
+const PAPER_RUNTIME_AUDIT_SCHEMA = 1;
+const PAPER_RUNTIME_AUDIT_EVENT_CAP = 240;
+const PAPER_RUNTIME_AUDIT_SAMPLE_CAP = 220;
+const PAPER_RUNTIME_AUDIT_SAMPLE_MS = 30000;
+const PAPER_RUNTIME_PAGE_P95_MS = 500;
+const PAPER_RUNTIME_LOCAL_SAVE_MAX_MS = 2000;
+function paperRuntimeNow() {
+  return typeof performance !== 'undefined' && performance && typeof performance.now === 'function'
+    ? performance.now() : Date.now();
+}
+function paperRuntimeAuditFor(session = paperSourceSession) {
+  if (!session || !session.run || session.reviewMode || session.readOnly) return null;
+  const run = session.run;
+  const existing = run.runtimeAudit;
+  if (existing && Number(existing.schema) === PAPER_RUNTIME_AUDIT_SCHEMA && existing.runId === run.id) {
+    existing.lastAppVersion = APP_VER;
+    return existing;
+  }
+  const nav = typeof navigator !== 'undefined' ? navigator : {};
+  const scr = typeof screen !== 'undefined' ? screen : {};
+  return (run.runtimeAudit = {
+    schema:PAPER_RUNTIME_AUDIT_SCHEMA,
+    appVersion:APP_VER,
+    runId:run.id,
+    sourceId:run.sourceId,
+    createdAt:Date.now(),
+    device:{
+      userAgent:String(nav.userAgent || '').slice(0, 320),
+      platform:String(nav.platform || '').slice(0, 80),
+      screenWidth:Number(scr.width) || null,
+      screenHeight:Number(scr.height) || null,
+      dpr:Math.round((Number(window.devicePixelRatio) || 1) * 100) / 100,
+    },
+    sessions:0,
+    crashRecoveries:0,
+    strokesCommitted:0,
+    localSaveFailures:0,
+    localSaveFailureIds:[],
+    pageSwitches:[],
+    localSaveMs:[],
+    cloudSyncMs:[],
+    samples:[],
+    maxSingleCanvasPixels:0,
+    maxLiveCanvasCount:0,
+    maxPendingJournals:0,
+    maxPendingCloud:0,
+    maxSaveTimers:0,
+    maxHeapBytes:0,
+  });
+}
+function paperRuntimeAuditPush(list, value, cap = PAPER_RUNTIME_AUDIT_EVENT_CAP) {
+  if (!Array.isArray(list)) return;
+  list.push(value);
+  if (list.length > cap) list.splice(0, list.length - cap);
+}
+function paperRuntimeAuditElapsed(session = paperSourceSession, remainingOverride = null) {
+  if (!session || !session.source || !session.run) return 0;
+  const total = Math.max(0, Number(session.source.minutes) || 0) * 60000;
+  const remaining = Number.isFinite(Number(remainingOverride)) ? Number(remainingOverride) : paperRunLeft(session.run);
+  return Math.max(0, Math.min(total, total - Math.max(0, remaining)));
+}
+function paperRuntimeAuditSessionStart(session = paperSourceSession, recovered = null) {
+  const audit = paperRuntimeAuditFor(session); if (!audit) return null;
+  audit.sessions = (Number(audit.sessions) || 0) + 1;
+  audit.lastSessionStartedAt = Date.now();
+  audit.activeElapsedMs = paperRuntimeAuditElapsed(session);
+  if (!audit.startedAt) audit.startedAt = audit.lastSessionStartedAt;
+  if (recovered) {
+    audit.crashRecoveries = (Number(audit.crashRecoveries) || 0) + 1;
+    audit.lastRecoveredAt = audit.lastSessionStartedAt;
+    audit.lastRecoveredFrom = Number(recovered.updatedAt) || null;
+  }
+  paperRuntimeAuditSample(session, true);
+  return audit;
+}
+function paperRuntimeAuditSample(session = paperSourceSession, force = false) {
+  const audit = paperRuntimeAuditFor(session); if (!audit) return null;
+  const now = Date.now();
+  if (!force && now - Number(audit.lastSampleAt || 0) < PAPER_RUNTIME_AUDIT_SAMPLE_MS) return null;
+  const canvases = typeof document !== 'undefined' && document.querySelectorAll
+    ? Array.from(document.querySelectorAll('.paper-session-shell canvas') || []) : [];
+  const pixels = canvases.map((canvas) => Math.max(0, Number(canvas.width) || 0) * Math.max(0, Number(canvas.height) || 0));
+  const heap = typeof performance !== 'undefined' && performance && performance.memory
+    ? Number(performance.memory.usedJSHeapSize) || null : null;
+  const pendingJournals = session.journalPromises instanceof Set ? session.journalPromises.size : 0;
+  const pendingCloud = session.durability && session.durability.pendingClientIds instanceof Set
+    ? session.durability.pendingClientIds.size : 0;
+  const sample = {
+    at:now,
+    elapsedMs:paperRuntimeAuditElapsed(session),
+    canvasCount:canvases.length,
+    maxSingleCanvasPixels:pixels.length ? Math.max(...pixels) : 0,
+    pendingJournals,
+    pendingCloud,
+    saveTimers:paperInkSaveTimers.size,
+    heapBytes:heap,
+  };
+  audit.lastSampleAt = now;
+  audit.activeElapsedMs = Math.max(Number(audit.activeElapsedMs) || 0, sample.elapsedMs);
+  audit.maxSingleCanvasPixels = Math.max(Number(audit.maxSingleCanvasPixels) || 0, sample.maxSingleCanvasPixels);
+  audit.maxLiveCanvasCount = Math.max(Number(audit.maxLiveCanvasCount) || 0, sample.canvasCount);
+  audit.maxPendingJournals = Math.max(Number(audit.maxPendingJournals) || 0, pendingJournals);
+  audit.maxPendingCloud = Math.max(Number(audit.maxPendingCloud) || 0, pendingCloud);
+  audit.maxSaveTimers = Math.max(Number(audit.maxSaveTimers) || 0, paperInkSaveTimers.size);
+  audit.maxHeapBytes = Math.max(Number(audit.maxHeapBytes) || 0, Number(heap) || 0);
+  paperRuntimeAuditPush(audit.samples, sample, PAPER_RUNTIME_AUDIT_SAMPLE_CAP);
+  return sample;
+}
+function paperRuntimeAuditStrokeCommitted(stroke, session = paperSourceSession) {
+  const audit = paperRuntimeAuditFor(session); if (!audit || !stroke) return;
+  audit.strokesCommitted = (Number(audit.strokesCommitted) || 0) + 1;
+  audit.lastStrokeAt = Number(stroke.t1) || Date.now();
+  audit.lastStrokeElapsedMs = paperRuntimeAuditElapsed(session);
+}
+function paperRuntimeAuditLocalStored(record, session = paperSourceSession) {
+  const audit = paperRuntimeAuditFor(session); if (!audit || !record || record.proc && record.proc.draft !== false) return;
+  const committedAt = Number(record.proc && record.proc.committedAt) || 0;
+  if (!committedAt) return;
+  const latency = Math.max(0, Date.now() - committedAt);
+  paperRuntimeAuditPush(audit.localSaveMs, Math.round(latency));
+  audit.lastLocalSaveAt = Date.now();
+  session.auditCloudPending = session.auditCloudPending instanceof Map ? session.auditCloudPending : new Map();
+  session.auditCloudPending.set(record.client_id, committedAt);
+}
+function paperRuntimeAuditLocalFailure(record, session = paperSourceSession) {
+  const audit = paperRuntimeAuditFor(session); if (!audit || !record || !record.client_id) return;
+  audit.localSaveFailureIds = Array.isArray(audit.localSaveFailureIds) ? audit.localSaveFailureIds : [];
+  if (!audit.localSaveFailureIds.includes(record.client_id)) {
+    paperRuntimeAuditPush(audit.localSaveFailureIds, record.client_id, 50);
+    audit.localSaveFailures = (Number(audit.localSaveFailures) || 0) + 1;
+  }
+}
+function paperRuntimeAuditCloudStored(clientIds, session = paperSourceSession) {
+  const audit = paperRuntimeAuditFor(session); if (!audit || !(session.auditCloudPending instanceof Map)) return;
+  const now = Date.now();
+  for (const id of clientIds || []) {
+    const committedAt = Number(session.auditCloudPending.get(id)) || 0;
+    if (committedAt) paperRuntimeAuditPush(audit.cloudSyncMs, Math.max(0, now - committedAt));
+    session.auditCloudPending.delete(id);
+  }
+}
+function paperRuntimeAuditPageToken(session, from, to, method) {
+  return paperRuntimeAuditFor(session) ? { session, from, to, method:method || 'button', started:paperRuntimeNow(), at:Date.now() } : null;
+}
+function paperRuntimeAuditRecordPageSwitch(token, elapsed = null) {
+  const audit = token && paperRuntimeAuditFor(token.session); if (!audit) return null;
+  const ms = Math.max(0, Number.isFinite(Number(elapsed)) ? Number(elapsed) : paperRuntimeNow() - Number(token.started));
+  const row = { at:Number(token.at) || Date.now(), from:Number(token.from), to:Number(token.to), method:String(token.method || 'button'), ms:Math.round(ms * 10) / 10 };
+  paperRuntimeAuditPush(audit.pageSwitches, row);
+  paperRuntimeAuditSample(token.session, true);
+  return row;
+}
+function paperRuntimeAuditAfterPaint(token) {
+  if (!token) return;
+  let done = false;
+  let timeout = null;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    if (timeout != null) clearTimeout(timeout);
+    paperRuntimeAuditRecordPageSwitch(token);
+  };
+  const afterFrames = () => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(finish));
+    else finish();
+  };
+  const image = $('#paper-source-image');
+  if (!image || image.complete || typeof image.addEventListener !== 'function') afterFrames();
+  else {
+    image.addEventListener('load', afterFrames, { once:true });
+    image.addEventListener('error', finish, { once:true });
+    timeout = setTimeout(finish, 5000);
+    if (timeout && typeof timeout.unref === 'function') timeout.unref();
+  }
+}
+function paperRuntimeAuditPause(session = paperSourceSession, remaining = null, status = 'paused') {
+  const audit = paperRuntimeAuditFor(session); if (!audit) return;
+  audit.activeElapsedMs = Math.max(Number(audit.activeElapsedMs) || 0, paperRuntimeAuditElapsed(session, remaining));
+  audit.lastPausedAt = Date.now();
+  audit.lastStatus = status;
+  paperRuntimeAuditSample(session, true);
+}
+function paperRuntimeAuditFinish(session = paperSourceSession, remaining = null, reason = '') {
+  const audit = paperRuntimeAuditFor(session); if (!audit) return;
+  audit.activeElapsedMs = Math.max(Number(audit.activeElapsedMs) || 0, paperRuntimeAuditElapsed(session, remaining));
+  audit.submittedAt = Date.now();
+  audit.submitReason = String(reason || '').slice(0, 80);
+  audit.pendingAtSubmit = session.durability && session.durability.pendingClientIds instanceof Set
+    ? session.durability.pendingClientIds.size : 0;
+  audit.lastStatus = 'submitted';
+  paperRuntimeAuditSample(session, true);
+}
+function paperRuntimePercentile(values, percentile) {
+  const sorted = (values || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  return sorted[Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * percentile) - 1))];
+}
+function paperRuntimeAuditSummary(run) {
+  const audit = run && run.runtimeAudit;
+  const source = run && paperSourceById(run.sourceId);
+  if (!audit || Number(audit.schema) !== PAPER_RUNTIME_AUDIT_SCHEMA) return { available:false, passed:false, checks:[] };
+  const pageMs = (audit.pageSwitches || []).map((row) => Number(row && row.ms)).filter(Number.isFinite);
+  const saveMs = (audit.localSaveMs || []).map(Number).filter(Number.isFinite);
+  const heap = (audit.samples || []).map((row) => Number(row && row.heapBytes)).filter((value) => value > 0);
+  const p95Page = paperRuntimePercentile(pageMs, .95);
+  const p95Save = paperRuntimePercentile(saveMs, .95);
+  const maxSave = saveMs.length ? Math.max(...saveMs) : null;
+  const durationTarget = Math.max(0, Number(source && source.minutes) || 0) * 60000;
+  const elapsed = Number(audit.activeElapsedMs) || 0;
+  const heapGrowth = heap.length >= 3 ? heap[heap.length - 1] - heap[0] : null;
+  const heapLimit = heap.length >= 3 ? Math.max(96 * 1024 * 1024, heap[0] * .75) : null;
+  const checks = [
+    { id:'duration', label:'100 分鐘全程', status:durationTarget && elapsed >= durationTarget - 1000 ? 'pass' : 'pending', detail:`已量測 ${Math.floor(elapsed / 60000)} / ${Math.round(durationTarget / 60000)} 分鐘` },
+    { id:'page', label:'翻頁延遲', status:pageMs.length >= Math.max(3, Number(source && source.scans && source.scans.length) - 1) ? (p95Page <= PAPER_RUNTIME_PAGE_P95_MS ? 'pass' : 'fail') : 'pending', detail:pageMs.length ? `P95 ${Math.round(p95Page)} ms，共 ${pageMs.length} 次` : '尚無翻頁量測' },
+    { id:'save', label:'落筆後本機保存', status:saveMs.length ? (maxSave <= PAPER_RUNTIME_LOCAL_SAVE_MAX_MS && !Number(audit.localSaveFailures) ? 'pass' : 'fail') : 'pending', detail:saveMs.length ? `P95 ${Math.round(p95Save)} ms，最慢 ${Math.round(maxSave)} ms，失敗 ${Number(audit.localSaveFailures) || 0}` : '尚無完成筆畫' },
+    { id:'canvas', label:'Canvas 資源上限', status:Number(audit.maxSingleCanvasPixels) > 0 ? (Number(audit.maxSingleCanvasPixels) <= PAPER_CANVAS_MAX_PIXELS && Number(audit.maxLiveCanvasCount) <= 3 ? 'pass' : 'fail') : 'pending', detail:`單層最高 ${Math.round((Number(audit.maxSingleCanvasPixels) || 0) / 100000) / 10} MP；同時 ${Number(audit.maxLiveCanvasCount) || 0} 層` },
+    { id:'resume', label:'暫停後恢復', status:Number(audit.sessions) >= 2 ? 'pass' : 'pending', detail:`已開啟本回 ${Number(audit.sessions) || 0} 次；當機恢復 ${Number(audit.crashRecoveries) || 0} 次` },
+    { id:'pdf', label:'批改卷 PDF 準備', status:audit.pdfPreparedAt ? 'pass' : 'pending', detail:audit.pdfPreparedAt ? '已成功產生列印版' : '批改完成後尚未按輸出 PDF' },
+    { id:'memory', label:'記憶體趨勢', status:heapGrowth == null ? 'unknown' : heapGrowth <= heapLimit ? 'pass' : 'fail', detail:heapGrowth == null ? '此裝置未提供可比較的 heap 指標' : `首末差 ${Math.round(heapGrowth / 1048576)} MB；峰值 ${Math.round(Number(audit.maxHeapBytes || 0) / 1048576)} MB` },
+  ];
+  const required = checks.filter((row) => row.id !== 'memory');
+  return {
+    available:true,
+    passed:required.every((row) => row.status === 'pass') && checks.find((row) => row.id === 'memory').status !== 'fail',
+    fullyObserved:checks.every((row) => row.status === 'pass'),
+    checks,
+    pageP95Ms:p95Page,
+    localSaveP95Ms:p95Save,
+  };
+}
+function paperRuntimeAuditOpen(runId = '') {
+  const run = runId ? (S.paperRuns || []).find((row) => row && row.id === runId) : paperSourceSession && paperSourceSession.run;
+  const summary = paperRuntimeAuditSummary(run);
+  if (!summary.available) { alert('這一回沒有新版真機驗收紀錄；請用目前版本開始新的一回。'); return; }
+  const rows = summary.checks.map((row) => `<tr><th>${escH(row.label)}</th><td><b>${row.status === 'pass' ? '通過' : row.status === 'fail' ? '未通過' : row.status === 'pending' ? '待完成' : '無法量測'}</b><br><small>${escH(row.detail)}</small></td></tr>`).join('');
+  const headline = summary.fullyObserved ? '這一回已通過全部真機量測'
+    : summary.passed ? '必要項已通過；另有裝置無法直接量測項目' : '這一回仍有驗收項目未完成';
+  modal(`<div class='paper-grade-audit'><span class='eyebrow'>Galaxy Tab 真機驗收｜版本 ${escH(run.runtimeAudit.appVersion)}</span><h2>${headline}</h2><p>數值直接來自這一回的書寫、翻頁、保存與資源紀錄；沒有呼叫 AI。記憶體指標若裝置不提供會明示未知，不會假裝通過。</p><table><tbody>${rows}</tbody></table><div class='actr'><button class='btn' onclick="paperRuntimeAuditDownload('${jsA(run.id)}')">匯出驗收 JSON</button></div></div>`, [['關閉']]);
+}
+function paperRuntimeAuditDownload(runId) {
+  const run = (S.paperRuns || []).find((row) => row && row.id === runId);
+  const summary = paperRuntimeAuditSummary(run);
+  if (!run || !summary.available) return false;
+  const payload = { kind:'matha-paper-runtime-audit-v1', exportedAt:new Date().toISOString(), appVersion:APP_VER, run:{ id:run.id, sourceId:run.sourceId, date:run.d, status:run.status }, summary, audit:run.runtimeAudit };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `數A真機驗收-${run.d || today()}-${run.id}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  return true;
+}
 function paperInkQid(run, page) { return `paper:${run.id}:v${PAPER_LAYOUT_VERSION}:${page}`; }
 function paperReviewInkRun(run) {
   const createdAt = Number(run && (run.submittedAt || run.createdAt)) || Date.now();
@@ -6278,6 +6531,7 @@ function paperInkCloudStored(clientIds, at = Date.now(), session = paperSourceSe
   session.durability.cloudAt = Math.max(Number(session.durability.cloudAt) || 0, Number(at) || Date.now());
   session.durability.cloudError = false;
   paperInkStatusRender(session);
+  paperRuntimeAuditCloudStored(clientIds, session);
 }
 function paperInkJournalRetrySchedule(session = paperSourceSession) {
   if (!session || session.journalRetryTimer || !(session.journalRetry instanceof Map) || !session.journalRetry.size) return;
@@ -6293,8 +6547,10 @@ async function paperInkJournalRecord(record, session = paperSourceSession) {
     const stored = await inkRecordPut(record);
     if (session.journalRetry instanceof Map) session.journalRetry.delete(record.client_id);
     paperInkLocalStored(stored, session);
+    paperRuntimeAuditLocalStored(record, session);
     return true;
   } catch (_) {
+    paperRuntimeAuditLocalFailure(record, session);
     session.durability = session.durability || { pendingClientIds: new Set() };
     session.durability.localError = true;
     session.journalRetry = session.journalRetry instanceof Map ? session.journalRetry : new Map();
@@ -6333,7 +6589,7 @@ function paperInkJournalStroke(stroke, final = false, session = paperSourceSessi
     user_id: session.inkUserId || (syncState.user ? syncState.user.id : null),
     qid: paperInkQid(storageRun, pageIndex),
     t0: Number(stroke.t0) || Date.now(),
-    proc: { overlay: true, mode: session.reviewMode ? 'paper-correction' : 'paper-source', page: pageIndex, event: 'stroke', draft: !final },
+    proc: { overlay: true, mode: session.reviewMode ? 'paper-correction' : 'paper-source', page: pageIndex, event: 'stroke', draft: !final, committedAt:final ? Number(captured.t1) || Date.now() : null },
     strokes: { paper: true, event: true, s: [captured], deleted: [] },
     uploaded: false,
   };
@@ -7121,7 +7377,7 @@ function paperInkUp(e) {
       paperSourceSession.inkTouch = null;
       if (e.type === 'pointerup') {
         const delta = paperTouchPageDelta(touch);
-        if (delta) paperWorkspacePage(delta);
+        if (delta) paperWorkspacePage(delta, 'swipe');
       }
     }
     return;
@@ -7197,6 +7453,7 @@ function paperInkCommitCurrent() {
   paperSourceSession.inkCurrent = null;
   if (!stroke || stroke.pts.length <= 1) return false;
   stroke.t1 = Date.now();
+  paperRuntimeAuditStrokeCommitted(stroke);
   paperInkJournalStroke(stroke, true);
   const data = paperInkPage(), index = data.s.length;
   data.s.push(stroke);
@@ -7277,7 +7534,7 @@ function paperInkClear() {
   paperInkJournalDeleted(deletedIds);
   paperInkMarkDirty(); paperInkPaint();
 }
-function paperWorkspacePage(delta) {
+function paperWorkspacePage(delta, method = 'button') {
   if (!paperSourceSession) return;
   if (!paperSourceSession.readOnly) {
     paperInkCommitCurrent();
@@ -7285,6 +7542,7 @@ function paperWorkspacePage(delta) {
   }
   const nextPage = Math.max(0, Math.min(paperSourceSession.source.scans.length - 1, paperSourceSession.page + delta));
   if (nextPage === paperSourceSession.page) return false;
+  const auditToken = paperRuntimeAuditPageToken(paperSourceSession, paperSourceSession.page, nextPage, method);
   paperSourceSession.page = nextPage;
   if (paperSourceSession.reviewMode) paperSourceSession.run.reviewPage = paperSourceSession.page;
   else paperSourceSession.run.paperPage = paperSourceSession.page;
@@ -7292,6 +7550,7 @@ function paperWorkspacePage(delta) {
   paperRecoveryWrite(true);
   if (paperSourceSession.reviewMode) renderPaperAnswerReview();
   else renderPaperSource();
+  paperRuntimeAuditAfterPaint(auditToken);
   return true;
 }
 function paperWorkspaceZoom(delta) {
@@ -7451,6 +7710,11 @@ async function paperExportGradedPdf() {
     };
     if (printWindow.document.readyState === 'complete') setTimeout(ready, 250);
     else printWindow.addEventListener('load', () => setTimeout(ready, 250), { once: true });
+    if (run.runtimeAudit) {
+      run.runtimeAudit.pdfPreparedAt = Date.now();
+      run.mt = Date.now();
+      save();
+    }
     return true;
   } catch (error) {
     try {
@@ -7739,6 +8003,7 @@ async function paperRecoveryExport() {
     source: { id: session.source.id, title: session.source.title, pages: session.source.scans.length },
     recovery,
     records,
+    runtimeAudit:session.run.runtimeAudit || null,
   };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const link = document.createElement('a');
@@ -7764,10 +8029,12 @@ function renderPaperSource() {
   sessionChrome(true);
   paperInkAttach();
   paperInkStatusRender();
+  paperRuntimeAuditSample(paperSourceSession, true);
   startTicker(() => {
     if (!paperSourceSession || sessionMode !== 'paper-source') return stopTicker();
     const remain = paperRunLeft(run), clock = $('#paper-clock');
     if (clock) clock.textContent = fmtClock(remain);
+    paperRuntimeAuditSample();
     paperRecoveryHeartbeat();
     if (remain <= 0) paperSourceGrade('時間到');
   });
@@ -7778,6 +8045,7 @@ async function paperSourcePause() {
   const remaining = paperRunLeft(run);
   paperInkCommitCurrent();
   run.remainingMs = remaining; run.resumeAt = null; run.status = 'paused'; run.mt = Date.now();
+  paperRuntimeAuditPause(session, remaining, 'paused');
   run.paperPage = Number(session.page) || 0;
   paperRecoveryClose(run, 'paused');
   save();
@@ -7904,6 +8172,7 @@ async function paperSourceGrade(reason) {
     return;
   }
   run.remainingMs = remaining; run.resumeAt = null; run.status = 'grading'; run.gradeReason = reason;
+  paperRuntimeAuditFinish(session, remaining, reason);
   run.submittedAt = run.submittedAt || Date.now(); run.mt = Date.now();
   paperRecoveryClose(run, 'grading');
   save();
@@ -7965,7 +8234,7 @@ function renderPaperGradeResult() {
     <div class="paper-workbar"><div class="paper-work-title"><b>第一次批改｜對錯、分數、正確答案</b><small>${escH(source.title)}</small></div><strong class="paper-result-score">${grade.score} / 100</strong>
       <div class="paper-workgroup right">${paperAiToggleButtonHTML()}<button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace" aria-label="你的原筆跡＋AI 紅筆標記"><section class="paper-source-pane"><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div></div></div></section></div>
-    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen(${page})">AI 看錯／修正這頁</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
+    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen(${page})">AI 看錯／修正這頁</button><button class="btn" onclick="paperRuntimeAuditOpen('${jsA(run.id)}')">真機驗收</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true);
   paperInkAttach();
