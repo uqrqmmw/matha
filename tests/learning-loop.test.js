@@ -127,6 +127,33 @@ test('教材選題理由會引用跨題流程斷點，但同一題重複錯不�
   assert.match(result.repeated, /較常卡在建式/);
 });
 
+test('教材精選只有跨兩題正式卷失分才啟用配分／時間排序，單題失誤仍不宣布單元弱點', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES.find((item) => item.questions === 20 && item.calibrationEligible !== false && Array.isArray(item.key));
+    const q = BANK.find((item) => item.topic === 'num');
+    const grade = source.key.map((key, index) => ({
+      no:index + 1, topic:index < 2 ? 'num' : 'prob',
+      status:index === 0 ? 'incorrect' : 'correct', points:index === 0 ? 0 : key.points,
+      maxPoints:key.points, marks:[],
+    }));
+    S.paperRuns = [{ id:'value-paper', sourceId:source.id, submittedAt:1, status:'completed', aiGrade:{ score:95, questions:grade }, review:{} }];
+    const oneSignals = learningSignalIndex();
+    const one = questionRecoveryOpportunity(q, oneSignals);
+    const oneScore = questionLearningValue(q, oneSignals);
+    grade[1].status = 'incorrect'; grade[1].points = 0;
+    const twoSignals = learningSignalIndex();
+    const two = questionRecoveryOpportunity(q, twoSignals);
+    return { one, oneScore, two, twoScore:questionLearningValue(q, twoSignals), reason:questionSelectionReason(q, twoSignals) };
+  })()`));
+  assert.equal(result.one, null);
+  assert.equal(result.two.points, 10);
+  assert.equal(result.two.questionCount, 2);
+  assert.ok(result.twoScore > result.oneScore);
+  assert.match(result.reason, /10 分失分證據（跨 2 題）/);
+  assert.match(result.reason, /約 \d+ 分鐘驗證/);
+});
+
 test('教材混合精選不被正式卷題型比例限制，並排除眼刷留到明天與一眼就會的題', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3495,7 +3495,11 @@ function learningSignalIndex() {
     if (!questions.has(id)) questions.set(id, { n:0, ok:0, guess:0, noDirection:0, vision:0, obvious:0, l2:0, l3:0, open:0, retentionDue:0, retentionPending:0, lastTs:0, lastD:'', lastObviousD:'' });
     return questions.get(id);
   };
-  const trow = (topic) => (topics[topic] = topics[topic] || { n:0, ok:0, noDirection:0, l2:0, l3:0, open:0 });
+  const trow = (topic) => (topics[topic] = topics[topic] || {
+    n:0, ok:0, noDirection:0, l2:0, l3:0, open:0,
+    formalLostPoints:0, formalOpenPoints:0, formalReconstructedPoints:0, formalRetainedPoints:0,
+    formalLostQuestionIds:new Set(), formalActiveQuestionIds:new Set(),
+  });
   for (const attempt of S.attempts || []) {
     if (!learningRecordCurrent(attempt && attempt.ts)) continue;
     const q = bankById(attempt.qid); if (!q) continue;
@@ -3532,6 +3536,7 @@ function learningSignalIndex() {
     if (!paperRunInCurrentBaseline(run)) continue;
     const source = run && paperSourceById(run.sourceId); if (!source) continue;
     const graded = run.aiGrade && Array.isArray(run.aiGrade.questions) ? run.aiGrade.questions : [];
+    const formal = source.questions === 20 && source.calibrationEligible !== false;
     for (const item of graded) {
       const no = Number(item && item.no), review = run.review && run.review[no];
       const topicKey = item && item.topic || review && review.topic;
@@ -3539,6 +3544,19 @@ function learningSignalIndex() {
       const topic = trow(topicKey);
       topic.n++;
       topic.ok += item.status === 'correct' ? 1 : 0;
+      const lost = formal ? paperGradeItemPointLoss(source, item).lost : 0;
+      if (lost > 0) {
+        const questionId = `${run.id}:${no}`;
+        const level = Number(review && review.level) || 0;
+        topic.formalLostPoints += lost;
+        topic.formalLostQuestionIds.add(questionId);
+        if (review && review.retentionPassed) topic.formalRetainedPoints += lost;
+        else {
+          topic.formalActiveQuestionIds.add(questionId);
+          if ([2, 3].includes(level)) topic.formalReconstructedPoints += lost;
+          else topic.formalOpenPoints += lost;
+        }
+      }
     }
     for (const [noText, review] of Object.entries(run.review || {})) {
       const item = graded.find((row) => Number(row && row.no) === Number(noText));
@@ -3549,6 +3567,12 @@ function learningSignalIndex() {
       else if (level === 2) topic.l2++;
       else if (level === 3) topic.l3++;
     }
+  }
+  for (const topic of Object.values(topics)) {
+    topic.formalLostQuestions = topic.formalLostQuestionIds.size;
+    topic.formalActiveQuestions = topic.formalActiveQuestionIds.size;
+    delete topic.formalLostQuestionIds;
+    delete topic.formalActiveQuestionIds;
   }
   return { questions, topics, learner: learnerModel() };
 }
@@ -3994,6 +4018,23 @@ function questionRoleFitWeight(q, solveP, topic) {
   if ((topic && (topic.l3 || topic.noDirection >= 2)) && band === 'foundation') fit *= 1.16;
   return fit;
 }
+function questionRecoveryOpportunity(q, signals) {
+  const topic = q && signals && signals.topics && signals.topics[q.topic];
+  if (!topic || Number(topic.formalActiveQuestions) < 2) return null;
+  const openPoints = Math.max(0, Number(topic.formalOpenPoints) || 0);
+  const reconstructedPoints = Math.max(0, Number(topic.formalReconstructedPoints) || 0);
+  const points = Math.round((openPoints + reconstructedPoints) * 100) / 100;
+  if (!points) return null;
+  const minutes = Math.max(1, Number(q.estimatedMinutes) || ({ 1:2, 2:4, 3:7 })[q.diff] || 4);
+  /* 訂正重建過但還沒通過保留的分數仍值得驗證，但不和完全未解開的失分同權；
+     這是相對選題權重，不顯示成命中率或保證可追回分數。 */
+  const priorityPoints = openPoints + reconstructedPoints * .7;
+  return {
+    points, openPoints, reconstructedPoints, minutes,
+    questionCount:Number(topic.formalActiveQuestions) || 0,
+    valuePerMinute:priorityPoints / minutes,
+  };
+}
 function questionLearningValue(q, signals, options) {
   signals ||= learningSignalIndex(); options ||= {};
   const row = signals.questions.get(q.id) || { n:0, ok:0, guess:0, noDirection:0, vision:0, obvious:0, l2:0, l3:0, open:0, retentionDue:0, retentionPending:0, lastD:'', lastObviousD:'' };
@@ -4025,7 +4066,9 @@ function questionLearningValue(q, signals, options) {
   /* 統一模型把原卷、觀念、眼刷與保留重測帶回選題；範圍刻意受限，避免單一訊號霸佔整回。 */
   const learnerPriority = learnerTopic ? Math.max(.72, Math.min(1.45, learnerTopic.priority)) : 1;
   const minutes = Math.max(1, Number(q.estimatedMinutes) || ({ 1:2, 2:4, 3:7 })[q.diff] || 4);
-  return 100 * weakness * learnable * coverage * retention * direction * role * source * recency * guessPriority * obviousPenalty * eyePenalty * learnerPriority / Math.sqrt(minutes);
+  const recovery = questionRecoveryOpportunity(q, signals);
+  const recoveryValue = recovery ? 1 + Math.min(1.4, recovery.valuePerMinute * .35) : 1;
+  return 100 * weakness * learnable * coverage * retention * direction * role * source * recency * guessPriority * obviousPenalty * eyePenalty * learnerPriority * recoveryValue / minutes;
 }
 function questionSelectionReason(q, signals) {
   signals ||= learningSignalIndex();
@@ -4038,6 +4081,8 @@ function questionSelectionReason(q, signals) {
   if (row.noDirection) return '你曾在這題找不到破題方向';
   if (row.l3) return '這題曾需看詳解才完成';
   if (row.l2) return '這題曾需最終答案才能重建方向';
+  const recovery = questionRecoveryOpportunity(q, signals);
+  if (recovery) return `正式卷在這個單元有 ${recovery.points} 分失分證據（跨 ${recovery.questionCount} 題）；先用約 ${recovery.minutes} 分鐘驗證能否重建`;
   if (topic.l3) return '這個單元曾需要看詳解才完成';
   const learnerTopic = signals.learner && signals.learner.topics && signals.learner.topics[q.topic];
   if (learnerTopic && learnerTopic.topProcess) return `跨題證據顯示「${TOPICS[q.topic]}」較常卡在${learnerTopic.topProcess.label}`;
@@ -8283,6 +8328,20 @@ function paperRunLevelCounts(run) {
   }
   return counts;
 }
+function paperGradeItemPointLoss(source, item) {
+  const no = Number(item && item.no);
+  const official = Array.isArray(source && source.key)
+    ? source.key.find((row) => Number(row && row.no) === no) || source.key[no - 1]
+    : null;
+  const maxPoints = item && item.maxPoints != null && Number.isFinite(Number(item.maxPoints)) ? Number(item.maxPoints)
+    : official && official.points != null && Number.isFinite(Number(official.points)) ? Number(official.points) : 0;
+  const earned = item && item.points != null && Number.isFinite(Number(item.points)) ? Math.max(0, Number(item.points)) : 0;
+  return {
+    maxPoints,
+    earned:Math.min(maxPoints, earned),
+    lost:Math.round(Math.max(0, maxPoints - Math.min(maxPoints, earned)) * 100) / 100,
+  };
+}
 function paperRunRecoveryPoints(run) {
   const out = { lost:0, reconstructed:0, answerOnly:0, solution:0, retained:0, open:0 };
   const source = paperSourceById(run && run.sourceId);
@@ -8290,13 +8349,7 @@ function paperRunRecoveryPoints(run) {
   if (!source || !grade || !Array.isArray(grade.questions)) return out;
   for (const item of grade.questions) {
     const no = Number(item && item.no);
-    const official = Array.isArray(source.key)
-      ? source.key.find((row) => Number(row && row.no) === no) || source.key[no - 1]
-      : null;
-    const maxPoints = item && item.maxPoints != null && Number.isFinite(Number(item.maxPoints)) ? Number(item.maxPoints)
-      : official && official.points != null && Number.isFinite(Number(official.points)) ? Number(official.points) : 0;
-    const earned = item && item.points != null && Number.isFinite(Number(item.points)) ? Math.max(0, Number(item.points)) : 0;
-    const lost = Math.max(0, maxPoints - Math.min(maxPoints, earned));
+    const lost = paperGradeItemPointLoss(source, item).lost;
     if (!lost) continue;
     const state = run.review && run.review[no] || {};
     const level = Number(state.level) || 0;
