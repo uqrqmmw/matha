@@ -57,6 +57,14 @@ Invoke-RestMethod -Method Post `
 
 ## 2. 部署 Edge Functions
 
+若本次新增或更換未作答原卷，先把私有答案 env 檔寫入 Supabase Secret。env 檔必須在 repo 外，且不得把內容貼進 issue、commit 或終端歷史：
+
+```powershell
+npx supabase secrets set --env-file "C:\path\outside-repo\matha-paper-answer-keys.private.env" --project-ref rrihysbxhsbxjteqmtdu
+```
+
+用 `npx supabase secrets list --project-ref rrihysbxhsbxjteqmtdu` 只核對 `PAPER_ANSWER_KEYS_JSON` 名稱存在；CLI 不會顯示 Secret 值。
+
 在 repo 根目錄(`--no-verify-jwt` 必帶:函式自己驗 token,見 openai-proxy/README.md):
 
 ```powershell

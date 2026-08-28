@@ -641,7 +641,7 @@ test('原版模考單指水平滑動翻頁；題本放大或尚未移到邊界�
 test('原版隔日訂正會定位到每題真正所在的清晰單頁，新舊筆跡版面不混用', () => {
   const { run } = loadApp();
   const result = plain(run(`({
-    maps:PAPER_SOURCES.map((source) => source.key.map((_, i) => paperQuestionScanIndex(source, i + 1))),
+    maps:PAPER_SOURCES.map((source) => Array.from({length:source.questions}, (_, i) => paperQuestionScanIndex(source, i + 1))),
     qid:paperInkQid({id:'run-1'}, 3), version:PAPER_LAYOUT_VERSION,
   })`));
   assert.deepEqual(result.maps[0], [0,0,0,0,0,1,1,1,2,2,2,3,3,3,4,4,4,5,5,5]);
@@ -765,20 +765,40 @@ test('第一次整卷結果直接疊加對錯、分數與正確答案，不再�
   assert.doesNotMatch(html, /paper-score|paper-wrong|paperAnswer|答案卡/);
 });
 
-test('原版三回的正式答案鍵與配分各自完整加總 100 分，可供整卷視覺批改', () => {
+test('既有兩回答案維持歷史相容，下一回正式答案不再打包進公開前端', () => {
   const { run } = loadApp();
   const result = plain(run(`PAPER_SOURCES.map((source) => ({
-    questions:source.questions, key:source.key.length,
-    total:source.key.reduce((sum, q) => sum + q.points, 0),
-    prompt:paperGradePromptKey(source),
+    questions:source.questions, key:Array.isArray(source.key) ? source.key.length : 0,
+    total:Array.isArray(source.key) ? source.key.reduce((sum, q) => sum + q.points, 0) : 0,
+    prompt:Array.isArray(source.key) ? paperGradePromptKey(source, source.key) : [],
+    answerAccess:source.answerAccess || 'legacy-public',
   }))`));
-  assert.deepEqual(result.map((x) => [x.questions, x.key, x.total, x.prompt.length]), [
-    [20, 20, 100, 20],
-    [19, 19, 100, 19],
-    [20, 20, 100, 20],
+  assert.deepEqual(result.map((x) => [x.questions, x.key, x.total, x.prompt.length, x.answerAccess]), [
+    [20, 20, 100, 20, 'legacy-public'],
+    [19, 19, 100, 19, 'legacy-public'],
+    [20, 0, 0, 0, 'post-submit-server'],
   ]);
-  assert.equal(result.every((x) => x.prompt.every((q) => q.answer && q.page >= 1 && q.page <= 6)), true);
-  assert.equal(result.every((x) => x.prompt.every((q) => Array.isArray(q.correctOptions))), true);
+  assert.equal(result.slice(0, 2).every((x) => x.prompt.every((q) => q.answer && q.page >= 1 && q.page <= 6)), true);
+  assert.equal(result.slice(0, 2).every((x) => x.prompt.every((q) => Array.isArray(q.correctOptions))), true);
+});
+
+test('第三回只有在交卷狀態成立時才向後端取正式答案', async () => {
+  const { run } = loadApp();
+  const result = plain(await run(`(async () => {
+    const source = PAPER_SOURCES[2], calls = [];
+    const key = Array.from({length:source.questions}, () => ({type:'single', ans:[0], points:5}));
+    openAiInvoke = async (payload) => { calls.push(payload); return {paperKey:key}; };
+    let locked = '';
+    try { await paperAnswerKeyAfterSubmit(source, {id:'r3', sourceId:source.id, status:'active'}); }
+    catch (error) { locked = error.message; }
+    const unlocked = await paperAnswerKeyAfterSubmit(source, {id:'r3', sourceId:source.id, status:'grading', submittedAt:123});
+    return {locked, calls, length:unlocked.length};
+  })()`));
+  assert.match(result.locked, /答案仍保持鎖定/);
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].responseType, 'paper_key');
+  assert.deepEqual(result.calls[0].context, {paperRunId:'r3', sourceId:'paper-mock-3'});
+  assert.equal(result.length, 20);
 });
 
 test('GPT-5.5 多選批分會強制收斂到正式的 5、3、1、0 分', () => {
@@ -1153,7 +1173,7 @@ test('逐題詳批同時送整頁與本題焦點，並強制列出正確前綴�
   const { run } = loadApp();
   const result = plain(await run(`(async () => {
     const source = PAPER_SOURCES[0], no = 3;
-    paperReview = { run:{ id:'quality', aiGrade:{ questions:[{ no, topic:'comb' }] }, review:{ [no]:{ topic:'comb' } } } };
+    paperReview = { run:{ id:'quality', aiGrade:{ questions:[{ no, topic:'comb', answer:'(2)', answerType:'single', maxPoints:5 }] }, review:{ [no]:{ topic:'comb' } } } };
     let request = null;
     openAiInvoke = async (payload) => { request = payload; return { json:{}, model:'gpt-5.5' }; };
     await paperAiDetailCall(source, no, 'full-page', [{ direction:'先分組' }], 'focus-crop', '分母其實寫 3!');

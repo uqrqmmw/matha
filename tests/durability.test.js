@@ -120,6 +120,21 @@ test('整卷 AI schema 強制回傳可獨立核分的 finalAnswer', () => {
   assert.match(block, /"finalAnswer"/);
 });
 
+test('下一份未作答模考的正式答案不進公開前端，只能由交卷後端閘門解鎖', () => {
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const proxy = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8')
+    + fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'lib.ts'), 'utf8');
+  const thirdStart = app.indexOf("id: 'paper-mock-3'");
+  const thirdEnd = app.indexOf('const PAPER_ERROR_KINDS', thirdStart);
+  const third = app.slice(thirdStart, thirdEnd);
+  assert.match(third, /answerAccess:\s*'post-submit-server'/);
+  assert.doesNotMatch(third, /\bkey:\s*\[/);
+  assert.match(app, /await syncPush\(\);[\s\S]*paperAnswerKeyAfterSubmit\(source, run\)/);
+  assert.match(proxy, /Deno\.env\.get\("PAPER_ANSWER_KEYS_JSON"\)/);
+  assert.match(proxy, /paperKeyGateAllows\(data, runId, sourceId\)/);
+  assert.match(proxy, /String\(run\.status \|\| ""\) === "grading"/);
+});
+
 test('AI 代理固定 GPT-5.5，並以後端原子額度阻止連點與超額', () => {
   const schema = fs.readFileSync(path.join(ROOT, 'supabase', 'schema.sql'), 'utf8');
   const source = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8')

@@ -2,6 +2,8 @@ import {
   normalizeMessages,
   outputText,
   paperDetailGateAllows,
+  paperKeyGateAllows,
+  parsePaperAnswerKeys,
   requestWeights,
   responseSchemas,
   safetyIdentifier,
@@ -89,18 +91,8 @@ async function recordAiUsage(
   });
 }
 
-async function verifyPaperDetailGate(userId: string, rawContext: unknown) {
+async function loadAppState(userId: string) {
   if (!serviceRoleKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
-  const context = rawContext && typeof rawContext === "object"
-    ? rawContext as Record<string, unknown>
-    : {};
-  const runId = String(context.paperRunId || "");
-  const questionNo = Number(context.questionNo);
-  if (
-    !runId || !Number.isInteger(questionNo) || questionNo < 1 || questionNo > 20
-  ) {
-    return false;
-  }
   const query = new URL(`${APP_SUPABASE_URL}/rest/v1/app_state`);
   query.searchParams.set("select", "data");
   query.searchParams.set("user_id", `eq.${userId}`);
@@ -115,8 +107,34 @@ async function verifyPaperDetailGate(userId: string, rawContext: unknown) {
     throw new Error(`Cannot verify paper review (${response.status})`);
   }
   const rows = await response.json() as Array<Record<string, unknown>>;
-  const data = rows[0] && rows[0].data as Record<string, unknown> | undefined;
+  return rows[0] && rows[0].data as Record<string, unknown> | undefined;
+}
+
+async function verifyPaperDetailGate(userId: string, rawContext: unknown) {
+  const context = rawContext && typeof rawContext === "object"
+    ? rawContext as Record<string, unknown>
+    : {};
+  const runId = String(context.paperRunId || "");
+  const questionNo = Number(context.questionNo);
+  if (
+    !runId || !Number.isInteger(questionNo) || questionNo < 1 || questionNo > 20
+  ) {
+    return false;
+  }
+  const data = await loadAppState(userId);
   return paperDetailGateAllows(data, runId, questionNo, taipeiDate());
+}
+
+async function paperAnswerKeyAfterSubmit(userId: string, rawContext: unknown) {
+  const context = rawContext && typeof rawContext === "object"
+    ? rawContext as Record<string, unknown>
+    : {};
+  const runId = String(context.paperRunId || "");
+  const sourceId = String(context.sourceId || "");
+  const data = await loadAppState(userId);
+  if (!paperKeyGateAllows(data, runId, sourceId)) return null;
+  const keys = parsePaperAnswerKeys(Deno.env.get("PAPER_ANSWER_KEYS_JSON"));
+  return keys[sourceId] || null;
 }
 
 function corsHeaders(origin: string) {
@@ -191,11 +209,6 @@ Deno.serve(async (req: Request) => {
   }
   const userId = user.id;
 
-  const apiKey = Deno.env.get("OPENAI_API_KEY");
-  if (!apiKey) {
-    return reply(origin, 500, { message: "伺服器尚未設定 OPENAI_API_KEY" });
-  }
-
   try {
     const raw = await req.text();
     if (new TextEncoder().encode(raw).byteLength > MAX_BODY_BYTES) {
@@ -209,6 +222,7 @@ Deno.serve(async (req: Request) => {
         "process",
         "outline",
         "concept",
+        "paper_key",
         "paper_grade",
         "paper_detail",
         "text",
@@ -217,6 +231,26 @@ Deno.serve(async (req: Request) => {
         responseType,
       )
     ) return reply(origin, 400, { message: "responseType 不合法" });
+
+    if (responseType === "paper_key") {
+      let paperKey;
+      try {
+        paperKey = await paperAnswerKeyAfterSubmit(userId, body.context);
+      } catch (_) {
+        return reply(origin, 500, { message: "答案鎖定後端尚未完成設定" });
+      }
+      if (!paperKey) {
+        return reply(origin, 403, {
+          message: "正式答案仍鎖定：請先完成交卷並同步。",
+        });
+      }
+      return reply(origin, 200, { paperKey });
+    }
+
+    const apiKey = Deno.env.get("OPENAI_API_KEY");
+    if (!apiKey) {
+      return reply(origin, 500, { message: "伺服器尚未設定 OPENAI_API_KEY" });
+    }
 
     const model = "gpt-5.5";
     const isTest = responseType === "test";

@@ -24,6 +24,8 @@ import {
   normalizeMessages,
   outputText,
   paperDetailGateAllows,
+  paperKeyGateAllows,
+  parsePaperAnswerKeys,
   requestWeights,
   responseSchemas,
   safetyIdentifier,
@@ -198,6 +200,56 @@ Deno.test("paper_detail 解鎖：未到期、題目狀態或 run 不存在、題
     "題號超界",
   );
   assert(!paperDetailGateAllows(undefined, "run-1", 3, "2026-07-18"));
+});
+
+Deno.test("paper_key 只接受伺服器已保存的同一回 grading 交卷", () => {
+  const data = {
+    paperRuns: [{
+      id: "run-3",
+      sourceId: "paper-mock-3",
+      status: "grading",
+      submittedAt: 123,
+    }],
+  };
+  assert(paperKeyGateAllows(data, "run-3", "paper-mock-3"));
+  assert(!paperKeyGateAllows(data, "run-3", "paper-mock-2"));
+  assert(!paperKeyGateAllows(data, "missing", "paper-mock-3"));
+  assert(
+    !paperKeyGateAllows(
+      { paperRuns: [{ ...data.paperRuns[0], status: "active" }] },
+      "run-3",
+      "paper-mock-3",
+    ),
+  );
+  assert(
+    !paperKeyGateAllows(
+      { paperRuns: [{ ...data.paperRuns[0], submittedAt: 0 }] },
+      "run-3",
+      "paper-mock-3",
+    ),
+  );
+});
+
+Deno.test("PAPER_ANSWER_KEYS_JSON 嚴格驗證題型、答案與配分", () => {
+  const parsed = parsePaperAnswerKeys(JSON.stringify({
+    "paper-mock-3": [
+      { type: "single", ans: [3], points: 5 },
+      { type: "fill", ans: ["13/6"], display: "13/6", points: 5 },
+    ],
+  }));
+  assertEquals(parsed["paper-mock-3"][0].ans, [3]);
+  assertEquals(parsed["paper-mock-3"][1].display, "13/6");
+  assertThrows(() => parsePaperAnswerKeys(undefined));
+  assertThrows(() =>
+    parsePaperAnswerKeys(
+      '{"paper-mock-3":[{"type":"single","ans":[8],"points":5}]}',
+    )
+  );
+  assertThrows(() =>
+    parsePaperAnswerKeys(
+      '{"paper-mock-3":[{"type":"fill","ans":[],"points":5}]}',
+    )
+  );
 });
 
 Deno.test("taipeiDate 回傳台北時區的 YYYY-MM-DD", () => {

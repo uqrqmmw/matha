@@ -19,6 +19,68 @@ export const requestWeights: Record<string, number> = {
   test: 1,
 };
 
+export type PaperAnswerKeyItem = {
+  type: "single" | "multi" | "fill";
+  ans: Array<number | string>;
+  display?: string;
+  points: number;
+};
+
+export function parsePaperAnswerKeys(raw: string | undefined) {
+  if (!raw) throw new Error("Missing PAPER_ANSWER_KEYS_JSON");
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("PAPER_ANSWER_KEYS_JSON 格式不合法");
+  }
+  const out: Record<string, PaperAnswerKeyItem[]> = {};
+  for (const [sourceId, value] of Object.entries(parsed)) {
+    if (
+      !/^paper-[a-z0-9-]{1,50}$/.test(sourceId) || !Array.isArray(value) ||
+      !value.length || value.length > 20
+    ) {
+      throw new Error("PAPER_ANSWER_KEYS_JSON 題本格式不合法");
+    }
+    out[sourceId] = value.map((rawItem) => {
+      if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+        throw new Error("PAPER_ANSWER_KEYS_JSON 題目格式不合法");
+      }
+      const item = rawItem as Record<string, unknown>;
+      const type = String(item.type || "") as PaperAnswerKeyItem["type"];
+      const points = Number(item.points);
+      const answers = Array.isArray(item.ans) ? item.ans : [];
+      if (
+        !["single", "multi", "fill"].includes(type) || !answers.length ||
+        !Number.isFinite(points) || points <= 0 || points > 10
+      ) {
+        throw new Error("PAPER_ANSWER_KEYS_JSON 題目內容不合法");
+      }
+      if (type === "fill") {
+        if (
+          answers.some((answer) => typeof answer !== "string" || !answer.trim())
+        ) {
+          throw new Error("PAPER_ANSWER_KEYS_JSON 填答答案不合法");
+        }
+      } else if (
+        answers.some((answer) =>
+          !Number.isInteger(answer) || Number(answer) < 0 || Number(answer) > 4
+        )
+      ) {
+        throw new Error("PAPER_ANSWER_KEYS_JSON 選項答案不合法");
+      }
+      const normalized: PaperAnswerKeyItem = {
+        type,
+        ans: answers.slice(),
+        points,
+      };
+      if (typeof item.display === "string" && item.display.trim()) {
+        normalized.display = item.display.trim();
+      }
+      return normalized;
+    });
+  }
+  return out;
+}
+
 const nullableText = { type: ["string", "null"] };
 const markSchema = {
   type: "object",
@@ -398,6 +460,25 @@ export function paperDetailGateAllows(
     String((log as Record<string, unknown>).kind || "") === "retry"
   );
   return attempts >= 1 && hasRetryLog;
+}
+
+/* 正式答案只能在 app_state 已保存同一回交卷狀態後解鎖。前端聲稱已交卷不算數；
+   Edge Function 必須以 service role 讀回伺服器端狀態再判斷。 */
+export function paperKeyGateAllows(
+  data: Record<string, unknown> | undefined,
+  runId: string,
+  sourceId: string,
+) {
+  if (!runId || !/^paper-[a-z0-9-]{1,50}$/.test(sourceId)) return false;
+  const rawRuns = data?.paperRuns;
+  const runs: unknown[] = Array.isArray(rawRuns) ? rawRuns : [];
+  const run = runs.find((item) =>
+    item && typeof item === "object" &&
+    String((item as Record<string, unknown>).id || "") === runId
+  ) as Record<string, unknown> | undefined;
+  if (!run || String(run.sourceId || "") !== sourceId) return false;
+  return String(run.status || "") === "grading" &&
+    Number.isFinite(Number(run.submittedAt)) && Number(run.submittedAt) > 0;
 }
 
 export function outputText(response: Record<string, unknown>) {

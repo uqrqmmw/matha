@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0828a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -2805,7 +2805,8 @@ n 元一次聯立方程：代入消去、加減消去與高斯消去；以增廣
 
 /* 使用者提供的原版紙本模考只以私有 Storage 掃描頁呈現，不把受版權保護的題目圖片提交到公開 repo。
    2026-07-17 已逐頁核對題本與正式答案本：第一次、第三次各 20 題，第二次實際只有 19 題。
-   key 只保存批分所需的最終答案，不把整張答案／詳解頁提早暴露。選項索引採 0 起算。 */
+   第三回開始，正式答案不再打包進公開前端；交卷狀態先同步，再由 Edge Function 解鎖。
+   第一、二回的 key 只為既有歷史批改相容，兩回均視為已公開／不再作新鮮校準。選項索引採 0 起算。 */
 const PAPER_SOURCE_BUCKET = 'matha-papers';
 const PAPER_SOURCES = [
   { id: 'paper-mock-1', title: '第一次模考', questions: 20, minutes: 100, pages: 6,
@@ -2859,22 +2860,7 @@ const PAPER_SOURCES = [
       { file: 'mock-2-page-5-6.png', label: '題本第 6 頁', side: 'right' },
     ] },
   { id: 'paper-mock-3', title: '第三次模考', questions: 20, minutes: 100, pages: 4,
-    key: [
-      { type: 'single', ans: [3], points: 5 }, { type: 'single', ans: [2], points: 5 },
-      { type: 'single', ans: [1], points: 5 }, { type: 'single', ans: [1], points: 5 },
-      { type: 'single', ans: [0], points: 5 }, { type: 'single', ans: [1], points: 5 },
-      { type: 'single', ans: [3], points: 5 }, { type: 'multi', ans: [0, 1, 2, 3, 4], points: 5 },
-      { type: 'multi', ans: [1, 3, 4], points: 5 }, { type: 'multi', ans: [0, 1, 3, 4], points: 5 },
-      { type: 'multi', ans: [0, 2], points: 5 }, { type: 'multi', ans: [1, 4], points: 5 },
-      { type: 'multi', ans: [0, 3, 4], points: 5 },
-      { type: 'fill', ans: ['∛2', '2^(1/3)', 'cbrt(2)'], display: '∛2', points: 5 },
-      { type: 'fill', ans: ['13/6'], display: '13/6', points: 5 },
-      { type: 'fill', ans: ['2√7', '2sqrt(7)', '2*sqrt(7)'], display: '2√7', points: 5 },
-      { type: 'fill', ans: ['15'], display: '15', points: 5 },
-      { type: 'single', ans: [2], points: 3 },
-      { type: 'fill', ans: ['72'], display: '72', points: 8 },
-      { type: 'fill', ans: ['-4/3'], display: '-4/3', points: 4 },
-    ],
+    answerAccess: 'post-submit-server', answerBackendReady: false,
     scans: [
       { file: 'mock-3-page-1-2.png', label: '題本第 1 頁', side: 'left' },
       { file: 'mock-3-page-1-2.png', label: '題本第 2 頁', side: 'right' },
@@ -3555,9 +3541,8 @@ function learningSignalIndex() {
       topic.ok += item.status === 'correct' ? 1 : 0;
     }
     for (const [noText, review] of Object.entries(run.review || {})) {
-      const q = source.key[Number(noText) - 1];
       const item = graded.find((row) => Number(row && row.no) === Number(noText));
-      const topicKey = review && review.topic || item && item.topic || q && q.topic;
+      const topicKey = review && review.topic || item && item.topic;
       if (!topicKey || !TOPICS[topicKey]) continue;
       const topic = trow(topicKey), level = Number(review && review.level) || 0;
       if (!review || !review.done) topic.open++;
@@ -3727,10 +3712,11 @@ function learningEvidenceLedger() {
     const grade = run && run.aiGrade;
     if (!source || !grade || run.status === 'discarded') continue;
     for (const item of grade.questions || []) {
-      const no = Number(item.no), key = source.key[no - 1], state = run.review && run.review[no] || {};
-      const topic = item.topic || state.topic || (key && key.topic) || '';
-      if (!TOPICS[topic] || !key) continue;
-      const max = Math.max(1, Number(key.points) || 1), rawPoints = Number(item.points);
+      const no = Number(item.no), state = run.review && run.review[no] || {};
+      const meta = paperQuestionMeta(run, source, no);
+      const topic = item.topic || state.topic || meta && meta.topic || '';
+      if (!TOPICS[topic]) continue;
+      const max = Math.max(1, Number(meta && meta.points) || 1), rawPoints = Number(item.points);
       const score = item.points != null && Number.isFinite(rawPoints) ? Math.max(0, Math.min(1, rawPoints / max))
         : item.status === 'correct' ? 1 : ['incorrect', 'unanswered'].includes(item.status) ? 0 : null;
       if (score == null) continue; // 舊版看不清楚且無分數的題不硬灌成對或錯
@@ -5241,6 +5227,7 @@ function paperLatestRun(sourceId) {
 }
 function paperSourceCardHTML(source) {
   const active = paperActiveRun(source.id), latest = paperLatestRun(source.id);
+  const deploymentBlocked = source.answerAccess === 'post-submit-server' && source.answerBackendReady !== true;
   const archivedBaseline = latest && latest.aiGrade && !paperRunInCurrentBaseline(latest);
   let status = '尚未作答';
   let button = '開啟原版整回';
@@ -5257,7 +5244,12 @@ function paperSourceCardHTML(source) {
     status = `${latest.score}/100｜原卷訂正已完成`;
     button = '再寫一回';
   }
-  const actions = active
+  if (deploymentBlocked) {
+    status = active ? '作答進度已保留｜等待答案鎖定後端部署' : '答案鎖定後端部署中｜尚未開放作答';
+  }
+  const actions = deploymentBlocked
+    ? '<button class="btn" disabled>部署完成後開放</button>'
+    : active
     ? `<button class="btn primary" onclick="startPaperSource('${jsA(source.id)}')">${button}</button>`
     : latest && latest.aiGrade
       ? `<div class="paper-card-actions"><button class="btn primary" onclick="openPaperGradeResult('${jsA(latest.id)}')">查看紅筆批改卷</button><button class="btn" onclick="startPaperSource('${jsA(source.id)}')">${button}</button></div>`
@@ -5524,6 +5516,27 @@ const PAPER_LAYOUT_VERSION = 2;
 let paperSourceSession = null;
 let paperFitObserver = null;
 function paperSourceById(id) { return PAPER_SOURCES.find((source) => source.id === id) || null; }
+function paperGradeQuestion(run, no) {
+  return run && run.aiGrade && Array.isArray(run.aiGrade.questions)
+    ? run.aiGrade.questions.find((item) => Number(item && item.no) === Number(no)) || null
+    : null;
+}
+function paperQuestionMeta(run, source, no) {
+  const item = paperGradeQuestion(run, no);
+  const legacy = source && Array.isArray(source.key) ? source.key[Number(no) - 1] : null;
+  if (item) return {
+    type: String(item.answerType || legacy && legacy.type || ''),
+    answer: String(item.answer || legacy && paperFinalAnswerText(legacy) || ''),
+    points: Number(item.maxPoints) || Number(legacy && legacy.points) || 0,
+    topic: TOPICS[item.topic] ? item.topic : TOPICS[legacy && legacy.topic] ? legacy.topic : '',
+  };
+  return legacy ? {
+    type: String(legacy.type || ''),
+    answer: paperFinalAnswerText(legacy),
+    points: Number(legacy.points) || 0,
+    topic: TOPICS[legacy.topic] ? legacy.topic : '',
+  } : null;
+}
 function paperRunLeft(run) {
   if (!run) return 0;
   const base = Number.isFinite(Number(run.remainingMs)) ? Number(run.remainingMs) : MOCK_SPEC.minutes * 60000;
@@ -5636,6 +5649,10 @@ async function paperSourceFiles(source) {
 async function startPaperSource(sourceId) {
   const source = paperSourceById(sourceId);
   if (!source) return;
+  if (source.answerAccess === 'post-submit-server' && source.answerBackendReady !== true) {
+    alert('這一回正在完成交卷後答案鎖定部署；為避免寫完後無法批改，目前先不開放。');
+    return;
+  }
   if (!supa || !syncState.user) { alert('原版紙本卷存放在私有雲端；請先到「進度與設定」登入。'); return; }
   paperSourceRelease();
   let run = paperActiveRun(sourceId);
@@ -6335,8 +6352,7 @@ function paperAiPaintCanvas(cv, questions, includeAnswer, forcedScale) {
     }
     if (summaryAnchor && item.status) {
       const points = Number(item.points) || 0;
-      const storedAnswer = item.answer || (includeAnswer && paperSourceSession && paperSourceSession.source
-        ? paperFinalAnswerText(paperSourceSession.source.key[Number(item.no) - 1]) : '');
+      const storedAnswer = item.answer || '';
       let summary = `第 ${Number(item.no) || '?'} 題　` + (item.status === 'correct' ? `✓ +${points}`
         : item.status === 'incorrect' && points > 0 ? `△ +${points}`
         : item.status === 'incorrect' ? '✕ 0'
@@ -6371,12 +6387,13 @@ function paperAiPaint() {
     for (const [noText, state] of Object.entries(paperSourceSession.run.review)) {
       const no = Number(noText), grade = state && state.correctionGrade;
       if (!grade || paperQuestionScanIndex(paperSourceSession.source, no) !== page) continue;
+      const meta = paperQuestionMeta(paperSourceSession.run, paperSourceSession.source, no);
       questions.push({
         no,
         page: page + 1,
         status: grade.correct ? 'correct' : grade.uncertain ? 'uncertain' : 'incorrect',
-        points: grade.correct ? Number(paperSourceSession.source.key[no - 1] && paperSourceSession.source.key[no - 1].points) || 0 : 0,
-        answer: paperFinalAnswerText(paperSourceSession.source.key[no - 1]),
+        points: grade.correct ? Number(meta && meta.points) || 0 : 0,
+        answer: String(meta && meta.answer || ''),
         marks: grade.marks || [],
       });
     }
@@ -7030,8 +7047,8 @@ async function paperExportGradedPdf() {
     if (button) { button.disabled = false; button.innerHTML = `${uiIcon('save')}輸出批改卷 PDF`; }
   }
 }
-function paperGradePromptKey(source) {
-  return source.key.map((q, index) => ({
+function paperGradePromptKey(source, answerKey) {
+  return answerKey.map((q, index) => ({
     no: index + 1,
     page: paperQuestionScanIndex(source, index + 1) + 1,
     type: q.type,
@@ -7040,8 +7057,20 @@ function paperGradePromptKey(source) {
     points: q.points,
   }));
 }
-async function paperAiGradeCall(source, pages) {
-  const key = paperGradePromptKey(source);
+async function paperAnswerKeyAfterSubmit(source, run) {
+  if (Array.isArray(source.key)) return source.key;
+  if (!run || !run.id || !run.submittedAt || run.status !== 'grading') throw new Error('交卷狀態尚未完成，答案仍保持鎖定');
+  const payload = await openAiInvoke({
+    responseType: 'paper_key',
+    context: { paperRunId: run.id, sourceId: source.id },
+  }, 30000);
+  const key = payload && payload.paperKey;
+  if (!Array.isArray(key) || key.length !== source.questions) throw new Error('批改後端尚未完成答案鎖定部署；本次筆跡已保存，沒有送出 AI 批改');
+  return key;
+}
+async function paperAiGradeCall(source, pages, answerKey = source.key) {
+  if (!Array.isArray(answerKey) || answerKey.length !== source.questions) throw new Error('正式答案資料不完整，已停止送出 AI 批改');
+  const key = paperGradePromptKey(source, answerKey);
   const topicKeys = Object.entries(TOPICS).map(([id, label]) => `${id}=${label}`).join('、');
   const content = [{
     type: 'text',
@@ -7087,7 +7116,8 @@ function paperFallbackMark(source, no, page, label, kind, option, slot) {
     option: Number(option) || 0,
   };
 }
-function paperNormalizeAiGrade(source, raw, model) {
+function paperNormalizeAiGrade(source, raw, model, answerKey = source.key) {
+  if (!Array.isArray(answerKey) || answerKey.length !== source.questions) throw new Error('正式答案資料不完整，已停止核分');
   const incoming = Array.isArray(raw && raw.questions) ? raw.questions : [];
   const byNo = new Map();
   for (const item of incoming) {
@@ -7095,7 +7125,7 @@ function paperNormalizeAiGrade(source, raw, model) {
     if (Number.isInteger(no) && no >= 1 && no <= source.questions && !byNo.has(no)) byNo.set(no, item);
   }
   if (byNo.size !== source.questions) throw new Error(`AI 只完成 ${byNo.size}/${source.questions} 題，請重新批改`);
-  const questions = source.key.map((q, index) => {
+  const questions = answerKey.map((q, index) => {
     const no = index + 1, item = byNo.get(no), page = paperQuestionScanIndex(source, no) + 1;
     const allowed = new Set(['correct', 'incorrect', 'unanswered', 'uncertain']);
     let status = allowed.has(item.status) ? item.status : 'uncertain';
@@ -7205,7 +7235,7 @@ function paperNormalizeAiGrade(source, raw, model) {
     return {
       no, page, status, points,
       topic: TOPICS[item.topic] ? item.topic : (TOPICS[q.topic] ? q.topic : ''),
-      answer: paperFinalAnswerText(q),
+      answer: paperFinalAnswerText(q), answerType: q.type, maxPoints: Number(q.points) || 0,
       read: String(item.read || '').slice(0, 120),
       hasFinalAnswer: status !== 'unanswered' && item.hasFinalAnswer !== false,
       finalAnswer,
@@ -7448,9 +7478,20 @@ async function paperSourceGrade(reason) {
     alert('最後一筆尚未安全保存，已取消交卷。請保持頁面開啟，等右上顯示「已保存」後再交卷。');
     return;
   }
-  run.remainingMs = remaining; run.resumeAt = null; run.status = 'grading'; run.gradeReason = reason; run.mt = Date.now();
+  run.remainingMs = remaining; run.resumeAt = null; run.status = 'grading'; run.gradeReason = reason;
+  run.submittedAt = run.submittedAt || Date.now(); run.mt = Date.now();
   paperRecoveryClose(run, 'grading');
   save();
+  if (!Array.isArray(source.key)) {
+    await syncPush();
+    if (syncState.pushErr) {
+      session.grading = false;
+      run.status = 'paused'; run.resumeAt = null; run.mt = Date.now(); save();
+      renderPaperSource();
+      alert('交卷狀態還沒同步到私人雲端，答案仍保持鎖定。原筆跡已保存，連線恢復後再交卷即可。');
+      return;
+    }
+  }
   sessionMode = 'paper-grade';
   paperSourceGradeLoading(source, reason, `正在整理第 1 / ${source.scans.length} 頁…`);
   try {
@@ -7462,8 +7503,9 @@ async function paperSourceGrade(reason) {
     }
     const progress = $('#paper-grade-progress');
     if (progress) progress.textContent = `已送出 ${source.scans.length} 頁，正在逐題辨識與核分…`;
-    const response = await paperAiGradeCall(source, pages);
-    const grade = paperNormalizeAiGrade(source, response.json, response.model);
+    const answerKey = await paperAnswerKeyAfterSubmit(source, run);
+    const response = await paperAiGradeCall(source, pages, answerKey);
+    const grade = paperNormalizeAiGrade(source, response.json, response.model, answerKey);
     grade.requestId = response.requestId;
     grade.usage = response.usage;
     grade.budget = response.budget;
@@ -7535,11 +7577,11 @@ function paperGradeAuditOpen(pageIndex = null) {
   const { source, run } = paperSourceSession;
   const questions = pageIndex == null ? run.aiGrade.questions : run.aiGrade.questions.filter((item) => Number(item.page) === Number(pageIndex) + 1);
   const rows = (questions.length ? questions : run.aiGrade.questions).map((item) => {
-    const key = source.key[item.no - 1];
+    const key = paperQuestionMeta(run, source, item.no);
     const options = [
       ['correct', '正確'], ['incorrect', '錯誤'], ['unanswered', '未答'], ['uncertain', '看不清楚'],
     ].map(([value, label]) => `<option value="${value}"${item.status === value ? ' selected' : ''}>${label}</option>`).join('');
-    return `<tr data-no="${item.no}"><th>${item.no}</th><td><input class="paper-audit-read" type="text" value="${escH(item.read || '')}" placeholder="AI 讀到的答案" aria-label="第 ${item.no} 題 AI 辨識"></td><td>${escH(paperFinalAnswerText(key))}</td><td><select class="paper-audit-status" aria-label="第 ${item.no} 題狀態">${options}</select></td><td><input class="paper-audit-points" type="number" min="0" max="${Number(key.points) || 0}" step="1" value="${Number(item.points) || 0}" aria-label="第 ${item.no} 題得分"> / ${Number(key.points) || 0}</td></tr>`;
+    return `<tr data-no="${item.no}"><th>${item.no}</th><td><input class="paper-audit-read" type="text" value="${escH(item.read || '')}" placeholder="AI 讀到的答案" aria-label="第 ${item.no} 題 AI 辨識"></td><td>${escH(key && key.answer || item.answer || '')}</td><td><select class="paper-audit-status" aria-label="第 ${item.no} 題狀態">${options}</select></td><td><input class="paper-audit-points" type="number" min="0" max="${Number(key && key.points) || 0}" step="1" value="${Number(item.points) || 0}" aria-label="第 ${item.no} 題得分"> / ${Number(key && key.points) || 0}</td></tr>`;
   }).join('');
   const history = Array.isArray(run.gradeAudit) ? run.gradeAudit.length : 0;
   modal(`<div class="paper-grade-audit"><span class="eyebrow">人工覆核${pageIndex == null ? '' : `｜第 ${Number(pageIndex) + 1} 頁`}</span><h2>AI 看錯時，直接改它讀到的答案</h2><p>只列目前這一頁的題目。修正辨識、對錯或配分即可；不必重新付費批改整份。每次修改前的版本都會保留。</p><div class="paper-audit-scroll"><table><thead><tr><th>題</th><th>AI 讀到</th><th>正解</th><th>判定</th><th>得分</th></tr></thead><tbody>${rows}</tbody></table></div><p class="dim">目前已有 ${history} 份歷史批改快照。</p><button class="btn primary" onclick="paperGradeAuditSave()">保存這頁修正</button></div>`, [['取消']]);
@@ -7554,7 +7596,7 @@ function paperGradeAuditSave() {
   const adjustedAt = Date.now();
   for (const row of rows) {
     const no = Number(row.dataset.no), item = grade.questions.find((question) => question.no === no);
-    const key = source.key[no - 1];
+    const key = paperQuestionMeta(run, source, no);
     if (!item || !key) continue;
     const status = row.querySelector('.paper-audit-status').value;
     const points = Math.max(0, Math.min(Number(key.points) || 0, Number(row.querySelector('.paper-audit-points').value) || 0));
@@ -8120,8 +8162,8 @@ function renderPaperTeacherReport(runId) {
     const detailGood = detail && Array.isArray(detail.goodWork) && detail.goodWork.length
       ? `<p>已做對：${detail.goodWork.map((row) => rtAi(row)).join('；')}</p>` : '';
     const detailConfidence = detail && (detail.confidence === 'high' ? '高' : detail.confidence === 'medium' ? '中' : '低');
-    return `<article class="teacher-q level-${level}"><header><span>第 ${no} 題｜${statusName[item.status] || item.status}｜${Number(item.points) || 0}/${Number(source.key[no - 1] && source.key[no - 1].points) || 0} 分</span><b>${levelName(level)}</b></header>
-      <p class="teacher-answer">AI 讀到：${escH(item.read || '（未辨識）')}｜正確答案：${escH(paperFinalAnswerText(source.key[no - 1]))}</p>
+    return `<article class="teacher-q level-${level}"><header><span>第 ${no} 題｜${statusName[item.status] || item.status}｜${Number(item.points) || 0}/${Number(item.maxPoints) || 0} 分</span><b>${levelName(level)}</b></header>
+      <p class="teacher-answer">AI 讀到：${escH(item.read || '（未辨識）')}｜正確答案：${escH(item.answer || '')}</p>
       ${logs || (level === 1 ? '<p class="dim">考場直接答對，不需隔日重想。</p>' : '<p class="dim">尚未留下隔日重想紀錄。</p>')}
       ${detail ? `<div class="teacher-attempt"><b>逐題 AI 詳解｜診斷信心 ${detailConfidence}</b>${state.detailFirstOpenedAt ? `<p>首次查看：${escH(new Date(Number(state.detailFirstOpenedAt)).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false }))}｜開啟 ${Number(state.detailViewCount) || 1} 次</p>` : ''}${detailGood}${detail.errorKind ? `<p>AI 錯因：${escH(detail.errorKind)}</p>` : ''}${detail.firstErrorEvidence ? `<p>錯誤證據：${rtAi(detail.firstErrorEvidence)}</p>` : ''}${detail.firstError ? `<p>第一個錯誤：${rtAi(detail.firstError)}</p>` : ''}${detail.nextTime ? `<p>下次訊號：${rtAi(detail.nextTime)}</p>` : ''}</div>` : ''}</article>`;
   }).join('');
@@ -8141,6 +8183,7 @@ function renderPaperTeacherReport(runId) {
 let paperReview = null;
 function paperFinalAnswerText(q) {
   if (!q) return '答案資料不存在';
+  if (q.answer) return String(q.answer);
   if (q.type === 'single') return `(${q.ans[0] + 1})`;
   if (q.type === 'multi') return q.ans.map((opt) => `(${opt + 1})`).join('');
   return q.display || q.ans[0];
@@ -8163,7 +8206,7 @@ async function paperReviewPageComposite(page) {
   );
 }
 function paperQuestionNosOnPage(source, page) {
-  return source.key.map((_, index) => index + 1)
+  return Array.from({ length: source.questions }, (_, index) => index + 1)
     .filter((questionNo) => paperQuestionScanIndex(source, questionNo) === page);
 }
 function paperDetailFocusBounds(source, no) {
@@ -8210,8 +8253,9 @@ async function paperReviewQuestionFocusImage(imageB64, source, no) {
   return canvas.toDataURL('image/jpeg', .94).split(',')[1];
 }
 async function paperAiDetailCall(source, no, imageB64, logs, focusB64, userNote) {
-  const q = source.key[no - 1], answer = paperFinalAnswerText(q);
   const run = paperReview && paperReview.run;
+  const q = paperQuestionMeta(run, source, no), answer = String(q && q.answer || '');
+  if (!q || !answer) throw new Error('找不到交卷後保存的正式答案，已停止詳批');
   const gradeItem = run && run.aiGrade && (run.aiGrade.questions || []).find((item) => Number(item.no) === Number(no));
   const reviewState = run && run.review && run.review[no];
   const learnerTopic = gradeItem && gradeItem.topic || reviewState && reviewState.topic || q && q.topic || '';
@@ -8310,7 +8354,7 @@ function paperNormalizeAiDetail(source, no, raw, model) {
     repair: text(raw && raw.repair, 360),
     explanation: text(raw && raw.explanation, 1400),
     solution: (Array.isArray(raw && raw.solution) ? raw.solution : []).slice(0, 8).map((step) => text(step, 300)).filter(Boolean),
-    answer: paperFinalAnswerText(source.key[no - 1]),
+    answer: String(paperQuestionMeta(paperReview && paperReview.run, source, no)?.answer || ''),
     nextTime: text(raw && raw.nextTime, 180),
     marks,
   };
@@ -8580,7 +8624,7 @@ function renderPaperAnswerReviewWorkspace() {
     return;
   }
   const no = paperReview.nos[paperReview.i];
-  const q = paperReview.source.key[no - 1];
+  const q = paperQuestionMeta(paperReview.run, paperReview.source, no);
   const state = paperReview.run.review[no] = paperReview.run.review[no] || { done:false, attempts:0, logs:[] };
   const scanIndex = paperQuestionScanIndex(paperReview.source, no);
   if (paperReview.renderedNo !== no) {
@@ -8594,7 +8638,7 @@ function renderPaperAnswerReviewWorkspace() {
   }
   const page = Number(paperSourceSession.page) || 0;
   const scan = paperReview.source.scans[page];
-  const answer = paperFinalAnswerText(q);
+  const answer = String(q && q.answer || '');
   const detailAvailable = !!state.aiDetail;
   const detailUnlocked = detailAvailable || (Number(state.attempts) || 0) > 0;
   const detailButtonLabel = paperReview.detailLoading ? '正在產生詳解…' : detailAvailable ? `打開第 ${no} 題詳解` : detailUnlocked ? `看第 ${no} 題詳解` : '先留下一次重想';
@@ -8616,8 +8660,9 @@ function renderPaperAnswerReviewWorkspace() {
   });
 }
 async function paperAiCorrectionCall(source, no, imageB64) {
-  const q = source.key[no - 1], answer = paperFinalAnswerText(q);
   const run = paperReview && paperReview.run;
+  const q = paperQuestionMeta(run, source, no), answer = String(q && q.answer || '');
+  if (!q || !answer) throw new Error('找不到交卷後保存的正式答案，已停止訂正批改');
   const gradeItem = run && run.aiGrade && (run.aiGrade.questions || []).find((item) => Number(item.no) === Number(no));
   const reviewState = run && run.review && run.review[no];
   const learnerTopic = gradeItem && gradeItem.topic || reviewState && reviewState.topic || q && q.topic || '';
