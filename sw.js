@@ -6,7 +6,7 @@
 const CACHE_PREFIX = 'matha-v';
 // 唯一版本戳：與 app.js 的 APP_VER、index.html 的 ?v= 同一個值（tests/assets.test.js 強制一致）。
 // 改版只要動這一個值＋APP_VER＋index.html ?v=，快取名自動跟著換，不會再發生「?v= 升了、CACHE 忘了升」的半新半舊。
-const APP_STAMP = '0829l';
+const APP_STAMP = '0829m';
 const CACHE = CACHE_PREFIX + APP_STAMP;
 // 全部同源（KaTeX/Supabase 皆已自架，無 CDN）→ 真離線可用。
 // 一律不含 ?v=：SW 快取以「無 query 的 URL」為 key（?v= 只為破瀏覽器 HTTP 快取），
@@ -43,8 +43,9 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('message', (e) => {
   if (!e.data || e.data.type !== 'GET_MATHA_APP_VERSION') return;
-  if (e.source && typeof e.source.postMessage === 'function') {
-    e.source.postMessage({ type: 'MATHA_APP_VERSION', version: APP_STAMP });
+  const target = e.ports && e.ports[0] ? e.ports[0] : e.source;
+  if (target && typeof target.postMessage === 'function') {
+    target.postMessage({ type: 'MATHA_APP_VERSION', version: APP_STAMP });
   }
 });
 

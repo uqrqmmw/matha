@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829l'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829m'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -5971,8 +5971,17 @@ async function startPaperSource(sourceId) {
     return;
   }
   if (!supa || !syncState.user) { alert('原版紙本卷存放在私有雲端；請先到「進度與設定」登入。'); return; }
-  paperSourceRelease();
   let run = paperActiveRun(sourceId);
+  if (!run && !systemReadinessSummary(S.systemReadiness).ready) {
+    app().innerHTML = `<div class="card"><h1>開考前安全檢查</h1><p class="dim">正在確認本機筆跡、雲端同步、私有題本與答案鎖定；全部通過才建立新考試。</p></div>`;
+    await runSystemReadiness();
+    if (!systemReadinessSummary(S.systemReadiness).ready) {
+      nav('stats');
+      alert('開考前必要條件尚未全部通過。已保留既有資料，請依「開考前一鍵檢查」的阻擋項目處理後再開始。');
+      return;
+    }
+  }
+  paperSourceRelease();
   if (!run) {
     const now = Date.now();
     run = { id: `paper-run-${now}`, sourceId, name: source.title, d: today(), createdAt: now, mt: now,
@@ -9839,6 +9848,204 @@ function learnerModelCard() {
     <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button><button class="btn subtle" onclick="resetLearningBaseline()">重新建立學習基準</button></div>
   </section>`;
 }
+const SYSTEM_READINESS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const SYSTEM_READINESS_REQUIRED_IDS = Object.freeze(['idb', 'worker', 'auth', 'sync', 'papers', 'answer-gate', 'rescue']);
+let systemReadinessRunning = false;
+function systemReadinessSummary(report, now = Date.now()) {
+  const results = Array.isArray(report && report.results) ? report.results : [];
+  const currentVersion = !!report && report.version === APP_VER;
+  const age = report ? Math.max(0, Number(now) - Number(report.ts || 0)) : Infinity;
+  const fresh = currentVersion && age <= SYSTEM_READINESS_MAX_AGE_MS;
+  const byId = new Map(results.filter(Boolean).map((item) => [item.id, item]));
+  const failedRequiredIds = new Set(results.filter((item) => item && item.required !== false && item.status !== 'pass').map((item) => item.id));
+  for (const id of SYSTEM_READINESS_REQUIRED_IDS) if (!byId.has(id) || byId.get(id).status !== 'pass') failedRequiredIds.add(id);
+  const warnings = results.filter((item) => item && item.status === 'warn');
+  return {
+    checked: results.length > 0,
+    fresh,
+    ready: results.length > 0 && fresh && failedRequiredIds.size === 0,
+    requiredFailures: failedRequiredIds.size,
+    warnings: warnings.length,
+    passed: results.filter((item) => item && item.status === 'pass').length,
+    total: results.length,
+  };
+}
+function systemReadinessCard() {
+  const report = S.systemReadiness;
+  const summary = systemReadinessSummary(report);
+  const checkedAt = report && report.ts
+    ? new Date(report.ts).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', hour12:false })
+    : '尚未執行';
+  const headline = systemReadinessRunning
+    ? '正在逐項實測，請留在這一頁'
+    : summary.ready
+      ? '可以開始原版模考'
+      : summary.checked && !summary.fresh
+        ? '版本或檢查時間已過期，請重跑'
+        : summary.checked
+          ? `有 ${summary.requiredFailures} 項必要條件未通過`
+          : '開考前先跑一次；不靠猜測判定安全';
+  const resultRows = summary.checked
+    ? report.results.map((item) => {
+      const label = item.status === 'pass' ? '通過' : item.status === 'warn' ? '注意' : '阻擋';
+      const cls = item.status === 'pass' ? 'okc' : item.status === 'warn' ? 'warnc' : 'badc';
+      return `<li><b class="${cls}">${label}</b><span><strong>${escH(item.label)}</strong><small>${escH(item.detail || '')}</small></span></li>`;
+    }).join('')
+    : '';
+  return `<section class="card system-readiness-card"><span class="eyebrow">原版模考安全閘門</span><h2>開考前一鍵檢查</h2><p class="${summary.ready ? 'okc' : summary.checked ? 'warnc' : 'dim'}">${escH(headline)}</p>
+    <p class="dim fs13">版本 ${APP_VER}｜上次檢查：${escH(checkedAt)}。必要條件全部通過才會顯示可開始；題庫待人工發布只列注意，不會偷偷放入未核准題。</p>
+    ${resultRows ? `<details${summary.ready ? '' : ' open'}><summary>檢查明細：${summary.passed}/${summary.total} 通過${summary.warnings ? `，${summary.warnings} 項注意` : ''}</summary><ul class="system-readiness-list">${resultRows}</ul></details>` : ''}
+    <div class="actr"><button class="btn primary" onclick="runSystemReadiness()"${systemReadinessRunning ? ' disabled' : ''}>${systemReadinessRunning ? '檢查中' : '執行開考前檢查'}</button></div></section>`;
+}
+async function systemReadinessIdbRoundTrip() {
+  const db = await idbOpen();
+  if (!db.objectStoreNames.contains('state') || !db.objectStoreNames.contains('inkrecords')) throw new Error('本機資料庫缺少狀態或筆跡區');
+  const key = `readiness:${APP_VER}:${Date.now()}`;
+  const value = { value:key, ts:Date.now() };
+  const txDone = (tx) => new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB 交易失敗'));
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB 交易中止'));
+  });
+  const putTx = db.transaction('state', 'readwrite');
+  putTx.objectStore('state').put(value, key);
+  await txDone(putTx);
+  const read = await new Promise((resolve, reject) => {
+    const rq = db.transaction('state').objectStore('state').get(key);
+    rq.onsuccess = () => resolve(rq.result || null);
+    rq.onerror = () => reject(rq.error || new Error('IndexedDB 讀回失敗'));
+  });
+  const delTx = db.transaction('state', 'readwrite');
+  delTx.objectStore('state').delete(key);
+  await txDone(delTx);
+  if (!read || read.value !== key) throw new Error('寫入後讀回內容不一致');
+  return true;
+}
+async function systemReadinessWorkerVersion() {
+  if (!navigator.serviceWorker) throw new Error('瀏覽器不支援離線外殼');
+  const registration = await navigator.serviceWorker.ready;
+  const worker = navigator.serviceWorker.controller || registration.active;
+  if (!worker) throw new Error('離線外殼尚未接管；重新整理後再檢查');
+  if (typeof MessageChannel === 'undefined') throw new Error('無法核對離線版本');
+  const version = await new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => reject(new Error('離線版本回應逾時')), 2500);
+    channel.port1.onmessage = (event) => {
+      clearTimeout(timer);
+      resolve(event && event.data && event.data.version || '');
+    };
+    worker.postMessage({ type:'GET_MATHA_APP_VERSION' }, [channel.port2]);
+  });
+  if (version !== APP_VER) throw new Error(`頁面 ${APP_VER}、離線外殼 ${version || '未知'}；重新整理後再檢查`);
+  return version;
+}
+async function systemReadinessPaperAssets() {
+  if (!supa || !syncState.user || !supa.storage) throw new Error('尚未登入私有教材雲端');
+  const files = [...new Set(PAPER_SOURCES.flatMap((source) => source.scans.map((scan) => scan.file)))];
+  const bucket = supa.storage.from(PAPER_SOURCE_BUCKET);
+  for (const file of files) {
+    const signed = await bucket.createSignedUrl(file, 60);
+    if (signed.error || !signed.data || !signed.data.signedUrl) throw new Error(`${file} 無法取得短效讀取權限`);
+    const response = await fetch(new URL(signed.data.signedUrl, SUPA_URL).toString(), {
+      headers: { Range:'bytes=0-63' }, cache:'no-store',
+    });
+    if (!response.ok) throw new Error(`${file} 讀取失敗（HTTP ${response.status}）`);
+    let first = new Uint8Array();
+    if (response.body && response.body.getReader) {
+      const reader = response.body.getReader();
+      const row = await reader.read();
+      first = row.value || first;
+      await reader.cancel().catch(() => {});
+    } else first = new Uint8Array(await response.arrayBuffer());
+    const png = first.length >= 8 && first[0] === 137 && first[1] === 80 && first[2] === 78 && first[3] === 71;
+    if (!png) throw new Error(`${file} 不是可辨識的 PNG 題本`);
+  }
+  return files.length;
+}
+async function systemReadinessAnswerGate(session) {
+  const response = await fetch(AI_FUNCTION_URL, {
+    method:'POST',
+    headers: { 'content-type':'application/json', Authorization:`Bearer ${session.access_token}` },
+    body: JSON.stringify({ responseType:'paper_key', context:{ paperRunId:`readiness-${Date.now()}`, sourceId:'paper-mock-3' } }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 403 && /鎖定|交卷/.test(String(payload.message || ''))) return true;
+  if (response.ok) throw new Error('安全失敗：未交卷測試竟取得正式答案');
+  throw new Error(`答案閘門回應異常（HTTP ${response.status}）`);
+}
+async function runSystemReadiness() {
+  if (systemReadinessRunning) return;
+  systemReadinessRunning = true;
+  if (document.body.dataset.view === 'stats') renderStats();
+  const results = [];
+  const add = (id, label, status, detail, required = true) => results.push({ id, label, status, detail, required });
+  try {
+    try {
+      await systemReadinessIdbRoundTrip();
+      add('idb', '本機狀態與筆跡資料庫', 'pass', '已完成實際寫入、讀回與刪除測試');
+    } catch (error) { add('idb', '本機狀態與筆跡資料庫', 'fail', error.message || String(error)); }
+
+    const rescueSupported = typeof Blob !== 'undefined' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function';
+    add('rescue', '當機救援檔輸出', rescueSupported ? 'pass' : 'fail', rescueSupported ? '瀏覽器具備 JSON 救援檔產生與下載能力' : '瀏覽器缺少 Blob 或下載網址能力');
+
+    try {
+      const version = await systemReadinessWorkerVersion();
+      add('worker', '離線外殼版本', 'pass', `頁面與 Service Worker 同為 ${version}`);
+    } catch (error) { add('worker', '離線外殼版本', 'fail', error.message || String(error)); }
+
+    let session = null;
+    if (!supa || !syncState.user) add('auth', '私人 Supabase 登入', 'fail', '尚未登入；原版題本與雲端救援不能使用');
+    else {
+      try {
+        const auth = await supa.auth.getSession();
+        session = auth && auth.data && auth.data.session;
+        if (!session || !session.access_token) throw new Error('登入憑證已過期');
+        add('auth', '私人 Supabase 登入', 'pass', syncState.user.email || '登入有效');
+      } catch (error) { add('auth', '私人 Supabase 登入', 'fail', error.message || String(error)); }
+    }
+
+    if (session) {
+      await syncPush();
+      await flushInkQueue();
+      await refreshInkLocalStatus();
+      if (syncState.pushErr || syncState.revision == null) add('sync', '狀態與筆跡雲端同步', 'fail', syncState.msg || '同步沒有完成');
+      else if (inkLocalStatus.pending > 0) add('sync', '狀態與筆跡雲端同步', 'fail', `仍有 ${inkLocalStatus.pending} 份本機筆跡待補傳`);
+      else add('sync', '狀態與筆跡雲端同步', 'pass', `狀態 revision ${syncState.revision}；待補傳 0 份`);
+
+      try {
+        const count = await systemReadinessPaperAssets();
+        add('papers', '私有原版題本', 'pass', `${count} 個掃描檔皆以短效網址讀到 PNG 標頭`);
+      } catch (error) { add('papers', '私有原版題本', 'fail', error.message || String(error)); }
+
+      try {
+        await systemReadinessAnswerGate(session);
+        add('answer-gate', '未交卷答案鎖定', 'pass', '偽造未交卷 run 得到 403；此測試不呼叫 GPT');
+      } catch (error) { add('answer-gate', '未交卷答案鎖定', 'fail', error.message || String(error)); }
+    } else {
+      add('sync', '狀態與筆跡雲端同步', 'fail', '沒有有效 session，未執行');
+      add('papers', '私有原版題本', 'fail', '沒有有效 session，未執行');
+      add('answer-gate', '未交卷答案鎖定', 'fail', '沒有有效 session，未執行');
+    }
+
+    const persistent = navigator.storage && navigator.storage.persisted
+      ? await navigator.storage.persisted().catch(() => false) : false;
+    add('persistent', '瀏覽器持久儲存', persistent ? 'pass' : 'warn', persistent ? '瀏覽器已承諾不在空間壓力下自動清除' : '尚未取得持久儲存承諾；本機與雲端雙存仍會運作', false);
+
+    if (curatedState.status === 'ready' && curatedState.count > 0) add('bank', '真人核准私有題庫', 'pass', `${curatedState.count} 題已通過 manifest 與雜湊驗證`, false);
+    else add('bank', '真人核准私有題庫', 'warn', `尚未發布；正式練習只會使用 ${BUILTIN_N} 題非 OCR 核心題`, false);
+
+    const completePapers = PAPER_SOURCES.filter((source) => source.questions === 20 && source.minutes === 100).length;
+    add('inventory', '完整校準卷庫存', completePapers >= 6 ? 'pass' : 'warn', `目前 ${completePapers} 回符合 20 題、100 分鐘；藍圖門檻為 6 回`, false);
+  } catch (error) {
+    add('unexpected', '診斷流程', 'fail', error.message || String(error));
+  } finally {
+    S.systemReadiness = { version:APP_VER, ts:Date.now(), results };
+    save();
+    systemReadinessRunning = false;
+    if (document.body.dataset.view === 'stats') renderStats();
+  }
+  return S.systemReadiness;
+}
 function renderStats() {
   const entries = (S.corrections || []).filter(correctionBatchInCurrentBaseline).flatMap((b) => b.entries || []);
   const done = entries.filter((x) => x.done);
@@ -9863,6 +10070,7 @@ function renderStats() {
     ${learningWinsCard()}
     ${learnerModelCard()}
     ${paperLearningSummaryCard()}
+    ${systemReadinessCard()}
     ${textbookLibraryCard()}
     ${questionFeedbackCard()}
     ${syncCard()}

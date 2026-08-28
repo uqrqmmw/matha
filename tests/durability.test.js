@@ -50,6 +50,26 @@ test('本機 IndexedDB 同時保存狀態與未上傳原始筆跡', () => {
   assert.match(source, /Number\(current\.updatedAt \|\| 0\) > Number\(sentUpdatedAt \|\| 0\)/);
 });
 
+test('開考前診斷實測本機、私有原卷與未交卷答案閘門，且答案測試不呼叫模型', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const worker = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
+  assert.match(source, /systemReadinessIdbRoundTrip\(\)/);
+  assert.match(source, /createSignedUrl\(file, 60\)/);
+  assert.match(source, /Range:'bytes=0-63'/);
+  assert.match(source, /responseType:'paper_key'[\s\S]*paperRunId:`readiness-/);
+  assert.match(source, /response\.status === 403[\s\S]*不呼叫 GPT/);
+  assert.doesNotMatch(source.slice(source.indexOf('async function systemReadinessAnswerGate'), source.indexOf('async function runSystemReadiness')), /openAiInvoke|aiJSON|paperAiGradeCall/);
+  assert.match(worker, /e\.ports && e\.ports\[0\][\s\S]*MATHA_APP_VERSION/);
+});
+
+test('新開原版模考必須先通過當版安全檢查，但既有考卷仍可直接救援續寫', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const start = source.slice(source.indexOf('async function startPaperSource'), source.indexOf('function paperSourceRender'));
+  assert.match(start, /let run = paperActiveRun\(sourceId\);[\s\S]*if \(!run && !systemReadinessSummary\(S\.systemReadiness\)\.ready\)/);
+  assert.match(start, /await runSystemReadiness\(\);[\s\S]*nav\('stats'\)[\s\S]*return;/);
+  assert.match(start, /paperSourceRelease\(\);[\s\S]*if \(!run\) \{/);
+});
+
 test('同一瀏覽器切換帳號時，作答狀態使用不同命名空間且可各自取回', async () => {
   const { context, run } = require('./helpers/load-app').loadApp();
   context.localStorage.setItem('mathA13', JSON.stringify({

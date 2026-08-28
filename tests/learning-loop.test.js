@@ -101,6 +101,42 @@ test('大綱與定義只占每週最低頻率，兩天重測仍優先且不被�
   assert.equal(result.conceptAfterWindow.id, 'concept-function');
 });
 
+test('開考前檢查採 fail-closed：必要項未通過就阻擋，題庫庫存注意不冒充故障', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const now = Date.now();
+    const pass = systemReadinessSummary({ version:APP_VER, ts:now, results:[
+      ...SYSTEM_READINESS_REQUIRED_IDS.map((id) => ({ id, status:'pass', required:true })),
+      { id:'bank', status:'warn', required:false },
+    ] }, now);
+    const blocked = systemReadinessSummary({ version:APP_VER, ts:now, results:[
+      ...SYSTEM_READINESS_REQUIRED_IDS.map((id) => ({ id, status:id === 'answer-gate' ? 'fail' : 'pass', required:true })),
+      { id:'inventory', status:'warn', required:false },
+    ] }, now);
+    const oldVersion = systemReadinessSummary({ version:'old', ts:now, results:[
+      ...SYSTEM_READINESS_REQUIRED_IDS.map((id) => ({ id, status:'pass', required:true })),
+    ] }, now);
+    const missing = systemReadinessSummary({ version:APP_VER, ts:now, results:[
+      { id:'bank', status:'warn', required:false },
+    ] }, now);
+    S.systemReadiness = { version:APP_VER, ts:now, results:[
+      ...SYSTEM_READINESS_REQUIRED_IDS.map((id) => ({ id, label:id, status:'pass', detail:'正常', required:true })),
+      { id:'bank', label:'私有題庫', status:'warn', detail:'待真人發布', required:false },
+    ] };
+    return { pass, blocked, oldVersion, missing, html:systemReadinessCard() };
+  })()`));
+  assert.equal(result.pass.ready, true);
+  assert.equal(result.pass.warnings, 1);
+  assert.equal(result.blocked.ready, false);
+  assert.equal(result.blocked.requiredFailures, 1);
+  assert.equal(result.oldVersion.ready, false);
+  assert.equal(result.oldVersion.fresh, false);
+  assert.equal(result.missing.ready, false);
+  assert.equal(result.missing.requiredFailures, 7);
+  assert.match(result.html, /可以開始原版模考/);
+  assert.match(result.html, /待真人發布/);
+});
+
 test('分章補洞只由混合證據觸發，分章練習本身不製造或稀釋診斷', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

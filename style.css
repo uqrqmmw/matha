@@ -1052,6 +1052,16 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .new-progress-grid span, .new-progress-grid small { color: var(--dim); }
 .new-progress-grid b { margin: 9px 0 5px; font-size: 24px; font-weight: 580; }
 .learner-model-card { margin-bottom: 18px; border-color: #c9c2b7; background: #fbfaf7; }
+.system-readiness-card { margin-bottom: 18px; border-color: #c8c1b5; background: #faf9f6; }
+.system-readiness-card > h2 { margin: 5px 0 8px; }
+.system-readiness-card > details { margin-top: 14px; border-top: 1px solid var(--border); }
+.system-readiness-card > details > summary { padding: 13px 0 8px; font-weight: 600; cursor: pointer; }
+.system-readiness-list { display: grid; gap: 7px; margin: 4px 0 10px; padding: 0; list-style: none; }
+.system-readiness-list li { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: #f5f3ee; }
+.system-readiness-list li > b { font-size: 12px; letter-spacing: .04em; }
+.system-readiness-list li > span { display: grid; gap: 3px; }
+.system-readiness-list strong { font-size: 14px; font-weight: 620; }
+.system-readiness-list small { color: var(--dim); line-height: 1.45; overflow-wrap: anywhere; }
 .learner-model-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 17px; border-bottom: 1px solid var(--border); }
 .learner-model-card > header h2 { margin: 4px 0 7px; font-size: 25px; }
 .learner-model-card > header p { max-width: 720px; margin: 0; color: var(--dim); }
