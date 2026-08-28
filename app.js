@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829h'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829i'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3602,6 +3602,75 @@ function learningProcessStage(value) {
   if (/推理|證明|性質|定理|步驟|展開|遞推|範圍|邊界|遺漏|分類/.test(text)) return 'execution';
   return '';
 }
+const PROCESS_EVIDENCE_STAGES = ['recognition', 'direction', 'setup', 'execution', 'calculation', 'expression'];
+function processEvidenceBlank() {
+  return { version:1, recognition:[], direction:[], setup:[], execution:[], calculation:[], expression:[] };
+}
+function processEvidenceEnsure(holder) {
+  if (!holder || typeof holder !== 'object') return processEvidenceBlank();
+  const current = holder.processEvidence && typeof holder.processEvidence === 'object'
+    ? holder.processEvidence : processEvidenceBlank();
+  current.version = 1;
+  for (const stage of PROCESS_EVIDENCE_STAGES) if (!Array.isArray(current[stage])) current[stage] = [];
+  holder.processEvidence = current;
+  return current;
+}
+function processEvidenceAppend(holder, stage, event = {}) {
+  if (!PROCESS_EVIDENCE_STAGES.includes(stage) || !holder || typeof holder !== 'object') return null;
+  const evidence = processEvidenceEnsure(holder);
+  const row = {
+    ts:Number(event.ts) || Date.now(),
+    status:['blocked', 'attempted', 'demonstrated', 'identified'].includes(event.status) ? event.status : 'attempted',
+    source:String(event.source || 'system').slice(0, 40),
+    confidence:['verified', 'high', 'medium', 'unverified'].includes(event.confidence) ? event.confidence : 'unverified',
+    note:String(event.note || '').trim().slice(0, 500),
+    evidence:String(event.evidence || '').trim().slice(0, 300),
+  };
+  const fingerprint = `${row.ts}|${row.status}|${row.source}|${row.note}|${row.evidence}`;
+  if (!evidence[stage].some((item) => `${item.ts}|${item.status}|${item.source}|${item.note}|${item.evidence}` === fingerprint)) {
+    evidence[stage].push(row);
+    evidence[stage] = evidence[stage].slice(-20);
+  }
+  return row;
+}
+function processEvidenceRows(holder) {
+  const evidence = holder && holder.processEvidence;
+  if (!evidence || typeof evidence !== 'object') return [];
+  return PROCESS_EVIDENCE_STAGES.flatMap((stage) => (Array.isArray(evidence[stage]) ? evidence[stage] : [])
+    .filter((row) => row && typeof row === 'object').map((row) => ({ stage, ...row })));
+}
+function processEvidencePrimary(holder) {
+  const rank = { blocked:4, attempted:3, identified:2, demonstrated:1 };
+  return processEvidenceRows(holder).sort((a, b) =>
+    (rank[b.status] || 0) - (rank[a.status] || 0) || Number(b.ts || 0) - Number(a.ts || 0))[0] || null;
+}
+function processEvidenceRecordClassification(holder, value, event = {}) {
+  const stage = PROCESS_EVIDENCE_STAGES.includes(event.stage) ? event.stage : learningProcessStage(value);
+  if (!stage) { processEvidenceEnsure(holder); return null; }
+  return processEvidenceAppend(holder, stage, { status:'blocked', note:String(value || ''), ...event });
+}
+function processEvidenceRecordEffort(holder, effort, event = {}) {
+  processEvidenceEnsure(holder);
+  const ts = Number(event.ts) || Date.now(), source = event.source || 'learner';
+  if (effort && TOPICS[effort.topic]) processEvidenceAppend(holder, 'recognition', {
+    ts, status:'identified', source, confidence:'verified',
+    note:`${TOPICS[effort.topic]}${effort.concept ? `／${effort.concept}` : ''}`,
+  });
+  if (effort && effort.direction) processEvidenceAppend(holder, 'direction', {
+    ts, status:'attempted', source, confidence:'verified', note:effort.direction,
+  });
+  return holder.processEvidence;
+}
+function processEvidenceRecordAiDetail(holder, detail) {
+  processEvidenceEnsure(holder);
+  if (!detail || !detail.firstErrorEvidence || !detail.firstError || !['high', 'medium'].includes(detail.confidence)) return null;
+  const stage = learningProcessStage(detail.errorKind) || learningProcessStage(detail.firstError);
+  if (!stage) return null;
+  return processEvidenceAppend(holder, stage, {
+    ts:Number(detail.generatedAt) || Date.now(), status:'blocked', source:'trusted-ai-detail',
+    confidence:detail.confidence, note:detail.firstError, evidence:detail.firstErrorEvidence,
+  });
+}
 function learningErrorClass(value) {
   const text = String(value || '').trim();
   if (!text || /^(null|無|答對)$/i.test(text)) return '';
@@ -3622,10 +3691,18 @@ function learningEvidenceLedger() {
     const clean = { score:null, weight:1, independent:false, topic:'', errorKind:'', ...row };
     if (clean.score != null && !Number.isFinite(Number(clean.score))) clean.score = null;
     clean.weight = Number.isFinite(Number(clean.weight)) && Number(clean.weight) > 0 ? Number(clean.weight) : 1;
+    const structured = processEvidencePrimary(clean);
     clean.processStage = PROCESS_STAGE_LABELS[clean.processStage] ? clean.processStage
+      : structured && PROCESS_STAGE_LABELS[structured.stage] ? structured.stage
       : ['recognition', 'direction', 'retention'].includes(clean.stage) ? clean.stage
         : ['concept', 'recall'].includes(clean.stage) ? ''
           : learningProcessStage(clean.processText) || learningProcessStage(clean.errorKind);
+    if (structured) {
+      clean.processEvidenceSource = structured.source;
+      clean.processEvidenceStatus = structured.status;
+      clean.processEvidenceNote = structured.note || structured.evidence || '';
+    }
+    delete clean.processEvidence;
     delete clean.processText;
     out.push(clean);
   };
@@ -3637,6 +3714,7 @@ function learningEvidenceLedger() {
       id:`attempt:${attempt.ts || ''}:${attempt.qid || ''}`, ts:Number(attempt.ts) || 0, d:attempt.d || '',
       source:attempt.mode || 'practice', stage:'solve', qid:q.id, topic:q.topic,
       score:attempt.ok ? (guessed ? .15 : 1) : 0, weight:1, independent:true,
+      processEvidence:attempt.processEvidence,
       processText:(attempt.ai && (attempt.ai.k || attempt.ai.firstError)) || attempt.err || (guessed ? '用猜的' : ''),
       errorKind:learningErrorClass((attempt.ai && attempt.ai.k) || attempt.err || (guessed ? '用猜的' : '')),
     });
@@ -3783,6 +3861,7 @@ function learningEvidenceLedger() {
           d:run.due || run.d || '', source:'paper-correction', stage:'direction', qid:`${run.id}:${no}`,
           topic:TOPICS[log.topic] ? log.topic : topic,
           score:log.kind === 'complete' ? 1 : log.direction ? .5 : .15, weight:.65, independent:false,
+          processEvidence:log.processEvidence,
           processText:log.errorKind || state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind,
           errorKind:learningErrorClass(log.errorKind || state.aiErrorKind || state.errorKind),
         });
@@ -3793,6 +3872,14 @@ function learningEvidenceLedger() {
           errorKind:log.topic === topic ? '' : '條件或題意轉譯', selfTopic:TOPICS[log.topic] ? log.topic : '',
         });
       }
+      for (const [index, event] of processEvidenceRows(state).entries()) if (event.status === 'blocked') push({
+        id:`paper-process:${run.id}:${no}:${event.ts || index}:${event.stage}`,
+        ts:Number(event.ts) || 0, d:run.due || run.d || '', source:'paper-detail', stage:'correction',
+        qid:`${run.id}:${no}`, topic, score:0,
+        weight:event.source === 'trusted-ai-detail' ? .85 : .45, independent:false,
+        processStage:event.stage, errorKind:learningErrorClass(event.note),
+        processEvidence:{ version:1, [event.stage]:[event] },
+      });
       const level = item.status === 'correct' ? 1 : Number(state.level) || 0;
       if (item.status !== 'correct' && !state.done) push({
         id:`paper-review-open:${run.id}:${no}`, ts:Number(state.mt || grade.gradedAt || run.submittedAt) || 0,
@@ -4277,10 +4364,16 @@ function updateRetentionCheckpoint(q, ok, mode) {
 }
 function recordAttempt(q, ok, ms, err, mode, proc, ai, opts) {
   const rec = { qid: q.id, ok, ms, err: err || null, d: today(), mode, ts: Date.now() };
+  processEvidenceEnsure(rec);
   if (ok && err === '用猜的') rec.confidence = 'guess'; // 猜中不是已掌握：留下可分析的顯性訊號
   if (proc) rec.p = proc;
   const adv = advFrom(ai);
   if (adv) rec.ai = adv;
+  const processText = ai && (ai.errKind || ai.firstError) || err || (ok ? '' : '找不到破題方向');
+  if (processText) processEvidenceRecordClassification(rec, processText, {
+    ts:rec.ts, source:ai && (ai.errKind || ai.firstError) ? 'ai-summary-unverified' : 'answer-result',
+    confidence:'unverified',
+  });
   S.attempts.push(rec);
   updateRetentionCheckpoint(q, ok, mode);
   if ((!ok || err === '超時' || err === '用猜的') && !(opts && opts.skipWrong)) {
@@ -8673,6 +8766,7 @@ async function startPaperAnswerReview(runId) {
     if (!run.review[no]) run.review[no] = wrongNos.includes(no)
       ? { done:false, attempts:0, logs:[] }
       : { done:true, level:1, outcome:'direct', completedAt:run.submittedAt };
+    processEvidenceEnsure(run.review[no]);
     if (!run.review[no].topic && graded && TOPICS[graded.topic]) run.review[no].topic = graded.topic;
   }
   app().innerHTML = `<div class="card"><h1>正在開啟 ${escH(source.title)}</h1><p class="dim">載入原卷，答案仍只會逐題顯示。</p></div>`;
@@ -8840,6 +8934,7 @@ async function paperReviewDetailed(force = false) {
     ]);
     if (paperReview !== review) return;
     state.aiDetail = paperNormalizeAiDetail(review.source, no, response.json, response.model);
+    processEvidenceRecordAiDetail(state, state.aiDetail);
     state.solutionUnlockedAt = Number(state.solutionUnlockedAt) || Date.now();
     paperReviewRecordDetailOpen(state);
     review.detailOpen = true;
@@ -9048,13 +9143,18 @@ async function paperReviewGrade(targetLevel = 2) {
     } else {
       state.pendingLevel = null;
       state.logs = state.logs || [];
-      state.logs.push({
+      const log = {
         ts:Date.now(), kind:'retry',
         direction:effort.direction || `已在原卷訂正層新增 ${effort.strokes} 筆手寫重算，AI 再批改仍未完整成立。`,
         topic:effort.topic, concept:effort.concept,
         errorKind:paperCorrectionErrorKind(grade.errKind),
         aiRead:grade.read,
+      };
+      processEvidenceRecordEffort(log, effort, { ts:log.ts, source:'learner' });
+      processEvidenceRecordClassification(log, log.errorKind, {
+        ts:log.ts, source:'ai-correction-summary', confidence:'unverified',
       });
+      state.logs.push(log);
       state.attempts = (Number(state.attempts) || 0) + 1;
       state.errorKind = state.errorKind || paperCorrectionErrorKind(grade.errKind);
       paperReviewResetEffortBaseline();
@@ -9073,11 +9173,16 @@ function paperReviewAcceptCorrection() {
   const level = Number(state && state.pendingLevel);
   if (!state || !state.correctionGrade || !state.correctionGrade.correct || ![2, 3].includes(level)) return;
   state.logs = state.logs || [];
-  state.logs.push({
+  const log = {
     ts:Date.now(), kind:'complete',
     direction:level === 3 ? '看過詳解後已在原卷訂正層重新算完，AI 再批改通過。' : '只看最終答案，在原卷訂正層重新算完並由 AI 再批改通過。',
     errorKind:state.errorKind || '',
+  };
+  processEvidenceAppend(log, 'expression', {
+    ts:log.ts, status:'demonstrated', source:'ai-correction-result', confidence:'verified',
+    note:state.correctionGrade.read || '訂正答案與推導已由批改通過。',
   });
+  state.logs.push(log);
   state.done = true; state.level = level; state.pendingLevel = null;
   state.outcome = level === 3 ? 'ai-detail-verified' : 'answer-only-verified';
   state.completedAt = Date.now(); state.mt = state.completedAt;
@@ -9105,12 +9210,17 @@ async function paperReviewStuckWorkspace() {
   }
   const no = paperReview.nos[paperReview.i], state = paperReview.run.review[no];
   state.logs = state.logs || [];
-  state.logs.push({
+  const log = {
     ts:Date.now(), kind:'retry',
     direction:effort.direction || (effort.strokes ? `我已在原卷訂正層新增 ${effort.strokes} 筆方向或算式，但仍無法完成。` : ''),
     topic:effort.topic, concept:effort.concept,
     errorKind:state.errorKind || '看不出第一個切入點',
+  };
+  processEvidenceRecordEffort(log, effort, { ts:log.ts, source:'learner' });
+  processEvidenceRecordClassification(log, log.errorKind, {
+    ts:log.ts, source:'learner-status', confidence:'verified',
   });
+  state.logs.push(log);
   state.attempts = (Number(state.attempts) || 0) + 1;
   state.errorKind = state.errorKind || '看不出第一個切入點'; state.mt = Date.now();
   paperReview.run.mt = Date.now(); paperRunRefreshLearningTags(paperReview.run); paperSourceUpdateExtMock(paperReview.source, paperReview.run); save();
@@ -9194,7 +9304,10 @@ function correctionLogStuck() {
   const entry = correction.batch.entries[correction.indexes[correction.i]];
   entry.attempts = (entry.attempts || 0) + 1;
   entry.logs = entry.logs || [];
-  entry.logs.push({ ts: Date.now(), note: effort.note, alternate: effort.alternate, topic: effort.topic, concept: effort.concept, strokes: effort.proc ? effort.proc.n || 0 : 0, ms: effort.ms });
+  const log = { ts: Date.now(), note: effort.note, alternate: effort.alternate, topic: effort.topic, concept: effort.concept, strokes: effort.proc ? effort.proc.n || 0 : 0, ms: effort.ms };
+  processEvidenceRecordEffort(log, { direction:effort.note, topic:effort.topic, concept:effort.concept }, { ts:log.ts, source:'learner' });
+  if (!effort.note) processEvidenceRecordClassification(log, '找不到破題方向', { ts:log.ts, source:'learner-status', confidence:'verified' });
+  entry.logs.push(log);
   correction.batch.mt = Date.now();
   save();
   renderCorrectionWork();
@@ -9211,7 +9324,13 @@ function correctionComplete(usedSolution) {
   const entry = correction.batch.entries[correction.indexes[correction.i]];
   if (usedSolution && !entry.solutionUnlockedAt) return;
   entry.logs = entry.logs || [];
-  entry.logs.push({ ts: Date.now(), note: effort.note, alternate: effort.alternate, topic: effort.topic, concept: effort.concept, strokes: effort.proc ? effort.proc.n || 0 : 0, ms: effort.ms, resolved: true });
+  const log = { ts: Date.now(), note: effort.note, alternate: effort.alternate, topic: effort.topic, concept: effort.concept, strokes: effort.proc ? effort.proc.n || 0 : 0, ms: effort.ms, resolved: true };
+  processEvidenceRecordEffort(log, { direction:effort.note, topic:effort.topic, concept:effort.concept }, { ts:log.ts, source:'learner' });
+  processEvidenceAppend(log, 'expression', {
+    ts:log.ts, status:'demonstrated', source:'learner-confirmed-outcome', confidence:'verified',
+    note:usedSolution ? '看過詳解後重新算完。' : '只看最終答案即重新算完。',
+  });
+  entry.logs.push(log);
   entry.done = true; entry.completedAt = Date.now(); entry.mt = entry.completedAt; entry.outcome = usedSolution ? 'solution' : 'answer-only'; entry.level = usedSolution ? 3 : 2;
   /* 第二／三級都不因「訂正當下會了」直接畢業：2 天後與再 7 天後各需一次獨立答對。 */
   entry.retentionStage = 0; entry.retentionDue = addDays(today(), 2); entry.retentionPassed = false; entry.retentionLogs = [];

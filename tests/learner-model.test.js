@@ -152,6 +152,66 @@ test('解題流程分類涵蓋辨認、方向、建式、執行、計算、表�
   });
 });
 
+test('新作答明確保存六段流程欄位與證據來源，不再只靠之後重猜文字', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const q = BANK.find((item) => item.topic === 'num');
+    S.attempts = [];
+    recordAttempt(q, false, 120000, '設元後建式錯誤', 'mixed', null, null);
+    const attempt = S.attempts[0];
+    const row = learningEvidenceLedger().find((item) => item.id.startsWith('attempt:'));
+    return {
+      keys:Object.keys(attempt.processEvidence).sort(),
+      setup:attempt.processEvidence.setup,
+      stage:row.processStage,
+      source:row.processEvidenceSource,
+    };
+  })()`));
+  for (const key of ['recognition', 'direction', 'setup', 'execution', 'calculation', 'expression']) assert.ok(result.keys.includes(key), key);
+  assert.equal(result.setup.length, 1);
+  assert.equal(result.setup[0].status, 'blocked');
+  assert.equal(result.stage, 'setup');
+  assert.equal(result.source, 'answer-result');
+});
+
+test('只有有逐字卷面證據的 AI 詳批能寫入結構化流程斷點', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const state = {};
+    processEvidenceRecordEffort(state, { topic:'num', concept:'等式性質', direction:'先設 x 再列方程式' }, { ts:10, source:'learner' });
+    const rejected = processEvidenceRecordAiDetail(state, {
+      generatedAt:11, confidence:'low', firstErrorEvidence:null, firstError:null, errorKind:null,
+    });
+    const accepted = processEvidenceRecordAiDetail(state, {
+      generatedAt:12, confidence:'high', firstErrorEvidence:'2x=10', firstError:'移項時漏掉負號', errorKind:'正負號計算錯誤',
+    });
+    return { evidence:state.processEvidence, rejected, accepted };
+  })()`));
+  assert.equal(result.rejected, null);
+  assert.equal(result.evidence.recognition.length, 1);
+  assert.equal(result.evidence.direction.length, 1);
+  assert.equal(result.evidence.calculation.length, 1);
+  assert.equal(result.evidence.calculation[0].source, 'trusted-ai-detail');
+  assert.equal(result.evidence.calculation[0].evidence, '2x=10');
+});
+
+test('學習證據優先採持久化結構欄位，保留舊文字只作相容備援', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const q = BANK.find((item) => item.topic === 'num');
+    const attempt = { qid:q.id, ok:false, err:'方法選錯', d:today(), mode:'mixed', ts:20 };
+    processEvidenceEnsure(attempt);
+    processEvidenceAppend(attempt, 'calculation', {
+      ts:20, status:'blocked', source:'trusted-ai-detail', confidence:'high', note:'正負號計算錯誤', evidence:'2x=10',
+    });
+    S.attempts = [attempt];
+    return learningEvidenceLedger()[0];
+  })()`));
+  assert.equal(result.processStage, 'calculation');
+  assert.equal(result.processEvidenceSource, 'trusted-ai-detail');
+  assert.equal(result.processEvidenceStatus, 'blocked');
+});
+
 test('流程斷點至少跨兩題才進個人化提示，不被同一題重複紀錄灌大', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
