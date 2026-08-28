@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829f'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -4131,10 +4131,36 @@ function nextBestAction() {
   const process = retentionSignals.learner && retentionSignals.learner.topProcess;
   return { kind: 'adaptive-textbook', title: '寫今天最值得的 10 題教材題', why: `跨章混合、不練速度；根據答錯、沒有方向、第二／三級、間隔到期與未校準章節選題${process ? `，目前跨題最常卡在「${process.label}」` : ''}。`, time: '約 35 分鐘', onclick: 'startAdaptiveTextbook(10)', button: '開始教材精選' };
 }
-function nextActionCard() {
-  const a = nextBestAction();
-  return `<div class="card next-action"><div class="next-action-copy"><span class="eyebrow">現在只做這件事</span><h2>${escH(a.title)}</h2><p>${escH(a.why)}</p><span class="dim fs13">預估 ${escH(a.time)}</span></div>
+function nextActionCard(action, fullSpan = false) {
+  const a = action || nextBestAction();
+  return `<div class="card next-action${fullSpan ? ' full-span' : ''}"><div class="next-action-copy"><span class="eyebrow">現在只做這件事</span><h2>${escH(a.title)}</h2><p>${escH(a.why)}</p><span class="dim fs13">預估 ${escH(a.time)}</span></div>
     <button class="btn primary big" onclick="${a.onclick}">${escH(a.button)}</button></div>`;
+}
+function homeSecondaryTasks(primary) {
+  const primaryView = primary && ({
+    'paper-correction':'correct', correction:'correct', vision:'mock', mock:'mock', outline:'outline', concept:'concept',
+    retention:'practice', 'adaptive-textbook':'practice', topic:'practice',
+  }[primary.kind]);
+  const outlineReady = outlineUnits().some((unit) => unit.reference);
+  const outlineDue = outlineDueUnits().length;
+  const visionDue = visionDueEntries().length;
+  const visionPaper = visionActivePaperEntries();
+  const conceptDue = conceptDueCards().length;
+  const retentionDue = [...learningSignalIndex().questions.values()].filter((row) => row.retentionDue).length;
+  const cal = mockCalibration();
+  const candidates = [];
+  if (retentionDue) candidates.push({ priority:1, view:'practice', label:'保留重測', value:`${retentionDue} 題到期`, onclick:'startAdaptiveTextbook(10)' });
+  if (visionDue || visionPaper) candidates.push({ priority:2, view:'mock', label:'眼睛刷題', value:visionDue ? `${visionDue} 題第二天` : `${visionPaper.filter((x) => x.paperSeen).length}/20 已完成`, onclick:"nav('mock')" });
+  if (outlineReady && outlineDue) candidates.push({ priority:3, view:'outline', label:'大綱默寫', value:`${outlineDue} 份到期`, onclick:"nav('outline')" });
+  if (conceptDue && !hasRecentConceptWork(1)) candidates.push({ priority:4, view:'concept', label:'觀念理解', value:`${conceptDue} 張待說明`, onclick:"nav('concept')" });
+  if (cal.count && cal.staleDays >= 7) candidates.push({ priority:5, view:'mock', label:'完整模考', value:`距上回 ${cal.staleDays} 天`, onclick:"nav('mock')" });
+  const seen = new Set();
+  return candidates.filter((task) => task.view !== primaryView && !seen.has(task.view) && seen.add(task.view))
+    .sort((a, b) => a.priority - b.priority).slice(0, 2);
+}
+function homeSecondaryHTML(tasks) {
+  if (!tasks.length) return '';
+  return `<section class="home-secondary" aria-label="今天另外需要完成"><div class="home-secondary-heading"><span class="eyebrow">今天另外需要完成</span><b>${tasks.length} 個閉環</b></div><div class="task-strip">${tasks.map((task) => `<button onclick="${task.onclick}"><span>${escH(task.label)}</span><b>${escH(task.value)}</b></button>`).join('')}</div></section>`;
 }
 function bankById(id) {
   if (BANK_MAP && BANK_MAP.has(id)) return BANK_MAP.get(id);
@@ -4456,25 +4482,16 @@ function updateBadge() {
 /* ═══════════ 首頁：老師新版流程 ═══════════ */
 function renderHome() {
   const days = daysUntil(EXAM_DATE);
-  const outlineReady = outlineUnits().filter((x) => x.reference).length;
-  const outlineDue = outlineDueUnits().length;
-  const visionDue = visionDueEntries().length;
-  const visionPaper = visionActivePaperEntries();
-  const visionPaperDone = visionPaper ? visionPaper.filter((x) => x.paperSeen).length : 0;
-  const conceptDue = conceptDueCards().length;
+  const primary = nextBestAction();
+  const secondary = homeSecondaryTasks(primary);
   app().innerHTML = `
   <div class="hero">
     <h1>數A特訓 <span class="dim" style="font-size:12px">${APP_VER}</span></h1>
     <p>距離 116 學測還有 <b class="accent">${days} 天</b>｜主練破題方向，不用速度製造假進度</p>
   </div>
-  ${nextActionCard()}
-  <div class="task-strip">
-    <button onclick="nav('outline')"><span>大綱默寫</span><b>${outlineReady ? `${outlineDue} 份到期` : '等待 11 份大綱'}</b></button>
-    <button onclick="nav('mock')"><span>模考與破題</span><b>${visionDue ? `${visionDue} 題第二天` : visionPaper ? `眼睛刷題 ${visionPaperDone}/20` : '眼睛刷題 20 題'}</b></button>
-    <button onclick="nav('concept')"><span>觀念理解</span><b>${conceptDue} 張待說明</b></button>
-    <button onclick="nav('stats')"><span>進度與設定</span><b>同步、AI 與備份</b></button>
-  </div>
-  <div class="card training-rules"><h2>王老師目前的訓練路徑</h2>
+  ${nextActionCard(primary, !secondary.length)}
+  ${homeSecondaryHTML(secondary)}
+  <details class="card training-rules"><summary><span>王老師目前的訓練路徑</span><small>需要時再看</small></summary>
     <ol>
       <li>十一單元從空白默寫子標題與內容；對答案後隔兩天再測。</li>
       <li>平時只做混合題。只有數據確認某章嚴重斷裂，才短期分章補洞。</li>
@@ -4483,7 +4500,7 @@ function renderHome() {
       <li>眼睛刷題只找破題方向、不計算；沒方向的題隔天再想一次，仍沒有才看詳解。</li>
       <li>基本定義用自己的話說清楚意思、限制與例子，不背逐字句子。</li>
     </ol>
-  </div>`;
+  </details>`;
 }
 
 /* ═══════════ 任務一：十一單元空白默寫 ═══════════ */

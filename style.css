@@ -795,6 +795,15 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .task-strip span, .task-strip b { display: block; }
 .task-strip span { color: var(--dim); font-size: 12px; margin-bottom: 7px; }
 .task-strip b { font-weight: 620; }
+.home-secondary { padding: 18px; border: 1px solid var(--border); border-radius: var(--r); background: rgba(250,248,244,.72); }
+.home-secondary-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.home-secondary-heading b { color: var(--dim); font-size: 13px; font-weight: 560; }
+.home-secondary .task-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 12px 0 0; }
+.training-rules summary { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none; font-size: 17px; font-weight: 620; }
+.training-rules summary::-webkit-details-marker { display: none; }
+.training-rules summary::after { content: '＋'; color: var(--dim); font-size: 18px; font-weight: 400; }
+.training-rules[open] summary::after { content: '－'; }
+.training-rules summary small { margin-left: auto; color: var(--dim); font-size: 12px; font-weight: 450; }
 .quiet-link { display: flex; justify-content: flex-end; margin-top: 16px; }
 
 .recall-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 11px; margin: 16px 0; }
@@ -1278,7 +1287,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
     min-height: calc(100dvh - 72px);
     display: grid;
     grid-template-columns: minmax(0, 1.12fr) minmax(440px, .88fr);
-    grid-template-rows: auto minmax(220px, 1fr) minmax(205px, .92fr);
+    grid-template-rows: auto minmax(220px, 1fr) auto;
     gap: 18px;
     align-content: stretch;
   }
@@ -1295,12 +1304,10 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
     align-content: center;
   }
   body[data-view="home"] .task-strip {
-    grid-column: 2;
-    grid-row: 2;
     height: 100%;
     margin: 0;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr);
   }
   body[data-view="home"] .task-strip button {
     height: 100%;
@@ -1310,12 +1317,20 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
     justify-content: center;
   }
   body[data-view="home"] .task-strip b { font-size: 18px; line-height: 1.45; }
+  body[data-view="home"] .home-secondary {
+    grid-column: 2;
+    grid-row: 2;
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 14px;
+  }
+  body[data-view="home"] .next-action.full-span { grid-column: 1 / -1; }
   body[data-view="home"] .training-rules {
     grid-column: 1 / -1;
     grid-row: 3;
-    height: 100%;
+    height: auto;
     margin: 0;
-    overflow: hidden;
   }
   body[data-view="home"] .training-rules ol {
     columns: 3;

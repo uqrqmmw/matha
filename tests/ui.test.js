@@ -82,7 +82,28 @@ test('Ultra 首頁與作答流程善用寬畫面，原卷控制不再切走上�
   assert.match(source, /function paperWorkspaceFit\(\)/);
   assert.match(source, /class="paper-ui-toggle"/);
   assert.doesNotMatch(source, /class="paper-spread-preview"/);
-  assert.match(source, /進度與設定<\/span><b>同步、AI 與備份/);
+  assert.match(source, /function homeSecondaryTasks\(primary\)/);
+  assert.match(source, /\.slice\(0, 2\)/);
+  assert.match(source, /<details class="card training-rules"><summary>/);
+  assert.doesNotMatch(source, /<details class="card training-rules" open/);
+});
+
+test('首頁只列最多兩個真的到期閉環，且不重複主要任務', () => {
+  const { run } = loadApp();
+  const tasks = run(`(() => {
+    outlineUnits = () => [{ reference:true }];
+    outlineDueUnits = () => [{ id:'outline' }];
+    visionDueEntries = () => [{ id:'vision' }];
+    visionActivePaperEntries = () => [];
+    conceptDueCards = () => [{ id:'concept' }];
+    hasRecentConceptWork = () => false;
+    learningSignalIndex = () => ({ questions:new Map([['retention', { retentionDue:true }]]) });
+    mockCalibration = () => ({ count:1, staleDays:9 });
+    return homeSecondaryTasks({ kind:'mock' });
+  })()`);
+  assert.equal(tasks.length, 2);
+  assert.deepEqual(Array.from(tasks, (task) => task.view), ['practice', 'outline']);
+  assert.equal(tasks.some((task) => task.view === 'mock'), false);
 });
 
 test('隔日訂正沿用全頁原卷工作台，新筆跡與第一次紅筆分層且詳解不壓縮卷面', () => {
