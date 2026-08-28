@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829j'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829k'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3395,6 +3395,25 @@ function outlineDueUnits() {
     return !last || String(last.due || '') <= today();
   });
 }
+const WEEKLY_OUTLINE_NEW_TARGET = 2;
+const WEEKLY_CONCEPT_TARGET = 2;
+function outlineWeeklyNewCount() {
+  const firstByUnit = new Map();
+  for (const attempt of (S.outlineAttempts || []).filter((row) => learningRecordCurrent(row && row.ts))
+    .slice().sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0))) {
+    if (attempt && attempt.unitId && !firstByUnit.has(attempt.unitId)) firstByUnit.set(attempt.unitId, attempt);
+  }
+  return [...firstByUnit.values()].filter((attempt) => dayDistance(attempt.d) < 7).length;
+}
+function conceptWeeklyCount() {
+  return (S.conceptAttempts || []).filter((attempt) => learningRecordCurrent(attempt && attempt.ts) && dayDistance(attempt.d) < 7).length;
+}
+function learningWeeklyMinimums() {
+  return {
+    outlineDone:outlineWeeklyNewCount(), outlineTarget:WEEKLY_OUTLINE_NEW_TARGET,
+    conceptDone:conceptWeeklyCount(), conceptTarget:WEEKLY_CONCEPT_TARGET,
+  };
+}
 function nextOutlineTask() {
   const units = outlineUnits().filter((unit) => unit.reference);
   const retests = units.filter((unit) => {
@@ -3404,7 +3423,7 @@ function nextOutlineTask() {
   if (retests.length) return { unit:retests[0], retest:true };
   const didNewToday = (S.outlineAttempts || []).some((attempt) => learningRecordCurrent(attempt && attempt.ts) && attempt.d === today() &&
     !(S.outlineAttempts || []).some((older) => older !== attempt && older.unitId === attempt.unitId && learningRecordCurrent(older.ts) && Number(older.ts || 0) < Number(attempt.ts || 0)));
-  if (didNewToday) return null;
+  if (didNewToday || outlineWeeklyNewCount() >= WEEKLY_OUTLINE_NEW_TARGET) return null;
   const unseen = units.find((unit) => !outlineLast(unit.id));
   return unseen ? { unit:unseen, retest:false } : null;
 }
@@ -3422,6 +3441,9 @@ function conceptDueCards() {
 function hasRecentConceptWork(days) {
   const cutoff = Number(days) || 7;
   return (S.conceptAttempts || []).some((attempt) => learningRecordCurrent(attempt && attempt.ts) && dayDistance(attempt && attempt.d) < cutoff);
+}
+function nextConceptTask() {
+  return conceptWeeklyCount() < WEEKLY_CONCEPT_TARGET ? conceptDueCards()[0] || null : null;
 }
 function visionDueEntries() {
   return (S.visionQueue || []).filter((x) => learningRecordCurrent(x.ts, x.mt) && !x.done && x.stage === 'waiting' && String(x.due || '') <= today());
@@ -4321,7 +4343,7 @@ function nextBestAction() {
     kind: 'mock', title: '用新制建立第一回全真基準', why: '舊成績已退出能力模型。請用正式 20 題、100 分鐘重新測；今天只批分，明天才訂正。', time: '100 分鐘', onclick: "nav('mock')", button: '選一回原卷',
   };
   const outlineTask = nextOutlineTask();
-  if (outlineTask) return {
+  if (outlineTask && outlineTask.retest) return {
     kind: 'outline', title: `${outlineTask.retest ? '兩天後重測' : '第一次默寫'} ${outlineTask.unit.title}`,
     why: outlineTask.retest ? '先從空白頁把子標題與內容重新叫回來，再對照老師大綱。' : '今天只開一個新單元；看標題把子標題、定義與關係盡量叫出來。',
     time: '約 15 分鐘', onclick: `startOutlineRecall('${outlineTask.unit.id}')`, button: '開始空白默寫',
@@ -4329,12 +4351,17 @@ function nextBestAction() {
   if (cal.staleDays >= 7) return {
     kind: 'mock', title: '更新本週校準', why: `距上次完整模擬已 ${cal.staleDays} 天；用完整一回確認混合情境下能否取回分數。`, time: '100 分鐘', onclick: "nav('mock')", button: '查看模考說明',
   };
+  if (outlineTask) return {
+    kind: 'outline', title: `本週新單元 ${outlineTask.unit.title}`,
+    why: `每週只新增 ${WEEKLY_OUTLINE_NEW_TARGET} 個空白默寫單元；寫完對照老師大綱，兩天後再從空白重測。`,
+    time: '約 15 分鐘', onclick: `startOutlineRecall('${outlineTask.unit.id}')`, button: '開始空白默寫',
+  };
   const severe = severeWeakTopics()[0];
   if (severe) {
     return { kind: 'topic', title: `「${TOPICS[severe.k]}」需要短期補洞`, why: `混合／模考近 ${severe.n} 題只答對 ${severe.ok} 題，已達到才例外分章介入的門檻。`, time: '約 20 分鐘', onclick: `startTopicIntervention('${severe.k}')`, button: '補洞 6 題' };
   }
-  const concept = conceptDueCards()[0];
-  if (concept && !hasRecentConceptWork(1)) return { kind: 'concept', title: `用自己的話說明「${concept.title}」`, why: '每天最多一張，不背字句；說清楚真正意思、限制與一個例子，AI 再檢查語意缺口。', time: '約 5 分鐘', onclick: `startConceptCheck('${concept.id}')`, button: '開始說明' };
+  const concept = nextConceptTask();
+  if (concept && !hasRecentConceptWork(1)) return { kind: 'concept', title: `用自己的話說明「${concept.title}」`, why: `每週 ${WEEKLY_CONCEPT_TARGET} 張、每天最多一張；不背字句，說清楚真正意思、限制與一個例子。`, time: '約 5 分鐘', onclick: `startConceptCheck('${concept.id}')`, button: '開始說明' };
   const process = retentionSignals.learner && retentionSignals.learner.topProcess;
   return { kind: 'adaptive-textbook', title: '寫今天最值得的 10 題教材題', why: `跨章混合、不練速度；根據答錯、沒有方向、第二／三級、間隔到期與未校準章節選題${process ? `，目前跨題最常卡在「${process.label}」` : ''}。`, time: '約 35 分鐘', onclick: 'startAdaptiveTextbook(10)', button: '開始教材精選' };
 }
@@ -4349,17 +4376,18 @@ function homeSecondaryTasks(primary) {
     retention:'practice', 'adaptive-textbook':'practice', topic:'practice',
   }[primary.kind]);
   const outlineReady = outlineUnits().some((unit) => unit.reference);
-  const outlineDue = outlineDueUnits().length;
+  const outlineTask = nextOutlineTask();
   const visionDue = visionDueEntries().length;
   const visionPaper = visionActivePaperEntries();
-  const conceptDue = conceptDueCards().length;
+  const conceptTask = nextConceptTask();
+  const weekly = learningWeeklyMinimums();
   const retentionDue = [...learningSignalIndex().questions.values()].filter((row) => row.retentionDue).length;
   const cal = mockCalibration();
   const candidates = [];
   if (retentionDue) candidates.push({ priority:1, view:'practice', label:'保留重測', value:`${retentionDue} 題到期`, onclick:'startAdaptiveTextbook(10)' });
   if (visionDue || visionPaper) candidates.push({ priority:2, view:'mock', label:'眼睛刷題', value:visionDue ? `${visionDue} 題第二天` : `${visionPaper.filter((x) => x.paperSeen).length}/20 已完成`, onclick:"nav('mock')" });
-  if (outlineReady && outlineDue) candidates.push({ priority:3, view:'outline', label:'大綱默寫', value:`${outlineDue} 份到期`, onclick:"nav('outline')" });
-  if (conceptDue && !hasRecentConceptWork(1)) candidates.push({ priority:4, view:'concept', label:'觀念理解', value:`${conceptDue} 張待說明`, onclick:"nav('concept')" });
+  if (outlineReady && outlineTask) candidates.push({ priority:3, view:'outline', label:outlineTask.retest ? '大綱兩天重測' : '本週大綱默寫', value:outlineTask.retest ? outlineTask.unit.title : `還差 ${Math.max(0, weekly.outlineTarget - weekly.outlineDone)} 個新單元`, onclick:"nav('outline')" });
+  if (conceptTask && !hasRecentConceptWork(1)) candidates.push({ priority:4, view:'concept', label:'本週觀念自述', value:`還差 ${Math.max(0, weekly.conceptTarget - weekly.conceptDone)} 張`, onclick:"nav('concept')" });
   if (cal.count && cal.staleDays >= 7) candidates.push({ priority:5, view:'mock', label:'完整模考', value:`距上回 ${cal.staleDays} 天`, onclick:"nav('mock')" });
   const seen = new Set();
   return candidates.filter((task) => task.view !== primaryView && !seen.has(task.view) && seen.add(task.view))

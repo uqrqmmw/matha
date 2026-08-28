@@ -92,10 +92,11 @@ test('首頁只列最多兩個真的到期閉環，且不重複主要任務', ()
   const { run } = loadApp();
   const tasks = run(`(() => {
     outlineUnits = () => [{ reference:true }];
-    outlineDueUnits = () => [{ id:'outline' }];
+    nextOutlineTask = () => ({ unit:{ id:'outline', title:'單元一' }, retest:false });
     visionDueEntries = () => [{ id:'vision' }];
     visionActivePaperEntries = () => [];
-    conceptDueCards = () => [{ id:'concept' }];
+    nextConceptTask = () => ({ id:'concept' });
+    learningWeeklyMinimums = () => ({ outlineDone:0, outlineTarget:2, conceptDone:0, conceptTarget:2 });
     hasRecentConceptWork = () => false;
     learningSignalIndex = () => ({ questions:new Map([['retention', { retentionDue:true }]]) });
     mockCalibration = () => ({ count:1, staleDays:9 });

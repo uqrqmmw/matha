@@ -70,8 +70,35 @@ test('十一單元先守兩天重測，再允許同日開一個新單元，不�
     return { first:first.title, second:second.title, third:third.kind };
   })()`));
   assert.match(result.first, /兩天後重測/);
-  assert.match(result.second, /第一次默寫/);
+  assert.match(result.second, /本週新單元/);
   assert.notEqual(result.third, 'outline');
+});
+
+test('大綱與定義只占每週最低頻率，兩天重測仍優先且不被週上限吞掉', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    S.outlineAttempts = [
+      { id:'new-1', unitId:OUTLINE_DEFAULTS[0].id, d:addDays(today(), -6), due:addDays(today(), 2), ts:1 },
+      { id:'new-2', unitId:OUTLINE_DEFAULTS[1].id, d:addDays(today(), -1), due:addDays(today(), 2), ts:2 },
+    ];
+    S.conceptAttempts = [
+      { id:'c1', conceptId:CONCEPT_CARDS[0].id, d:addDays(today(), -3), due:addDays(today(), 4), ts:3 },
+      { id:'c2', conceptId:CONCEPT_CARDS[1].id, d:addDays(today(), -1), due:addDays(today(), 6), ts:4 },
+    ];
+    const capped = { weekly:learningWeeklyMinimums(), outline:nextOutlineTask(), concept:nextConceptTask() };
+    S.outlineAttempts[0].due = today();
+    const retest = nextOutlineTask();
+    S.conceptAttempts[0].d = addDays(today(), -8);
+    S.conceptAttempts[0].due = today();
+    const conceptAfterWindow = nextConceptTask();
+    return { capped, retest, conceptAfterWindow };
+  })()`));
+  assert.deepEqual(result.capped.weekly, { outlineDone:2, outlineTarget:2, conceptDone:2, conceptTarget:2 });
+  assert.equal(result.capped.outline, null);
+  assert.equal(result.capped.concept, null);
+  assert.equal(result.retest.retest, true);
+  assert.equal(result.retest.unit.id, 'outline-1');
+  assert.equal(result.conceptAfterWindow.id, 'concept-function');
 });
 
 test('分章補洞只由混合證據觸發，分章練習本身不製造或稀釋診斷', () => {
