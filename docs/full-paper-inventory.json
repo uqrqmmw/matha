@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-08-29T00:00:00+08:00",
+  "releaseAuthority": false,
+  "sourceDocuments": [
+    {
+      "id": "publisher-question",
+      "fileName": "數模 1-3回.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/數模 1-3回.pdf",
+      "pages": 11,
+      "sha256": "db29c53f5910bf591482b291449a66d6027fa203999e1c6e34b89126250843c3",
+      "handling": "private-study-only"
+    },
+    {
+      "id": "publisher-answer",
+      "fileName": "數模 1-3 答案.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/數模 1-3 答案.pdf",
+      "pages": 4,
+      "sha256": "212721b3516b3ad081c2caa0d4fedc241fd3d25238a8060a27dba9255b936130",
+      "handling": "private-study-only"
+    },
+    {
+      "id": "official-115-question",
+      "fileName": "115_mathA_question.pdf",
+      "pages": 8,
+      "sha256": "e867988978a81ecf07e58d9e6bf9164afae7be20590cf023fb618efae275c2e3",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-115-answer",
+      "fileName": "115_mathA_answer_after.pdf",
+      "pages": 1,
+      "sha256": "0308d00e554aa2b1a1f68215df8c93943d4aa2ecd326127c3828b971867f67c0",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-115-scoring",
+      "fileName": "115_mathA_scoring_after.pdf",
+      "pages": 3,
+      "sha256": "872f82af8cbf0d4dd4ddd0d0a80d1c400b136b8cad48665b94d6ff5a5ec1430f",
+      "handling": "private-source"
+    }
+  ],
+  "papers": [
+    {
+      "id": "paper-mock-1",
+      "title": "第一次模考",
+      "questionSource": "publisher-question",
+      "coverPdfPage": 1,
+      "questionPdfPages": [2, 3, 4],
+      "printedPages": 6,
+      "answerSource": "publisher-answer",
+      "answerPdfPages": [1, 2],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "complete",
+      "freshness": "seen",
+      "freshnessEvidence": "2026-07-18 rescue and graded artifacts",
+      "calibrationStatus": "ineligible-seen"
+    },
+    {
+      "id": "paper-mock-2",
+      "title": "第二次模考",
+      "questionSource": "publisher-question",
+      "coverPdfPage": 5,
+      "questionPdfPages": [6, 7, 8],
+      "printedPages": 6,
+      "answerSource": "publisher-answer",
+      "answerPdfPages": [2, 3],
+      "questions": 19,
+      "minutes": 100,
+      "solutionCoverage": "complete",
+      "freshness": "no-local-use-evidence",
+      "calibrationStatus": "ineligible-19-questions"
+    },
+    {
+      "id": "paper-mock-3",
+      "title": "第三次模考",
+      "questionSource": "publisher-question",
+      "coverPdfPage": 9,
+      "questionPdfPages": [10, 11],
+      "printedPages": 4,
+      "answerSource": "publisher-answer",
+      "answerPdfPages": [3, 4],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "complete",
+      "freshness": "no-local-use-evidence-requires-confirmation",
+      "calibrationStatus": "selected-next-blocked",
+      "activationBlockers": [
+        "public-client-answer-key",
+        "freshness-confirmation"
+      ]
+    },
+    {
+      "id": "official-115-matha",
+      "title": "115學年度學測數學A",
+      "questionSource": "official-115-question",
+      "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
+      "printedQuestionPages": 7,
+      "answerSource": "official-115-answer",
+      "answerPdfPages": [1],
+      "scoringSource": "official-115-scoring",
+      "scoringPdfPages": [1, 2, 3],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "answer-key-1-18-detailed-19-20",
+      "freshness": "unconfirmed",
+      "calibrationStatus": "reserve-blocked",
+      "activationBlockers": [
+        "freshness-confirmation",
+        "missing-official-detailed-solutions-1-18"
+      ]
+    }
+  ],
+  "selectedNextPaperId": "paper-mock-3",
+  "readyFreshCalibrationCount": 0,
+  "provisionalFreshCalibrationCount": 1,
+  "firstSixAdditionalReadySourcesNeeded": 5,
+  "nextP0": "Remove PAPER_SOURCES.key from public client and gate answer access behind authenticated post-submission backend state."
+}
