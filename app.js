@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829f'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829g'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -8283,6 +8283,32 @@ function paperRunLevelCounts(run) {
   }
   return counts;
 }
+function paperRunRecoveryPoints(run) {
+  const out = { lost:0, reconstructed:0, answerOnly:0, solution:0, retained:0, open:0 };
+  const source = paperSourceById(run && run.sourceId);
+  const grade = run && run.aiGrade;
+  if (!source || !grade || !Array.isArray(grade.questions)) return out;
+  for (const item of grade.questions) {
+    const no = Number(item && item.no);
+    const official = Array.isArray(source.key)
+      ? source.key.find((row) => Number(row && row.no) === no) || source.key[no - 1]
+      : null;
+    const maxPoints = item && item.maxPoints != null && Number.isFinite(Number(item.maxPoints)) ? Number(item.maxPoints)
+      : official && official.points != null && Number.isFinite(Number(official.points)) ? Number(official.points) : 0;
+    const earned = item && item.points != null && Number.isFinite(Number(item.points)) ? Math.max(0, Number(item.points)) : 0;
+    const lost = Math.max(0, maxPoints - Math.min(maxPoints, earned));
+    if (!lost) continue;
+    const state = run.review && run.review[no] || {};
+    const level = Number(state.level) || 0;
+    out.lost += lost;
+    if (level === 2) { out.answerOnly += lost; out.reconstructed += lost; }
+    else if (level === 3) { out.solution += lost; out.reconstructed += lost; }
+    else out.open += lost;
+    if (state.retentionPassed) out.retained += lost;
+  }
+  for (const key of Object.keys(out)) out[key] = Math.round(out[key] * 100) / 100;
+  return out;
+}
 function teacherReportPrint(summaryOnly = false) {
   document.body.classList.toggle('teacher-summary-print', !!summaryOnly);
   const cleanup = () => document.body.classList.remove('teacher-summary-print');
@@ -8312,10 +8338,11 @@ function paperTeacherSummaryHTML(run, source, grade, levels) {
     && paperSourceById(row.sourceId)?.calibrationEligible !== false)
     .sort((a, b) => Number(b.submittedAt || 0) - Number(a.submittedAt || 0))[0];
   const delta = prior ? Number(run.score) - Number(prior.score) : null;
+  const recovery = paperRunRecoveryPoints(run);
   return `<section class="teacher-one-page"><header><div><span class="eyebrow">給王老師的單頁摘要</span><h2>${escH(source.title)}｜${escH(run.d || '')}</h2></div><b class="teacher-summary-score">${run.score}<small>/100</small></b></header>
-    <div class="teacher-summary-grid"><div><span>三級分布</span><b>${levels.l1}／${levels.l2}／${levels.l3}</b><small>直接會／只看答案會／需詳解</small></div><div><span>待完成</span><b>${levels.open}</b><small>尚未完成隔日訂正</small></div><div><span>考試剩餘</span><b>${Math.max(0, Math.round(Number(run.remainingMs || 0) / 60000))} 分</b><small>不拿單題速度作主要診斷</small></div><div><span>相較前一回</span><b>${delta == null ? '尚無前一回' : `${delta > 0 ? '+' : ''}${delta} 分`}</b><small>只比較完整正式卷</small></div></div>
+    <div class="teacher-summary-grid"><div><span>三級分布</span><b>${levels.l1}／${levels.l2}／${levels.l3}</b><small>直接會／只看答案會／需詳解；待訂正 ${levels.open} 題</small></div><div><span>失分回收</span><b>${recovery.reconstructed}／${recovery.lost} 分</b><small>訂正已重建；尚待 ${recovery.open} 分</small></div><div><span>考試剩餘</span><b>${Math.max(0, Math.round(Number(run.remainingMs || 0) / 60000))} 分</b><small>不拿單題速度作主要診斷</small></div><div><span>相較前一回</span><b>${delta == null ? '尚無前一回' : `${delta > 0 ? '+' : ''}${delta} 分`}</b><small>只比較完整正式卷</small></div></div>
     <div class="teacher-summary-findings"><p><b>較常失分單元：</b>${escH(top(topicCounts, (key) => TOPICS[key] || key))}</p><p><b>跨題流程斷點：</b>${escH(top(processCounts, (key) => PROCESS_STAGE_LABELS[key] || key, 2))}</p><p><b>反覆卡點：</b>${escH(top(errorCounts, (key) => key, 2))}</p><p><b>建議優先討論：</b>${discuss.length ? `第 ${discuss.slice(0, 8).join('、')} 題${discuss.length > 8 ? '等' : ''}` : '本回沒有第三級或尚未完成題'}</p></div>
-    <p class="teacher-summary-note">判讀原則：第一級是考場直接會寫；第二級是隔日只看答案即可重建；第三級是努力重想後仍需詳解。AI 的第一錯步只有在卷面證據可逐字核對時才列入。</p>
+    <p class="teacher-summary-note">判讀原則：第一級是考場直接會寫；第二級是隔日只看答案即可重建；第三級是努力重想後仍需詳解。「訂正已重建」不等於下次考試已穩定拿回，仍要由 2／7 日新題或下一回正式卷驗證。AI 的第一錯步只有在卷面證據可逐字核對時才列入。</p>
   </section>`;
 }
 function renderPaperTeacherReport(runId) {
@@ -9271,9 +9298,12 @@ function paperLearningSummaryCard() {
   if (!runs.length) return `<section class="card paper-learning-summary"><span class="eyebrow">原版模考分析</span><h2>完成重置後的第一回才開始累積</h2><p class="dim">${learningBaselineStart() ? `舊制分數已於 ${escH(learningBaselineDate())} 退出目前模型，原卷與筆跡仍保留。` : ''}系統只用新完成的正式 20 題卷校準級分，再從隔日訂正整理單元、卡點和三級分布。</p></section>`;
   const topicCount = {}, errorCount = {};
   let l1 = 0, l2 = 0, l3 = 0, open = 0;
+  const recovery = { lost:0, reconstructed:0, answerOnly:0, solution:0, retained:0, open:0 };
   for (const run of runs) {
     const levels = paperRunLevelCounts(run);
     l1 += levels.l1; l2 += levels.l2; l3 += levels.l3; open += levels.open;
+    const runRecovery = paperRunRecoveryPoints(run);
+    for (const key of Object.keys(recovery)) recovery[key] += runRecovery[key];
     for (const state of Object.values(run.review || {})) {
       if (!state || typeof state !== 'object') continue;
       const topic = state.topic || [...(state.logs || [])].reverse().find((log) => log && log.topic)?.topic;
@@ -9296,6 +9326,8 @@ function paperLearningSummaryCard() {
   }).join('');
   return `<section class="card paper-learning-summary"><span class="eyebrow">原版模考分析</span><h2>從「錯幾分」追到「為何找不到方向」</h2>
     <div class="paper-level-summary"><span>第一級 <b>${l1}</b></span><span>第二級 <b>${l2}</b></span><span>第三級 <b>${l3}</b></span><span>待訂正 <b>${open}</b></span></div>
+    <div class="paper-recovery-summary"><div><span>這些原版卷共失去</span><b>${recovery.lost} 分</b></div><div><span>只看答案已重建</span><b>${recovery.answerOnly} 分</b></div><div><span>看詳解後已重建</span><b>${recovery.solution} 分</b></div><div><span>尚待訂正重建</span><b>${recovery.open} 分</b></div></div>
+    <p class="paper-recovery-note">「已重建」只表示訂正時重新算通，不冒充下次考試已能拿回；2／7 日新題與後續正式卷才驗證是否真正保留。</p>
     <div class="paper-analysis-grid"><div><h3>較常失分的單元</h3>${bars(topTopics, maxTopic, (key) => TOPICS[key] || key)}</div><div><h3>較常出現的卡點</h3>${bars(topErrors, maxError, (key) => key)}</div></div>
     <h3>最近原版模考</h3><div class="report-list">${recent}</div></section>`;
 }

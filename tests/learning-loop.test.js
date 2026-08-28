@@ -1570,16 +1570,42 @@ test('原版模考隔日訂正會累積單元、卡點與老師逐題報告', ()
     S.paperRuns = [row];
     const tags = paperRunRefreshLearningTags(row);
     renderPaperTeacherReport(row.id);
-    return { tags, html:__app.innerHTML, card:paperLearningSummaryCard(), levels:paperRunLevelCounts(row) };
+    return { tags, html:__app.innerHTML, card:paperLearningSummaryCard(), levels:paperRunLevelCounts(row), recovery:paperRunRecoveryPoints(row) };
   })()`));
   assert.deepEqual(result.tags.topics, ['prob']);
   assert.deepEqual(result.tags.errors.sort(), ['推理缺口', '條件翻譯不完整'].sort());
   assert.deepEqual(result.levels, { l1:19, l2:0, l3:1, open:0 });
+  assert.deepEqual(result.recovery, { lost:5, reconstructed:5, answerOnly:0, solution:5, retained:0, open:0 });
   assert.match(result.html, /老師檢視版/);
+  assert.match(result.html, /失分回收/);
+  assert.match(result.html, /5／5 分/);
   assert.match(result.html, /先縮小樣本空間/);
   assert.match(result.html, /分母仍使用原樣本空間/);
   assert.match(result.card, /較常失分的單元/);
+  assert.match(result.card, /看詳解後已重建<\/span><b>5 分/);
+  assert.match(result.card, /不冒充下次考試已能拿回/);
   assert.match(result.card, /條件翻譯不完整|推理缺口/);
+});
+
+test('失分回收只計官方配分：第二級、第三級與未完成分開，不把訂正冒充穩定得分', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES[0];
+    const questions = source.key.map((key, index) => ({
+      no:index + 1,
+      status:index < 3 ? 'incorrect' : 'correct',
+      points:index === 1 ? 1 : index < 3 ? 0 : key.points,
+      maxPoints:key.points,
+      marks:[],
+    }));
+    const row = {
+      id:'recovery-paper', sourceId:source.id, score:86,
+      aiGrade:{ score:86, questions },
+      review:{ 1:{ done:true, level:2 }, 2:{ done:true, level:3 }, 3:{ done:false } },
+    };
+    return paperRunRecoveryPoints(row);
+  })()`));
+  assert.deepEqual(result, { lost:14, reconstructed:9, answerOnly:5, solution:4, retained:0, open:5 });
 });
 
 test('推薦題換題與品質回報不會污染作答證據，疑問題會停止出題且可恢復', () => {
