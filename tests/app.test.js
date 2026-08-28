@@ -935,6 +935,37 @@ test('多選題空白送出＝未作答＝0 分；部分給分依學測 3/5、1/
   assert.equal(cases.paperEmpty, 0);
 });
 
+test('原卷紅筆依向量筆跡吸附到手寫答案，未作答不在印刷題號上亂畫', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const line = (points, t0) => ({ pts:points.map(([x,y]) => [x,y,.5]), t0, t1:t0 + 10, c:'black', w:1 });
+    const circle = (cx, cy, rx, ry, t0) => line(Array.from({ length:17 }, (_, i) => {
+      const a = Math.PI * 2 * i / 16; return [cx + Math.cos(a) * rx, cy + Math.sin(a) * ry];
+    }), t0);
+    const grade = { questions:[
+      { no:1, page:1, status:'correct', answerType:'single', marks:[{ box:[.16,.39,.18,.42], kind:'check' }] },
+      { no:2, page:2, status:'incorrect', answerType:'fill', marks:[{ box:[.72,.72,.78,.77], kind:'cross' }] },
+    ] };
+    const ink = {
+      0:{ s:[line([[.04,.32],[.045,.327],[.05,.34],[.048,.348],[.043,.356],[.04,.36]], 1), circle(.16,.34,.025,.02,2)] },
+      1:{ s:[line([[.74,.70],[.76,.71]], 3), circle(.84,.66,.06,.045,9)] },
+    };
+    paperGradeAlignMarksToInk(grade, ink);
+    const source = { id:'test-paper', questions:1 };
+    const unanswered = paperNormalizeAiGrade(source, { questions:[{
+      no:1, status:'unanswered', hasFinalAnswer:false, selectedOptions:[], finalAnswer:'',
+      marks:[{ box:[.1,.1,.2,.2], kind:'unanswered', option:0 }],
+    }] }, 'gpt-5.5', [{ type:'single', ans:[0], points:5 }]);
+    return { single:grade.questions[0].marks[0], fill:grade.questions[1].marks[0], unanswered:unanswered.questions[0].marks[0] };
+  })()`));
+  assert.equal(result.single.inkAnchored, true);
+  assert.equal((result.single.box[0] + result.single.box[2]) / 2 < 0.1, true, '單選勾叉應吸附到左側手寫答案');
+  assert.equal(result.fill.inkAnchored, true);
+  assert.equal((result.fill.box[0] + result.fill.box[2]) / 2 > 0.75, true, '填答勾叉應吸附到圈起的答案');
+  assert.equal(result.unanswered.unlocalized, true);
+  assert.deepEqual(result.unanswered.box, []);
+});
+
 test('src 為 __proto__ 的匯入題不會污染原型鏈或炸掉題包卡', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

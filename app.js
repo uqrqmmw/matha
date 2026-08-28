@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -6432,6 +6432,95 @@ function paperInkStrokeBounds(stroke) {
   }
   return (stroke._paperBounds = [left, top, right, bottom]);
 }
+function paperBoxCenter(box) {
+  return [(Number(box[0]) + Number(box[2])) / 2, (Number(box[1]) + Number(box[3])) / 2];
+}
+function paperBoxPadded(box, pad = .01) {
+  return [Math.max(0, box[0] - pad), Math.max(0, box[1] - pad), Math.min(1, box[2] + pad), Math.min(1, box[3] + pad)];
+}
+function paperBoxesTouch(a, b, gap = .006) {
+  return a[0] <= b[2] + gap && a[2] + gap >= b[0] && a[1] <= b[3] + gap && a[3] + gap >= b[1];
+}
+function paperInkClosedStroke(stroke, box) {
+  const points = stroke && Array.isArray(stroke.pts) ? stroke.pts : [];
+  if (points.length < 8 || !box) return false;
+  const width = box[2] - box[0], height = box[3] - box[1];
+  if (width < .012 || height < .009 || width > .25 || height > .25) return false;
+  const first = points[0], last = points[points.length - 1];
+  const endGap = Math.hypot(Number(first[0]) - Number(last[0]), Number(first[1]) - Number(last[1]));
+  return endGap <= Math.max(.018, Math.hypot(width, height) * .3);
+}
+/* 模型擅長讀答案，卻不穩定地回傳精準座標。紅筆位置改由已保存的向量筆跡校正：
+   單選優先吸附到題目前左側的獨立答案數字；填答優先吸附到學生最後圈起的答案。
+   只移動紅筆，不改模型讀到的答案或確定性核分。 */
+function paperGradeInkAnchor(item, mark, data) {
+  const rawBox = mark && Array.isArray(mark.box) ? mark.box.map(Number) : [];
+  const strokes = data && Array.isArray(data.s) ? data.s.filter((stroke) => stroke && !stroke.dead) : [];
+  if (rawBox.length !== 4 || rawBox.some((n) => !Number.isFinite(n)) || !strokes.length) return null;
+  const [mx, my] = paperBoxCenter(rawBox);
+  const entries = strokes.map((stroke) => ({ stroke, box:paperInkStrokeBounds(stroke) }))
+    .filter((entry) => entry.box);
+  if (item.answerType === 'single') {
+    const candidates = entries.filter(({ stroke, box }) => {
+      const [cx, cy] = paperBoxCenter(box), width = box[2] - box[0], height = box[3] - box[1];
+      return Array.isArray(stroke.pts) && stroke.pts.length >= 5 && cx <= Math.max(.075, mx + .025)
+        && Math.max(width, height) >= .006 && width <= .09 && height <= .08
+        && cy >= my - .14 && cy <= my + .015;
+    }).sort((a, b) => {
+      const [ax, ay] = paperBoxCenter(a.box), [bx, by] = paperBoxCenter(b.box);
+      return (Math.abs(ay - my) + ax * .24) - (Math.abs(by - my) + bx * .24);
+    });
+    if (!candidates.length) return null;
+    const seed = candidates[0].box;
+    let cluster = seed.slice(), changed = true;
+    while (changed) {
+      changed = false;
+      for (const entry of candidates) if (paperBoxesTouch(cluster, entry.box)) {
+        const next = [Math.min(cluster[0], entry.box[0]), Math.min(cluster[1], entry.box[1]),
+          Math.max(cluster[2], entry.box[2]), Math.max(cluster[3], entry.box[3])];
+        if (next.some((value, index) => value !== cluster[index])) { cluster = next; changed = true; }
+      }
+    }
+    return paperBoxPadded(cluster, .009);
+  }
+  if (item.answerType === 'fill') {
+    const closed = entries.filter((entry) => paperInkClosedStroke(entry.stroke, entry.box))
+      .filter(({ box }) => {
+        const [cx, cy] = paperBoxCenter(box);
+        return Math.abs(cx - mx) <= .23 && Math.abs(cy - my) <= .18;
+      }).sort((a, b) => {
+        const score = (entry) => {
+          const [cx, cy] = paperBoxCenter(entry.box);
+          const diagonal = Math.hypot(entry.box[2] - entry.box[0], entry.box[3] - entry.box[1]);
+          return Math.hypot(cx - mx, cy - my) - Math.min(.05, diagonal * .45);
+        };
+        const delta = score(a) - score(b);
+        return Math.abs(delta) > .006 ? delta : Number(b.stroke.t0 || 0) - Number(a.stroke.t0 || 0);
+      });
+    if (closed.length) return paperBoxPadded(closed[0].box, .012);
+    const nearby = entries.filter(({ stroke, box }) => {
+      const [cx, cy] = paperBoxCenter(box), width = box[2] - box[0], height = box[3] - box[1];
+      return Array.isArray(stroke.pts) && stroke.pts.length >= 5 && width <= .12 && height <= .09
+        && Math.abs(cx - mx) <= .13 && Math.abs(cy - my) <= .055;
+    }).sort((a, b) => {
+      const [ax, ay] = paperBoxCenter(a.box), [bx, by] = paperBoxCenter(b.box);
+      return Math.hypot(ax - mx, ay - my) - Math.hypot(bx - mx, by - my);
+    });
+    if (nearby.length) return paperBoxPadded(nearby[0].box, .01);
+  }
+  return null;
+}
+function paperGradeAlignMarksToInk(grade, inkPages) {
+  for (const item of grade && Array.isArray(grade.questions) ? grade.questions : []) {
+    if (!item || item.status === 'unanswered' || item.status === 'uncertain' || item.answerType === 'multi') continue;
+    const data = inkPages && inkPages[Number(item.page) - 1];
+    for (const mark of Array.isArray(item.marks) ? item.marks : []) {
+      const anchor = paperGradeInkAnchor(item, mark, data);
+      if (anchor) { mark.box = anchor; mark.inkAnchored = true; }
+    }
+  }
+  return grade;
+}
 function paperInkGridRange(bounds) {
   const clamp = (value) => Math.max(0, Math.min(PAPER_INK_GRID_SIZE - 1, Math.floor(value * PAPER_INK_GRID_SIZE)));
   return [clamp(bounds[0]), clamp(bounds[1]), clamp(bounds[2]), clamp(bounds[3])];
@@ -7071,12 +7160,18 @@ async function paperAnswerKeyAfterSubmit(source, run) {
 async function paperAiGradeCall(source, pages, answerKey = source.key) {
   if (!Array.isArray(answerKey) || answerKey.length !== source.questions) throw new Error('正式答案資料不完整，已停止送出 AI 批改');
   const key = paperGradePromptKey(source, answerKey);
+  const pageRanges = pages.map((_, page) => {
+    const nos = Array.from({ length: source.questions }, (_, index) => index + 1)
+      .filter((no) => paperQuestionScanIndex(source, no) === page);
+    return `第 ${page + 1} 頁＝第 ${nos[0]}–${nos[nos.length - 1]} 題`;
+  }).join('；');
   const topicKeys = Object.entries(TOPICS).map(([id, label]) => `${id}=${label}`).join('、');
   const content = [{
     type: 'text',
     text: `你是台灣學測數學閱卷老師。接下來依序附上「${source.title}」的 ${pages.length} 張單頁題本；每張已把原掃描題目、考生在題目上與右側留白寫的黑／藍／綠筆跡合成。請直接讀取題本上的作答，不存在另外的答案卡。
 
 正式答案與配分：${JSON.stringify(key)}
+頁面與題號對照：${pageRanges}
 
 批改規則：
 1. questions 必須恰好回傳第 1 到 ${source.questions} 題，每題一次；page 必須依上面對照。
@@ -7085,10 +7180,10 @@ async function paperAiGradeCall(source, pages, answerKey = source.key) {
 4. hasFinalAnswer 只表示你是否真的找到考生另外寫出的最終答案。finalAnswer 必須逐字填入你辨識到的最終答案；沒有答案填空字串。單選與填答答對得該題滿分，答錯或未答 0 分；等價分數、根式、小數形式可算對。
 5. 單選與多選的 selectedOptions 都必須列出你從考生「最終答案清單」辨識到的 1 起算選項，不可從算式中猜；填答題固定回傳空陣列。多選依五個選項逐一比較：全對 5 分、差 1 個選項 3 分、差 2 個選項 1 分、差 3 個以上 0 分；系統會以 selectedOptions 與正式答案重新計分，不採信模型自行填的 status 或 points。
 6. status：正確 correct、錯誤 incorrect、沒有作答 unanswered、筆跡真的無法辨識 uncertain。不要為了湊答案而猜。
-7. marks 的 box 是該張完整單頁 [左,上,右,下] 0–1 座標，必須落在考生實際寫下的最終答案或答案清單上，不可框題目、題號或中間算式。單選／填答各回傳一個 kind=check 或 cross；未答用 unanswered、看不清楚用 uncertain，option=0。
+7. marks 的 box 是該張完整單頁 [左,上,右,下] 0–1 座標，必須落在考生實際寫下的最終答案或答案清單上，不可框題目、題號或中間算式。定位優先順序是：「考生另外寫在左側或右側留白的答案數字」優先於「印刷選項那一行」；若沒有另外寫答案，才框考生親手圈、勾或劃記的選項。單選／填答各回傳一個 kind=check 或 cross；未答用 unanswered、看不清楚用 uncertain，option=0。
 8. 複選題必須像真人逐項批改：每個正確選到的手寫選項回傳 kind=check；每個錯選的手寫選項回傳 kind=strike；每個漏選的正確選項回傳 kind=add，box 放在答案清單旁可補寫的位置。這三種 mark 的 option 都填該選項 1–5。若部分得分，可另回傳一個 option=0 的 partial，但不可省略逐項 marks。
 9. label 只可放「✓」「✕」「△」「未答」「看不清楚」或補入的選項號碼；系統會在紅叉或部分得分旁強制寫出完整正解。
-10. read 只記錄實際辨識到的最終答案與必要的「寫了不會」事實，供稽核；note 只記錄整體辨識風險。
+10. read 只記錄實際辨識到的最終答案與必要的「寫了不會」事實，供稽核；note 只記錄整體辨識風險。填答題在輸出前必須回到原頁，把圈起來或寫在答案格旁的分子、分母與正負號逐字重讀一次；手寫 7 的橫筆不可直接當成負號。若第一個字元真的無法區分，回傳 uncertain，不可猜成一個確定但錯誤的數值。
 11. 每題 topic 只回傳下列一個內部分類 key：${topicKeys}。這個欄位只供後台統計，不在第一次批改畫面顯示。
 12. 這是第一次簡批。禁止輸出詳解、提示、破題方向、錯誤類型或「從哪一步開始錯」；也不要把這些內容塞進 read、note 或 label。`,
   }];
@@ -7096,7 +7191,7 @@ async function paperAiGradeCall(source, pages, answerKey = source.key) {
     content.push({ type: 'text', text: `【完整單頁 ${index + 1}／${pages.length}】` });
     content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } });
   });
-  const payload = await openAiInvoke({ responseType: 'paper_grade', messages: [{ role: 'user', content }] }, 90000);
+  const payload = await openAiInvoke({ responseType: 'paper_grade', messages: [{ role: 'user', content }] }, 120000);
   if (!payload.json || typeof payload.json !== 'object') throw new Error('OpenAI 沒有回傳完整批改資料');
   return {
     json: payload.json,
@@ -7218,7 +7313,10 @@ function paperNormalizeAiGrade(source, raw, model, answerKey = source.key) {
       return paperFallbackMark(source, no, page, kind === 'add' ? `(${option})` : label, kind, option, slot);
     };
     let marks;
-    if (q.type === 'multi' && selectedOptionsProvided && status !== 'unanswered' && status !== 'uncertain') {
+    if (status === 'unanswered' || status === 'uncertain') {
+      const kind = status === 'unanswered' ? 'unanswered' : 'uncertain';
+      marks = [paperFallbackMark(source, no, page, label, kind, 0, 0)];
+    } else if (q.type === 'multi' && selectedOptionsProvided) {
       const selected = new Set(selectedOptions), correct = new Set(correctOptions);
       const expected = [
         ...selectedOptions.map((option) => ({ kind: correct.has(option) ? 'check' : 'strike', option })),
@@ -7506,10 +7604,11 @@ async function paperSourceGrade(reason) {
     const answerKey = await paperAnswerKeyAfterSubmit(source, run);
     const response = await paperAiGradeCall(source, pages, answerKey);
     const grade = paperNormalizeAiGrade(source, response.json, response.model, answerKey);
+    paperGradeAlignMarksToInk(grade, session.inkPages);
     grade.requestId = response.requestId;
     grade.usage = response.usage;
     grade.budget = response.budget;
-    grade.promptVersion = 'paper-grade-first-pass-v2';
+    grade.promptVersion = 'paper-grade-first-pass-v3';
     if (run.status === 'discarded') return;
     paperSourceRecordGrade(source, run, grade);
     if (paperSourceSession === session) {

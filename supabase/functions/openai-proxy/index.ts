@@ -297,7 +297,7 @@ Deno.serve(async (req: Request) => {
       max_output_tokens: isTest
         ? 32
         : responseType === "paper_grade"
-        ? 5000
+        ? 12000
         : responseType === "paper_detail"
         ? 4200
         : (isStructured ? 3500 : 3000),
@@ -332,7 +332,10 @@ Deno.serve(async (req: Request) => {
     };
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 80_000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      responseType === "paper_grade" ? 110_000 : 80_000,
+    );
     let openAiResponse: Response;
     try {
       openAiResponse = await fetch(OPENAI_URL, {
