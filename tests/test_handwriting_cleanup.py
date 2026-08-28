@@ -29,6 +29,9 @@ recrop_pages = load("recrop_cleaned_handwriting_pages", "recrop-cleaned-handwrit
 prepare_clean_review = load(
     "prepare_cleaned_handwriting_review", "prepare-cleaned-handwriting-review.py"
 )
+prepare_answer_review = load(
+    "prepare_cleaned_answer_review", "prepare-cleaned-answer-review.py"
+)
 
 
 def sha(path: Path) -> str:
@@ -391,6 +394,12 @@ class CleanedHandwritingReviewPacketTests(unittest.TestCase):
             self.assertEqual(template["candidateManifestSha256"], sha(manifest))
             self.assertFalse(template["releaseAuthority"])
             self.assertTrue((root / "review" / "removed-overlays" / "book-p001-q1.png").is_file())
+            self.assertEqual(
+                sha(root / "review" / "assets" / "book-p001-q1" / "source.png"),
+                sha(root / "source.png"),
+            )
+            self.assertIn("../assets/book-p001-q1/source.png", page_html)
+            self.assertNotIn("file://", page_html)
             self.assertIn("mathSymbolsAndFormulasIntact", page_html)
             self.assertIn("figuresAndGreyLinesIntact", page_html)
             self.assertIn("cleaned-handwriting-human-review.json", review_html)
@@ -406,6 +415,137 @@ class CleanedHandwritingReviewPacketTests(unittest.TestCase):
                 prepare_clean_review.prepare(
                     manifest, page_cleanup, fallback_cleanup, root / "review"
                 )
+
+
+class CleanedAnswerReviewPacketTests(unittest.TestCase):
+    def fixture(self, root: Path):
+        source_root = root / "source-pdfs"
+        source_root.mkdir()
+        pdf = source_root / "book.pdf"
+        document = fitz.open()
+        page = document.new_page(width=300, height=400)
+        page.insert_text((12, 35), "QUESTION 1", fontsize=12)
+        page.insert_text((12, 75), "ANSWER 42", fontsize=12)
+        document.save(pdf)
+        document.close()
+        pdf_hash = sha(pdf)
+        stem_region = [0, 0, 150, 100]
+        answer_region = [0, 100, 150, 200]
+        work = root / "work"
+        crop_dir = work / "book" / "crops" / "book-p001-q1"
+        crop_dir.mkdir(parents=True)
+        document = fitz.open(str(pdf))
+        try:
+            stem_pixmap = document[0].get_pixmap(
+                dpi=300, clip=prepare_answer_review.pdf_rect(stem_region), alpha=False
+            )
+            answer_pixmap = document[0].get_pixmap(
+                dpi=300, clip=prepare_answer_review.pdf_rect(answer_region), alpha=False
+            )
+            stem_pixmap.save(str(crop_dir / "stem.png"))
+            answer_pixmap.save(str(crop_dir / "answer.png"))
+        finally:
+            document.close()
+        cleaned = root / "cleaned.png"
+        cleaned.write_bytes((crop_dir / "stem.png").read_bytes())
+        question_doc = {
+            "schema": 11, "kind": "textbook-question-candidates",
+            "bookId": "book", "pdfSha256": pdf_hash,
+            "questions": [{
+                "id": "book-p001-q1", "bookId": "book", "pdfPage": 1,
+                "chapter": "test", "role": "drill", "questionType": "calculation",
+                "displayTruth": "original-pdf-crop", "regions": {"inlineAnswer": None},
+                "answerRef": {"pdfPage": 1, "region": answer_region},
+            }],
+        }
+        (work / "book" / "questions.pending-review.json").write_text(
+            json.dumps(question_doc), encoding="utf-8"
+        )
+        crop_doc = {
+            "schema": 11, "kind": "textbook-crop-manifest", "bookId": "book",
+            "pdfSha256": pdf_hash, "cropDpi": 300,
+            "crops": {"book-p001-q1": {
+                "stemRegion": stem_region, "answer": True,
+                "answerRegion": answer_region, "figures": 0,
+            }},
+        }
+        (work / "book" / "crops-manifest.json").write_text(
+            json.dumps(crop_doc), encoding="utf-8"
+        )
+        candidate = root / "candidates.json"
+        candidate.write_text(json.dumps({
+            "kind": "cleaned-page-question-candidates", "releaseAuthority": False,
+            "items": [{
+                "id": "book-p001-q1", "bookId": "book", "pdfPage": 1,
+                "stemRegion": stem_region,
+                "source": str(crop_dir / "stem.png"),
+                "sourceSha256": sha(crop_dir / "stem.png"),
+                "cleaned": str(cleaned), "cleanedSha256": sha(cleaned),
+            }],
+        }), encoding="utf-8")
+        catalog = root / "catalog.json"
+        catalog.write_text(json.dumps({
+            "books": [{"id": "book", "file": "book.pdf", "pdfSha256": pdf_hash}]
+        }), encoding="utf-8")
+        return candidate, work, source_root, catalog, crop_dir
+
+    def test_binds_question_and_answer_to_exact_pdf_pixels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate, work, source_root, catalog, _ = self.fixture(root)
+            result = prepare_answer_review.prepare(
+                candidate, work, source_root, catalog, root / "review", page_size=1
+            )
+            binding = json.loads(
+                (root / "review" / "answer-binding-candidates.json").read_text(encoding="utf-8")
+            )
+            page_html = (root / "review" / "review-pages" / "page-0001.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(result["reviewable"], 1)
+            self.assertEqual(result["quarantined"], 0)
+            self.assertFalse(result["releaseAuthority"])
+            self.assertEqual(binding["items"][0]["answerSource"], "answer-key")
+            self.assertTrue((root / "review" / "assets" / "book-p001-q1" / "answer.png").is_file())
+            self.assertIn("../assets/book-p001-q1/question.png", page_html)
+            self.assertIn("mathematicallyCorrect", page_html)
+            self.assertNotIn("file://", page_html)
+
+    def test_missing_answer_is_quarantined_not_invented_from_ocr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate, work, source_root, catalog, crop_dir = self.fixture(root)
+            (crop_dir / "answer.png").unlink()
+            crop_file = work / "book" / "crops-manifest.json"
+            crop_doc = json.loads(crop_file.read_text(encoding="utf-8"))
+            crop_doc["crops"]["book-p001-q1"]["answer"] = False
+            crop_file.write_text(json.dumps(crop_doc), encoding="utf-8")
+            result = prepare_answer_review.prepare(
+                candidate, work, source_root, catalog, root / "review"
+            )
+            binding = json.loads(
+                (root / "review" / "answer-binding-candidates.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["reviewable"], 0)
+            self.assertEqual(result["quarantined"], 1)
+            self.assertEqual(binding["quarantined"][0]["reason"], "official-answer-crop-missing")
+
+    def test_answer_pixels_changed_after_crop_are_quarantined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate, work, source_root, catalog, crop_dir = self.fixture(root)
+            answer = crop_dir / "answer.png"
+            image = Image.open(answer).convert("RGB")
+            ImageDraw.Draw(image).rectangle((0, 0, 20, 20), fill="red")
+            image.save(answer)
+            result = prepare_answer_review.prepare(
+                candidate, work, source_root, catalog, root / "review"
+            )
+            binding = json.loads(
+                (root / "review" / "answer-binding-candidates.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["reviewable"], 0)
+            self.assertIn("answer-pixels-do-not-match-source-pdf", binding["quarantined"][0]["reason"])
 
     def test_review_output_must_be_empty(self):
         with tempfile.TemporaryDirectory() as tmp:

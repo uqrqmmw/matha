@@ -29,4 +29,5 @@
 - 整頁原圖／清理圖／移除區紅圖：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-cleaned-pages-v2-20260828\review.html`
 - 逐題 fallback 複核：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-fallback-questions-v2-20260828\cleaned\review.html`
 - 重裁題面 manifest：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-cleaned-question-candidates-v2-20260828\cleaned-question-candidates.json`
-- 逐題人工像素 QA 工作包：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-human-review-v5-20260828`（在資料夾執行 `python serve-review.py`，再開啟 `http://127.0.0.1:8765/review.html`）
+- 逐題人工像素 QA 工作包：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-human-review-v6-20260828`（在資料夾執行 `python serve-review.py`，再開啟 `http://127.0.0.1:8765/review.html`）。原題、清理題與紅色移除區皆以 repo 外的雜湊綁定資產在 localhost 同源提供，已實測 HTML 與三種 PNG 均回應 HTTP 200，不依賴會被瀏覽器擋下的 `file://` 跨源圖片。
+- 答案與數學 QA 工作包：`C:\Users\yenke\Desktop\數學檔案\yescanner-answer-binding-review-v2-20260828`（執行 `python serve-review.py`，再開啟 `http://127.0.0.1:8767/review.html`）。1,952 題的題號／書籍／PDF 頁碼／原題 crop 全數重新綁定；1,919 題的原書答案 crop 與 catalog PDF 像素完整一致，33 題因原資料沒有官方答案 crop 隔離。組成為 answer-key 825 題、題後 inline 672 題、續頁詳解 422 題；不採信 OCR 題文或 OCR 答案。

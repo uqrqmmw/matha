@@ -14,7 +14,9 @@ import argparse
 import hashlib
 import html
 import json
+import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,6 +57,16 @@ def checked_artifact(item: dict[str, Any], field: str, hash_field: str) -> Path:
     if not path.is_file() or sha256(path) != expected:
         raise ReviewPacketError(f"{item.get('id')}: {field} hash mismatch")
     return path
+
+
+def materialize_asset(source: Path, target: Path, expected_hash: str) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+    if sha256(target) != expected_hash:
+        raise ReviewPacketError(f"Materialized review asset hash mismatch: {target.name}")
 
 
 def cleanup_items(path: Path, expected_hash: str | None, label: str) -> dict[str, dict[str, Any]]:
@@ -319,8 +331,10 @@ def prepare(manifest_file: Path, page_cleanup_manifest: Path,
         raise ReviewPacketError("Review output must be empty to prevent stale QA evidence")
     output.mkdir(parents=True, exist_ok=True)
     artifacts = output / "removed-overlays"
+    assets = output / "assets"
     pages = output / "review-pages"
     artifacts.mkdir()
+    assets.mkdir()
     pages.mkdir()
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
@@ -341,6 +355,10 @@ def prepare(manifest_file: Path, page_cleanup_manifest: Path,
         )
         overlay_path = artifacts / f"{qid}.png"
         overlay.save(overlay_path, format="PNG", optimize=True)
+        source_asset = assets / qid / "source.png"
+        cleaned_asset = assets / qid / "cleaned.png"
+        materialize_asset(source, source_asset, item["sourceSha256"])
+        materialize_asset(cleaned, cleaned_asset, item["cleanedSha256"])
         rows.append({
             "id": qid,
             "bookId": str(item.get("bookId") or ""),
@@ -351,9 +369,9 @@ def prepare(manifest_file: Path, page_cleanup_manifest: Path,
             "removedOverlaySha256": sha256(overlay_path),
             "changedFraction": changed_fraction,
             "evidenceSource": evidence_source,
-            "sourceUri": source.as_uri(),
-            "cleanedUri": cleaned.as_uri(),
-            "overlayUri": overlay_path.resolve().as_uri(),
+            "sourceUri": f"../assets/{qid}/source.png",
+            "cleanedUri": f"../assets/{qid}/cleaned.png",
+            "overlayUri": f"../removed-overlays/{qid}.png",
         })
         overlay.close()
     manifest_hash = sha256(manifest_file)
