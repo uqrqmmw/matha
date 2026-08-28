@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -2860,7 +2860,7 @@ const PAPER_SOURCES = [
       { file: 'mock-2-page-5-6.png', label: '題本第 6 頁', side: 'right' },
     ] },
   { id: 'paper-mock-3', title: '第三次模考', questions: 20, minutes: 100, pages: 4,
-    answerAccess: 'post-submit-server', answerBackendReady: false,
+    answerAccess: 'post-submit-server', answerBackendReady: true,
     scans: [
       { file: 'mock-3-page-1-2.png', label: '題本第 1 頁', side: 'left' },
       { file: 'mock-3-page-1-2.png', label: '題本第 2 頁', side: 'right' },
