@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829d'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829e'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3561,7 +3561,23 @@ function dayDistance(date) {
    不另造一份容易和真實紀錄分岔的「AI 記憶」；每次都由既有作答、眼刷、訂正、
    保留重測、大綱與觀念自述重建證據。如此舊資料立刻可用，多裝置 merge 後也會
    得到同一結論，而且可追查每個判斷到底來自哪種練習。 */
-const LEARNER_MODEL_VERSION = 1;
+const LEARNER_MODEL_VERSION = 2;
+const PROCESS_STAGE_LABELS = {
+  recognition:'題意辨認', direction:'破題方向', setup:'建式', execution:'推理執行',
+  calculation:'計算符號', expression:'答案表達', retention:'隔日保留',
+};
+function learningProcessStage(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/記憶|保留|忘/.test(text)) return 'retention';
+  if (/答案格式|作答格式|單位|表達|寫法|格式/.test(text)) return 'expression';
+  if (/正負|符號|計算|移項|代入|化簡|約分|算術|乘除|加減/.test(text)) return 'calculation';
+  if (/建式|列式|方程|設元|未知數|數學模型|改寫成/.test(text)) return 'setup';
+  if (/審題|題意|看錯|辨認|條件.*(?:讀|轉譯)|圖表或表示轉換/.test(text)) return 'recognition';
+  if (/方向|方法|切入|破題|不會|定義|公式/.test(text)) return 'direction';
+  if (/推理|證明|性質|定理|步驟|展開|遞推|範圍|邊界|遺漏|分類/.test(text)) return 'execution';
+  return '';
+}
 function learningErrorClass(value) {
   const text = String(value || '').trim();
   if (!text || /^(null|無|答對)$/i.test(text)) return '';
@@ -3582,6 +3598,11 @@ function learningEvidenceLedger() {
     const clean = { score:null, weight:1, independent:false, topic:'', errorKind:'', ...row };
     if (clean.score != null && !Number.isFinite(Number(clean.score))) clean.score = null;
     clean.weight = Number.isFinite(Number(clean.weight)) && Number(clean.weight) > 0 ? Number(clean.weight) : 1;
+    clean.processStage = PROCESS_STAGE_LABELS[clean.processStage] ? clean.processStage
+      : ['recognition', 'direction', 'retention'].includes(clean.stage) ? clean.stage
+        : ['concept', 'recall'].includes(clean.stage) ? ''
+          : learningProcessStage(clean.processText) || learningProcessStage(clean.errorKind);
+    delete clean.processText;
     out.push(clean);
   };
   for (const attempt of S.attempts || []) {
@@ -3592,6 +3613,7 @@ function learningEvidenceLedger() {
       id:`attempt:${attempt.ts || ''}:${attempt.qid || ''}`, ts:Number(attempt.ts) || 0, d:attempt.d || '',
       source:attempt.mode || 'practice', stage:'solve', qid:q.id, topic:q.topic,
       score:attempt.ok ? (guessed ? .15 : 1) : 0, weight:1, independent:true,
+      processText:(attempt.ai && (attempt.ai.k || attempt.ai.firstError)) || attempt.err || (guessed ? '用猜的' : ''),
       errorKind:learningErrorClass((attempt.ai && attempt.ai.k) || attempt.err || (guessed ? '用猜的' : '')),
     });
   }
@@ -3605,6 +3627,7 @@ function learningEvidenceLedger() {
       id:`side:${row.ts || ''}:${row.qid || ''}`, ts:Number(row.ts) || 0, d:row.d || '', source:'transfer',
       stage:guided ? 'correction' : 'solve', qid:row.qid || '', topic,
       score:row.ok ? 1 : 0, weight:guided ? .25 : .65, independent:!guided,
+      processText:row.ok ? '' : row.originErr,
       errorKind:learningErrorClass(row.ok ? '' : row.originErr), supportLevel:guided ? 3 : null,
     });
   }
@@ -3626,13 +3649,15 @@ function learningEvidenceLedger() {
       id:`correction-log:${batch.id || ''}:${entry.examNo || entry.qid}:${log.ts || index}`, ts:Number(log.ts) || 0,
       d:batch.due || batch.d || '', source:'correction', stage:'direction', qid:q.id,
       topic:TOPICS[log.topic] ? log.topic : q.topic, score:log.resolved ? 1 : (log.note ? .45 : .15),
-      weight:.6, independent:false, errorKind:learningErrorClass(log.errorKind || (!log.resolved ? '找不到破題方向' : '')),
+      weight:.6, independent:false, processText:log.errorKind || (!log.resolved ? '找不到破題方向' : ''),
+      errorKind:learningErrorClass(log.errorKind || (!log.resolved ? '找不到破題方向' : '')),
     });
     const level = correctionLevel(entry);
     if (!entry.done) push({
       id:`correction-open:${batch.id || ''}:${entry.examNo || entry.qid}`, ts:Number(entry.mt || batch.mockTs) || 0,
       d:batch.due || batch.d || '', source:'correction', stage:'correction', qid:q.id, topic:q.topic,
-      score:0, weight:.4, supportLevel:0, errorKind:learningErrorClass(entry.errorKind),
+      score:0, weight:.4, supportLevel:0, processText:entry.errorKind,
+      errorKind:learningErrorClass(entry.errorKind),
     });
     if (entry.done && level >= 2) push({
       id:`correction:${batch.id || ''}:${entry.examNo || entry.qid}`, ts:Number(entry.completedAt) || 0,
@@ -3734,6 +3759,7 @@ function learningEvidenceLedger() {
           d:run.due || run.d || '', source:'paper-correction', stage:'direction', qid:`${run.id}:${no}`,
           topic:TOPICS[log.topic] ? log.topic : topic,
           score:log.kind === 'complete' ? 1 : log.direction ? .5 : .15, weight:.65, independent:false,
+          processText:log.errorKind || state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind,
           errorKind:learningErrorClass(log.errorKind || state.aiErrorKind || state.errorKind),
         });
         if (log.topic) push({
@@ -3748,12 +3774,14 @@ function learningEvidenceLedger() {
         id:`paper-review-open:${run.id}:${no}`, ts:Number(state.mt || grade.gradedAt || run.submittedAt) || 0,
         d:run.due || run.d || '', source:'paper-correction', stage:'correction', qid:`${run.id}:${no}`,
         topic, score:0, weight:.4, supportLevel:0,
+        processText:state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind,
         errorKind:learningErrorClass(state.aiErrorKind || state.errorKind),
       });
       if (level >= 2) push({
         id:`paper-review:${run.id}:${no}`, ts:Number(state.completedAt || state.mt) || 0,
         d:run.due || run.d || '', source:'paper-correction', stage:'correction', qid:`${run.id}:${no}`,
         topic, score:level === 2 ? .7 : .35, weight:.75, supportLevel:level,
+        processText:state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind || (level === 3 ? '方法選錯' : ''),
         errorKind:learningErrorClass(state.aiErrorKind || state.errorKind || (level === 3 ? '方法選錯' : '')),
         detailViewed:!!state.detailFirstOpenedAt,
       });
@@ -3776,19 +3804,30 @@ function learnerModel() {
     topic, solveN:0, solveWeight:0, solveEarned:0, directionN:0, directionWeight:0, directionEarned:0,
     recognitionN:0, recognitionWeight:0, recognitionEarned:0,
     retentionN:0, retentionWeight:0, retentionEarned:0, conceptN:0, conceptWeight:0, conceptEarned:0,
-    l2:0, l3:0, open:0, errors:{}, lastTs:0,
+    l2:0, l3:0, open:0, errors:{}, errorQuestions:{}, processCounts:{}, processQuestions:{}, lastTs:0,
   }]));
   const dimensions = { solve:0, recognition:0, direction:0, correction:0, retention:0, concept:0, recall:0 };
-  const errors = {}, sources = new Set();
+  const errorQuestions = {}, processCounts = {}, processQuestions = {}, sources = new Set();
   let recentEvidence = 0;
   for (const item of evidence) {
     dimensions[item.stage] = (dimensions[item.stage] || 0) + 1;
     sources.add(item.source);
     if (dayDistance(item.d) <= 30) recentEvidence++;
-    if (item.errorKind) errors[item.errorKind] = (errors[item.errorKind] || 0) + 1;
     const row = topics[item.topic]; if (!row) continue;
     row.lastTs = Math.max(row.lastTs, Number(item.ts) || 0);
-    if (item.errorKind) row.errors[item.errorKind] = (row.errors[item.errorKind] || 0) + 1;
+    if (item.errorKind) {
+      const questionKey = String(item.qid || item.id);
+      row.errors[item.errorKind] = (row.errors[item.errorKind] || 0) + 1;
+      (row.errorQuestions[item.errorKind] = row.errorQuestions[item.errorKind] || new Set()).add(questionKey);
+      (errorQuestions[item.errorKind] = errorQuestions[item.errorKind] || new Set()).add(questionKey);
+    }
+    if (item.errorKind && PROCESS_STAGE_LABELS[item.processStage]) {
+      const stage = item.processStage, questionKey = String(item.qid || item.id);
+      row.processCounts[stage] = (row.processCounts[stage] || 0) + 1;
+      (row.processQuestions[stage] = row.processQuestions[stage] || new Set()).add(questionKey);
+      processCounts[stage] = (processCounts[stage] || 0) + 1;
+      (processQuestions[stage] = processQuestions[stage] || new Set()).add(questionKey);
+    }
     if (item.stage === 'solve' && item.independent && item.score != null) {
       row.solveN++; row.solveWeight += item.weight; row.solveEarned += item.score * item.weight;
     } else if (item.stage === 'direction' && item.score != null) {
@@ -3819,7 +3858,16 @@ function learnerModel() {
     row.accuracy = row.solveWeight ? row.solveEarned / row.solveWeight : null;
     row.directionRate = row.directionWeight ? row.directionEarned / row.directionWeight : null;
     row.recognitionRate = row.recognitionWeight ? row.recognitionEarned / row.recognitionWeight : null;
-    row.topError = Object.entries(row.errors).sort((a, b) => b[1] - a[1])[0] || null;
+    row.topError = Object.entries(row.errorQuestions).map(([name, questions]) => [name, questions.size])
+      .filter(([, count]) => count >= 2)
+      .sort((a, b) => b[1] - a[1])[0] || null;
+    row.processBreakdown = Object.keys(PROCESS_STAGE_LABELS).map((stage) => ({
+      stage, label:PROCESS_STAGE_LABELS[stage], count:Number(row.processCounts[stage]) || 0,
+      questionCount:row.processQuestions[stage] ? row.processQuestions[stage].size : 0,
+    })).filter((item) => item.count).sort((a, b) => b.questionCount - a.questionCount || b.count - a.count);
+    row.topProcess = row.processBreakdown.find((item) => item.questionCount >= 2) || null;
+    delete row.errorQuestions;
+    delete row.processQuestions;
     const unknownBoost = row.effectiveEvidence < 3 ? .18 : 0;
     row.priority = Math.max(.6, Math.min(1.65,
       .8 + (60 - row.score) / 80 + unknownBoost + row.l3 * .09 + row.open * .035));
@@ -3837,12 +3885,20 @@ function learnerModel() {
   const gradeMatch = String(calibration.grade || '').match(/(\d+)/);
   const currentGrade = gradeMatch ? Number(gradeMatch[1]) : null;
   const targetGap = currentGrade == null ? null : Math.max(0, SCORE_GOAL.target - currentGrade);
-  const topErrors = Object.entries(errors).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const topErrors = Object.entries(errorQuestions).map(([name, questions]) => [name, questions.size])
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const processBreakdown = Object.keys(PROCESS_STAGE_LABELS).map((stage) => ({
+    stage, label:PROCESS_STAGE_LABELS[stage], count:Number(processCounts[stage]) || 0,
+    questionCount:processQuestions[stage] ? processQuestions[stage].size : 0,
+  })).filter((item) => item.count).sort((a, b) => b.questionCount - a.questionCount || b.count - a.count);
   return {
     version:LEARNER_MODEL_VERSION, generatedAt:Date.now(), evidence, evidenceCount:evidence.length,
     recentEvidence, sourceCount:sources.size, topics, strengths, needs, unknown, topErrors, dimensions,
     calibratedTopics:Object.values(topics).filter((row) => row.confidence.key !== 'low').length,
-    calibration, currentGrade, targetGap, baselineResetAt:learningBaselineStart(),
+    calibration, currentGrade, targetGap, processBreakdown,
+    topProcess:processBreakdown.find((item) => item.questionCount >= 2) || null,
+    baselineResetAt:learningBaselineStart(),
   };
 }
 function learnerContextForAi(topic) {
@@ -3850,10 +3906,11 @@ function learnerContextForAi(topic) {
   const cal = model.calibration.count ? `最近完整模考粗估 ${model.calibration.grade}（${Math.round(model.calibration.acc * 100)}%，${model.calibration.count} 回證據）` : '尚無足夠完整模考校準';
   const process = row && row.recognitionRate != null && row.directionRate != null
     ? `、單元辨認 ${Math.round(row.recognitionRate * 100)}%、方向成立 ${Math.round(row.directionRate * 100)}%` : '';
-  const topicLine = row ? `${TOPICS[topic]}：模型 ${row.score}/100、證據${row.confidence.label}${process}${row.topError ? `、常見卡點 ${row.topError[0]}` : ''}` : '';
+  const topicLine = row ? `${TOPICS[topic]}：模型 ${row.score}/100、證據${row.confidence.label}${process}${row.topProcess ? `、主要流程斷點 ${row.topProcess.label}` : row.topError ? `、常見卡點 ${row.topError[0]}` : ''}` : '';
   const needs = model.needs.slice(0, 3).map((item) => TOPICS[item.topic]).join('、') || '尚待更多混合證據';
-  const errors = model.topErrors.slice(0, 2).map(([name, count]) => `${name} ${count} 次`).join('、') || '尚未形成重複錯因';
-  return `【累積學習者模型 v${model.version}】${cal}。${topicLine ? topicLine + '。' : ''}目前優先補：${needs}；重複訊號：${errors}。依王老師路徑，目前優先找破題方向，不以單題速度作為主要回饋。這些只用來調整說明深度與下一步，不可取代本題卷面證據，也不可因既有弱項預設本題答錯。`;
+  const errors = model.topErrors.slice(0, 2).map(([name, count]) => `${name} ${count} 題`).join('、') || '尚未形成重複錯因';
+  const bottleneck = model.topProcess ? `；跨題流程斷點：${model.topProcess.label}（${model.topProcess.questionCount} 題）` : '';
+  return `【累積學習者模型 v${model.version}】${cal}。${topicLine ? topicLine + '。' : ''}目前優先補：${needs}；重複訊號：${errors}${bottleneck}。依王老師路徑，目前優先找破題方向，不以單題速度作為主要回饋。這些只用來調整說明深度與下一步，不可取代本題卷面證據，也不可因既有弱項預設本題答錯。`;
 }
 const QUESTION_FEEDBACK_LABELS = {
   obvious: '一眼就會，暫時不用寫',
@@ -3983,6 +4040,7 @@ function questionSelectionReason(q, signals) {
   if (row.l2) return '這題曾需最終答案才能重建方向';
   if (topic.l3) return '這個單元曾需要看詳解才完成';
   const learnerTopic = signals.learner && signals.learner.topics && signals.learner.topics[q.topic];
+  if (learnerTopic && learnerTopic.topProcess) return `跨題證據顯示「${TOPICS[q.topic]}」較常卡在${learnerTopic.topProcess.label}`;
   if (learnerTopic && learnerTopic.confidence.key !== 'low' && learnerTopic.score < 58) return `多種練習都顯示「${TOPICS[q.topic]}」仍是高價值補強區`;
   if (!row.n) {
     if (q.role === 'example') return '尚未校準的教材例題；先確認能否建立第一條解題路線';
@@ -4070,7 +4128,8 @@ function nextBestAction() {
   }
   const concept = conceptDueCards()[0];
   if (concept && !hasRecentConceptWork(1)) return { kind: 'concept', title: `用自己的話說明「${concept.title}」`, why: '每天最多一張，不背字句；說清楚真正意思、限制與一個例子，AI 再檢查語意缺口。', time: '約 5 分鐘', onclick: `startConceptCheck('${concept.id}')`, button: '開始說明' };
-  return { kind: 'adaptive-textbook', title: '寫今天最值得的 10 題教材題', why: '跨章混合、不練速度；根據答錯、沒有方向、第二／三級、間隔到期與未校準章節選題，寫到你最需要的部分。', time: '約 35 分鐘', onclick: 'startAdaptiveTextbook(10)', button: '開始教材精選' };
+  const process = retentionSignals.learner && retentionSignals.learner.topProcess;
+  return { kind: 'adaptive-textbook', title: '寫今天最值得的 10 題教材題', why: `跨章混合、不練速度；根據答錯、沒有方向、第二／三級、間隔到期與未校準章節選題${process ? `，目前跨題最常卡在「${process.label}」` : ''}。`, time: '約 35 分鐘', onclick: 'startAdaptiveTextbook(10)', button: '開始教材精選' };
 }
 function nextActionCard() {
   const a = nextBestAction();
@@ -8215,7 +8274,7 @@ function teacherReportPrint(summaryOnly = false) {
   setTimeout(cleanup, 1500);
 }
 function paperTeacherSummaryHTML(run, source, grade, levels) {
-  const topicCounts = {}, errorCounts = {};
+  const topicCounts = {}, errorCounts = {}, processCounts = {};
   const discuss = [];
   for (const item of grade.questions || []) {
     const no = Number(item.no), state = run.review && run.review[no] || {};
@@ -8223,10 +8282,13 @@ function paperTeacherSummaryHTML(run, source, grade, levels) {
     const error = state.aiErrorKind || state.errorKind || [...(state.logs || [])].reverse().find((log) => log && log.errorKind)?.errorKind;
     if (topic && TOPICS[topic]) topicCounts[topic] = (topicCounts[topic] || 0) + 1;
     if (error) errorCounts[error] = (errorCounts[error] || 0) + 1;
+    const processStage = learningProcessStage(error);
+    if (processStage) processCounts[processStage] = (processCounts[processStage] || 0) + 1;
     const level = item.status === 'correct' ? 1 : Number(state.level) || 0;
     if (level === 3 || level === 0) discuss.push(no);
   }
-  const top = (rows, label) => Object.entries(rows).sort((a, b) => b[1] - a[1]).slice(0, 3)
+  const top = (rows, label, minimum = 1) => Object.entries(rows).filter(([, count]) => count >= minimum)
+    .sort((a, b) => b[1] - a[1]).slice(0, 3)
     .map(([key, count]) => `${label(key)} ${count} 題`).join('、') || '尚無足夠訂正紀錄';
   const prior = (S.paperRuns || []).filter((row) => row && row.id !== run.id && paperRunInCurrentBaseline(row)
     && row.aiGrade && Number(row.submittedAt || 0) < Number(run.submittedAt || 0)
@@ -8235,7 +8297,7 @@ function paperTeacherSummaryHTML(run, source, grade, levels) {
   const delta = prior ? Number(run.score) - Number(prior.score) : null;
   return `<section class="teacher-one-page"><header><div><span class="eyebrow">給王老師的單頁摘要</span><h2>${escH(source.title)}｜${escH(run.d || '')}</h2></div><b class="teacher-summary-score">${run.score}<small>/100</small></b></header>
     <div class="teacher-summary-grid"><div><span>三級分布</span><b>${levels.l1}／${levels.l2}／${levels.l3}</b><small>直接會／只看答案會／需詳解</small></div><div><span>待完成</span><b>${levels.open}</b><small>尚未完成隔日訂正</small></div><div><span>考試剩餘</span><b>${Math.max(0, Math.round(Number(run.remainingMs || 0) / 60000))} 分</b><small>不拿單題速度作主要診斷</small></div><div><span>相較前一回</span><b>${delta == null ? '尚無前一回' : `${delta > 0 ? '+' : ''}${delta} 分`}</b><small>只比較完整正式卷</small></div></div>
-    <div class="teacher-summary-findings"><p><b>較常失分單元：</b>${escH(top(topicCounts, (key) => TOPICS[key] || key))}</p><p><b>反覆卡點：</b>${escH(top(errorCounts, (key) => key))}</p><p><b>建議優先討論：</b>${discuss.length ? `第 ${discuss.slice(0, 8).join('、')} 題${discuss.length > 8 ? '等' : ''}` : '本回沒有第三級或尚未完成題'}</p></div>
+    <div class="teacher-summary-findings"><p><b>較常失分單元：</b>${escH(top(topicCounts, (key) => TOPICS[key] || key))}</p><p><b>跨題流程斷點：</b>${escH(top(processCounts, (key) => PROCESS_STAGE_LABELS[key] || key, 2))}</p><p><b>反覆卡點：</b>${escH(top(errorCounts, (key) => key, 2))}</p><p><b>建議優先討論：</b>${discuss.length ? `第 ${discuss.slice(0, 8).join('、')} 題${discuss.length > 8 ? '等' : ''}` : '本回沒有第三級或尚未完成題'}</p></div>
     <p class="teacher-summary-note">判讀原則：第一級是考場直接會寫；第二級是隔日只看答案即可重建；第三級是努力重想後仍需詳解。AI 的第一錯步只有在卷面證據可逐字核對時才列入。</p>
   </section>`;
 }
@@ -9304,8 +9366,10 @@ function learnerModelCard() {
   const topicItem = (row, kind) => {
     const detail = kind === 'strength'
       ? `模型 ${row.score}/100｜${row.confidence.label}證據`
-      : row.topError
-        ? `${row.topError[0]}出現 ${row.topError[1]} 次｜${row.confidence.label}證據`
+      : row.topProcess
+        ? `${row.topProcess.label}卡在 ${row.topProcess.questionCount} 題｜${row.confidence.label}證據`
+        : row.topError
+        ? `${row.topError[0]}出現在 ${row.topError[1]} 題｜${row.confidence.label}證據`
         : `模型 ${row.score}/100｜${row.confidence.label}證據`;
     return `<li><span>${escH(TOPICS[row.topic])}</span><small>${escH(detail)}</small></li>`;
   };
@@ -9319,8 +9383,12 @@ function learnerModelCard() {
     ? `<ul class="learner-topic-list">${priorityRows.map((row) => topicItem(row, 'need')).join('')}</ul>`
     : '<p class="dim">目前沒有達到明確弱項門檻；繼續用混合題補足各單元證據。</p>';
   const errorRows = model.topErrors.length
-    ? model.topErrors.slice(0, 4).map(([name, count]) => `<span>${escH(name)} <b>${count}</b></span>`).join('')
+    ? model.topErrors.slice(0, 4).map(([name, count]) => `<span>${escH(name)} <b>${count} 題</b></span>`).join('')
     : '<span>尚未出現重複錯因</span>';
+  const processRows = model.processBreakdown.filter((item) => item.questionCount >= 2);
+  const processHTML = processRows.length
+    ? processRows.slice(0, 5).map((item) => `<span>${escH(item.label)} <b>${item.questionCount} 題</b></span>`).join('')
+    : '<span>尚未有跨兩題以上的流程斷點</span>';
   const overallConfidence = learnerEvidenceConfidence(Object.values(model.topics).reduce((sum, row) => sum + row.effectiveEvidence, 0));
   const diagnosis = !model.evidenceCount
     ? '目前不是判定你哪章弱，而是缺少重置後的新證據。先完成一回全真模考，再用隔日訂正拆出真正卡點。'
@@ -9337,6 +9405,7 @@ function learnerModelCard() {
     <div class="learner-diagnosis"><span class="eyebrow">目前最需要知道的事</span><p>${escH(diagnosis)}</p></div>
     <div class="learner-milestones" aria-label="距離穩定十三級分的訓練里程碑"><span>新制完整模考 <b>${cal.count ? `${cal.count} 回` : '待 1 回'}</b></span><span>破題方向證據 <b>${directionText}</b></span><span>二／七日保留 <b>${retentionText}</b></span><span>72 分以上穩定度 <b>${cal.passes || 0}/3 回</b></span></div>
     <div class="learner-model-grid"><div><h3>目前較有把握的強項</h3>${strengths}</div><div><h3>現在最值得補的地方</h3>${priorities}</div></div>
+    <div class="learner-errors"><h3>解題流程斷點</h3><div>${processHTML}</div></div>
     <div class="learner-errors"><h3>反覆出現的卡點</h3><div>${errorRows}</div></div>
     <p class="learner-model-note">這不是固定標籤。獨立作答、題型辨認、眼刷方向、隔日三級、詳解後重算、2／7 日保留、大綱與觀念自述會分開計權；一次錯誤不會被宣布成弱項。下一輪教材精選與 AI 詳批會直接讀取這份模型。${model.baselineResetAt ? `目前基準自 ${escH(learningBaselineDate())} 起算，較早資料只保留原稿。` : ''}</p>
     <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button><button class="btn subtle" onclick="resetLearningBaseline()">重新建立學習基準</button></div>

@@ -110,6 +110,23 @@ test('個人化選題會把到期錯題、沒有方向與第三級單元排在�
   assert.match(result.reason, /間隔重測|破題方向/);
 });
 
+test('教材選題理由會引用跨題流程斷點，但同一題重複錯不會觸發', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const rows = BANK.filter((q) => q.topic === 'num').slice(0, 3);
+    S.attempts = [
+      { qid:rows[0].id, ok:false, err:'列式建式錯誤', d:today(), mode:'mixed', ts:1 },
+      { qid:rows[0].id, ok:false, err:'設元後建式錯誤', d:today(), mode:'mixed', ts:2 },
+    ];
+    const once = questionSelectionReason(rows[2], learningSignalIndex());
+    S.attempts.push({ qid:rows[1].id, ok:false, err:'方程式建式錯誤', d:today(), mode:'mixed', ts:3 });
+    const repeated = questionSelectionReason(rows[2], learningSignalIndex());
+    return { once, repeated };
+  })()`));
+  assert.doesNotMatch(result.once, /較常卡在建式/);
+  assert.match(result.repeated, /較常卡在建式/);
+});
+
 test('教材混合精選不被正式卷題型比例限制，並排除眼刷留到明天與一眼就會的題', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

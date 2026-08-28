@@ -134,3 +134,67 @@ test('沒有新證據時不把未知單元冒充成弱項', () => {
   assert.match(html, /不能判定任何單元是弱項/);
   assert.doesNotMatch(html, /模型 50\/100/);
 });
+
+test('解題流程分類涵蓋辨認、方向、建式、執行、計算、表達與保留', () => {
+  const { run } = loadApp();
+  const result = plain(run(`({
+    recognition:learningProcessStage('審題時看錯條件'),
+    direction:learningProcessStage('找不到破題方向'),
+    setup:learningProcessStage('設元後列式錯誤'),
+    execution:learningProcessStage('分類討論遺漏邊界'),
+    calculation:learningProcessStage('移項時正負號計算錯'),
+    expression:learningProcessStage('最後答案格式與單位錯'),
+    retention:learningProcessStage('兩天後記憶未保留'),
+  })`));
+  assert.deepEqual(result, {
+    recognition:'recognition', direction:'direction', setup:'setup', execution:'execution',
+    calculation:'calculation', expression:'expression', retention:'retention',
+  });
+});
+
+test('流程斷點至少跨兩題才進個人化提示，不被同一題重複紀錄灌大', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const rows = BANK.filter((item) => item.topic === 'num').slice(0, 2);
+    S.attempts = [
+      { qid:rows[0].id, ok:false, err:'設元後建式錯誤', d:today(), mode:'mixed', ts:1 },
+      { qid:rows[0].id, ok:false, err:'列式時漏掉常數', d:today(), mode:'mixed', ts:2 },
+    ];
+    const oneQuestion = learnerModel();
+    S.attempts.push({ qid:rows[1].id, ok:false, err:'方程式建式錯誤', d:today(), mode:'mixed', ts:3 });
+    const twoQuestions = learnerModel();
+    return {
+      firstTop:oneQuestion.topProcess,
+      secondTop:twoQuestions.topProcess,
+      topicTop:twoQuestions.topics.num.topProcess,
+      prompt:learnerContextForAi('num'),
+      card:learnerModelCard(),
+    };
+  })()`));
+  assert.equal(result.firstTop, null);
+  assert.equal(result.secondTop.stage, 'setup');
+  assert.equal(result.secondTop.questionCount, 2);
+  assert.equal(result.topicTop.stage, 'setup');
+  assert.match(result.prompt, /跨題流程斷點：建式（2 題）/);
+  assert.match(result.card, /解題流程斷點/);
+  assert.match(result.card, /建式 <b>2 題<\/b>/);
+});
+
+test('老師單頁只把跨兩題以上的流程錯誤列為反覆斷點', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES[0];
+    const base = { id:'process-paper', sourceId:source.id, d:today(), score:60, submittedAt:3, remainingMs:0, review:{} };
+    const grade = { questions:[
+      { no:1, status:'incorrect', points:0, maxPoints:5, topic:'num' },
+      { no:2, status:'incorrect', points:0, maxPoints:5, topic:'num' },
+    ] };
+    base.review = { 1:{ errorKind:'設元後建式錯誤' } };
+    const once = paperTeacherSummaryHTML(base, source, grade, { l1:0, l2:0, l3:0, open:2 });
+    base.review[2] = { errorKind:'列方程式時建式錯誤' };
+    const repeated = paperTeacherSummaryHTML(base, source, grade, { l1:0, l2:0, l3:0, open:2 });
+    return { once, repeated };
+  })()`));
+  assert.doesNotMatch(result.once, /建式 1 題/);
+  assert.match(result.repeated, /跨題流程斷點：<\/b>建式 2 題/);
+});
