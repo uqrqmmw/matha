@@ -227,6 +227,18 @@ python scripts/ingest/erase-handwriting-yescanner.py \
 
 若供應商只對少數整頁做了不可接受的幾何校正，不放寬比例門檻；改用同一工具對該頁實際候選題的原始 `stem.png` 逐題清理，再以 `--fallback-cleanup-manifest` 交給重裁器補回。補回時會重新核對原題裁圖雜湊、清理圖雜湊與尺寸，manifest 也分別標成 `question-fallback`。同一頁若只有部分題補回成功，已驗證的題仍會保留，失敗題則逐題列入 `quarantinedQuestions`，並在所屬頁的 `unresolvedQuestionIds` 留下稽核記錄；不會因為同頁一題失敗就丟棄其他已安全清理的題。
 
+重裁後用 `prepare-cleaned-handwriting-review.py` 建立 repo 外的離線人工像素 QA 工作包：
+
+```bash
+python scripts/ingest/prepare-cleaned-handwriting-review.py \
+  --manifest "<repo 外>/cleaned-question-candidates.json" \
+  --page-cleanup-manifest "<repo 外>/yescanner-pages/yescanner-handwriting-cleanup.json" \
+  --fallback-cleanup-manifest "<repo 外>/yescanner-questions/yescanner-handwriting-cleanup.json" \
+  --out "<repo 外>/cleaned-handwriting-human-review"
+```
+
+工具會重新核對每題的原圖與清理圖 SHA-256、尺寸及題號唯一性，並從雜湊綁定的整頁／逐題 YesScanner 原始 QA 產物裁出移除區，不以重新比圖製造印刷字緣假差異。工作包以原圖／清理圖／疑似移除區紅圖三欄分頁審核。在輸出資料夾執行 `python serve-review.py`，從 `http://127.0.0.1:8765/review.html` 進入；不直接雙擊 HTML，避免 `file://` 沒有可靠的跨頁儲存。每題必須人工確認印刷內容、手寫清除、答案洩漏、題幹選項、圖形灰階、中文與數學公式。頁面以 manifest 雜湊隔離 `localStorage` 決定，全數完成才能匯出雜湊綁定的審核 JSON。這份 JSON 仍為 `releaseAuthority:false`；答案與數學正確性尚未獨立驗證前不得發布。
+
 先前預備的 TextIn 工具仍保留作供應商備援，但目前不作主線：
 
 ### 5c. `erase-handwriting-textin.py` — 備援去手寫

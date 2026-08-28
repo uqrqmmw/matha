@@ -26,6 +26,9 @@ def load(name: str, file_name: str):
 detect = load("detect_handwriting_candidates", "detect-handwriting-candidates.py")
 render_pages = load("render_handwriting_pages", "render-handwriting-pages.py")
 recrop_pages = load("recrop_cleaned_handwriting_pages", "recrop-cleaned-handwriting-pages.py")
+prepare_clean_review = load(
+    "prepare_cleaned_handwriting_review", "prepare-cleaned-handwriting-review.py"
+)
 
 
 def sha(path: Path) -> str:
@@ -313,6 +316,120 @@ class HandwritingRecropTests(unittest.TestCase):
             manifest.write_text(json.dumps(data), encoding="utf-8")
             with self.assertRaises(recrop_pages.RecropError):
                 recrop_pages.recrop(work, queue, manifest, root / "out")
+
+
+class CleanedHandwritingReviewPacketTests(unittest.TestCase):
+    def fixture(self, root: Path):
+        source = root / "source.png"
+        cleaned = root / "cleaned.png"
+        original = Image.new("RGB", (240, 120), "white")
+        draw = ImageDraw.Draw(original)
+        draw.text((15, 15), "PRINTED", fill="black")
+        draw.line((20, 90, 210, 90), fill="black", width=4)
+        original.save(source)
+        candidate = original.copy()
+        ImageDraw.Draw(candidate).rectangle((150, 75, 220, 110), fill="white")
+        candidate.save(cleaned)
+        overlay = root / "page-overlay.png"
+        mask = root / "page-mask.png"
+        marked = original.copy()
+        ImageDraw.Draw(marked).rectangle((150, 75, 220, 110), fill=(190, 58, 52))
+        marked.save(overlay)
+        mask_image = Image.new("L", original.size, 0)
+        ImageDraw.Draw(mask_image).rectangle((150, 75, 220, 110), fill=255)
+        mask_image.save(mask)
+        page_cleanup = root / "page-cleanup.json"
+        page_cleanup.write_text(json.dumps({
+            "service": "yescanner-handwriting-remover-v1",
+            "releaseAuthority": False,
+            "items": [{
+                "id": "book-pdf-0001", "sourceSha256": sha(source),
+                "cleanedSha256": sha(cleaned),
+                "diff": str(overlay), "diffSha256": sha(overlay),
+                "mask": str(mask), "maskSha256": sha(mask),
+                "cleaned": str(cleaned),
+            }],
+        }), encoding="utf-8")
+        fallback_cleanup = root / "fallback-cleanup.json"
+        fallback_cleanup.write_text(json.dumps({
+            "service": "yescanner-handwriting-remover-v1",
+            "releaseAuthority": False,
+            "items": [],
+        }), encoding="utf-8")
+        manifest = root / "cleaned-question-candidates.json"
+        manifest.write_text(json.dumps({
+            "kind": "cleaned-page-question-candidates",
+            "releaseAuthority": False,
+            "humanPixelReviewRequired": True,
+            "cleanupManifestSha256": sha(page_cleanup),
+            "fallbackCleanupManifestSha256": sha(fallback_cleanup),
+            "items": [{
+                "id": "book-p001-q1", "bookId": "book", "pdfPage": 1,
+                "pageId": "book-pdf-0001", "cleanupMode": "full-page-recrop",
+                "pageRenderSha256": sha(source), "pageCleanedSha256": sha(cleaned),
+                "stemRegion": [0, 0, 240, 120],
+                "source": str(source), "sourceSha256": sha(source),
+                "cleaned": str(cleaned), "cleanedSha256": sha(cleaned),
+            }],
+        }), encoding="utf-8")
+        return manifest, page_cleanup, fallback_cleanup, source, cleaned
+
+    def test_builds_hash_bound_paged_review_without_release_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, page_cleanup, fallback_cleanup, _, _ = self.fixture(root)
+            result = prepare_clean_review.prepare(
+                manifest, page_cleanup, fallback_cleanup, root / "review", page_size=1
+            )
+            template = json.loads(Path(result["template"]).read_text(encoding="utf-8"))
+            review_html = Path(result["review"]).read_text(encoding="utf-8")
+            page_html = (root / "review" / "review-pages" / "page-0001.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(result["questions"], 1)
+            self.assertFalse(result["releaseAuthority"])
+            self.assertEqual(template["candidateManifestSha256"], sha(manifest))
+            self.assertFalse(template["releaseAuthority"])
+            self.assertTrue((root / "review" / "removed-overlays" / "book-p001-q1.png").is_file())
+            self.assertIn("mathSymbolsAndFormulasIntact", page_html)
+            self.assertIn("figuresAndGreyLinesIntact", page_html)
+            self.assertIn("cleaned-handwriting-human-review.json", review_html)
+            self.assertIn("http://127.0.0.1:8765/review.html", review_html)
+            self.assertTrue((root / "review" / "serve-review.py").is_file())
+
+    def test_tampered_candidate_artifact_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, page_cleanup, fallback_cleanup, _, cleaned = self.fixture(root)
+            Image.new("RGB", (240, 120), "red").save(cleaned)
+            with self.assertRaises(prepare_clean_review.ReviewPacketError):
+                prepare_clean_review.prepare(
+                    manifest, page_cleanup, fallback_cleanup, root / "review"
+                )
+
+    def test_review_output_must_be_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, page_cleanup, fallback_cleanup, _, _ = self.fixture(root)
+            output = root / "review"
+            output.mkdir()
+            (output / "stale.json").write_text("{}", encoding="utf-8")
+            with self.assertRaises(prepare_clean_review.ReviewPacketError):
+                prepare_clean_review.prepare(
+                    manifest, page_cleanup, fallback_cleanup, output
+                )
+
+    def test_candidate_id_cannot_escape_review_artifact_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, page_cleanup, fallback_cleanup, _, _ = self.fixture(root)
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            data["items"][0]["id"] = "../escaped"
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(prepare_clean_review.ReviewPacketError):
+                prepare_clean_review.prepare(
+                    manifest, page_cleanup, fallback_cleanup, root / "review"
+                )
 
 
 if __name__ == "__main__":

@@ -29,4 +29,4 @@
 - 整頁原圖／清理圖／移除區紅圖：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-cleaned-pages-v2-20260828\review.html`
 - 逐題 fallback 複核：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-fallback-questions-v2-20260828\cleaned\review.html`
 - 重裁題面 manifest：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-cleaned-question-candidates-v2-20260828\cleaned-question-candidates.json`
-
+- 逐題人工像素 QA 工作包：`C:\Users\yenke\Desktop\數學檔案\yescanner-handwriting-human-review-v5-20260828`（在資料夾執行 `python serve-review.py`，再開啟 `http://127.0.0.1:8765/review.html`）
