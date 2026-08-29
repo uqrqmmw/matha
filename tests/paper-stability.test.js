@@ -596,7 +596,7 @@ test('真機量測事件與樣本都有固定上限，換 app 版本也不會清
   assert.deepEqual(result, {
     sameObject:true,
     originalVersion:'older-version',
-    lastVersion:'0829t',
+    lastVersion:'0829u',
     events:240,
     firstEvent:160,
     samples:220,

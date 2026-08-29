@@ -57,6 +57,32 @@ test('下一步先處理隔日任務；沒有可信成績時先建全真基準�
   assert.equal(states.adaptive, 'adaptive-textbook');
 });
 
+test('首頁直接續寫保留中的原卷；沒有新基準時一步開啟未用且有完整官方詳解的卷', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    S.attempts = []; S.mocks = []; S.wrong = {}; S.corrections = []; S.outlineAttempts = [];
+    S.conceptAttempts = []; S.visionQueue = []; S.paperRuns = [];
+    const source = nextCalibrationPaperSource();
+    const fresh = nextBestAction();
+    S.paperRuns = [{ id:'resume-paper', sourceId:source.id, status:'paused', remainingMs:37 * 60000,
+      createdAt:Date.now(), mt:Date.now(), wrongNos:[] }];
+    const resume = nextBestAction();
+    S.paperRuns[0].status = 'grading';
+    const grading = nextBestAction();
+    return { sourceId:source.id, solution:source.officialSolutionCoverage, fresh, resume, grading };
+  })()`));
+  assert.equal(result.sourceId, 'paper-regional-ra4109');
+  assert.equal(result.solution, 'full');
+  assert.equal(result.fresh.kind, 'mock');
+  assert.match(result.fresh.onclick, /startPaperSource\('paper-regional-ra4109'\)/);
+  assert.match(result.fresh.button, /檢查並開啟/);
+  assert.equal(result.resume.kind, 'paper-resume');
+  assert.match(result.resume.time, /37:00/);
+  assert.match(result.resume.onclick, /startPaperSource\('paper-regional-ra4109'\)/);
+  assert.equal(result.grading.kind, 'paper-resume');
+  assert.match(result.grading.button, /繼續批改/);
+});
+
 test('十一單元先守兩天重測，再允許同日開一個新單元，不會卡死在前幾章', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

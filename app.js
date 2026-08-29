@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829t'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829u'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -4442,6 +4442,34 @@ function questionIsUrgentForAdaptive(q, signals) {
   const wrong = rawWrong && learningRecordCurrent(rawWrong.mt) ? rawWrong : null;
   return !!row.retentionDue || !!(wrong && String(wrong.due || '') <= today());
 }
+function nextCalibrationPaperSource() {
+  const currentRuns = (S.paperRuns || []).filter((run) => run && run.status !== 'discarded' && paperRunInCurrentBaseline(run));
+  const used = new Set(currentRuns.map((run) => run.sourceId));
+  const eligible = PAPER_SOURCES.filter((source) => source && source.fullPaperSource
+    && source.questions === 20 && source.minutes === 100 && source.calibrationEligible !== false
+    && source.answerBackendReady === true);
+  return eligible.slice().sort((a, b) => Number(used.has(a.id)) - Number(used.has(b.id))
+    || Number(b.officialSolutionCoverage === 'full') - Number(a.officialSolutionCoverage === 'full')
+    || Number(b.paperClass === 'regional-mock') - Number(a.paperClass === 'regional-mock')
+    || PAPER_SOURCES.indexOf(a) - PAPER_SOURCES.indexOf(b))[0] || null;
+}
+function activePaperAction() {
+  const run = (S.paperRuns || []).filter((item) => item && ['active', 'paused', 'grading'].includes(item.status))
+    .sort((a, b) => Number(b.createdAt || b.mt || 0) - Number(a.createdAt || a.mt || 0))[0];
+  const source = run && paperSourceById(run.sourceId);
+  if (!run || !source) return null;
+  const grading = run.status === 'grading';
+  return {
+    kind: 'paper-resume',
+    title: grading ? `完成「${source.title}」第一次批改` : `繼續「${source.title}」`,
+    why: grading
+      ? '整份卷面與筆跡已保留；先完成只判對錯、分數與正解的第一輪批改。'
+      : '這一回仍保留在本機與雲端；直接回到上次頁面與剩餘時間，不要另開一回。',
+    time: grading ? '依批改進度' : `剩餘 ${fmtClock(paperRunLeft(run))}`,
+    onclick: `startPaperSource('${jsA(source.id)}')`,
+    button: grading ? '繼續批改' : '繼續作答',
+  };
+}
 function nextBestAction() {
   const paperDue = duePaperCorrections();
   if (paperDue.length) {
@@ -4469,10 +4497,19 @@ function nextBestAction() {
     why: '這些第二／三級題已到 2 日或 7 日重測點；混進教材精選重新獨立作答，答對兩關才算保留。',
     time: `約 ${Math.max(12, Math.min(35, retentionDue * 5))} 分鐘`, onclick: 'startAdaptiveTextbook(10)', button: '開始保留重測',
   };
+  const paperResume = activePaperAction();
+  if (paperResume) return paperResume;
   const cal = mockCalibration();
-  if (!cal.count) return {
-    kind: 'mock', title: '用新制建立第一回全真基準', why: '舊成績已退出能力模型。請用正式 20 題、100 分鐘重新測；今天只批分，明天才訂正。', time: '100 分鐘', onclick: "nav('mock')", button: '選一回原卷',
-  };
+  if (!cal.count) {
+    const source = nextCalibrationPaperSource();
+    return source ? {
+      kind: 'mock', title: `用「${source.title}」建立第一回全真基準`,
+      why: `系統優先選尚未建立目前基準紀錄、20 題且${source.officialSolutionCoverage === 'full' ? '有逐題官方詳解' : '答案後端已就緒'}的完整卷；開考前仍會請你確認沒有看過題目或答案。`,
+      time: '100 分鐘', onclick: `startPaperSource('${jsA(source.id)}')`, button: '檢查並開啟這一回',
+    } : {
+      kind: 'mock', title: '用新制建立第一回全真基準', why: '舊成績已退出能力模型。請用正式 20 題、100 分鐘重新測；今天只批分，明天才訂正。', time: '100 分鐘', onclick: "nav('mock')", button: '選一回原卷',
+    };
+  }
   const outlineTask = nextOutlineTask();
   if (outlineTask && outlineTask.retest) return {
     kind: 'outline', title: `${outlineTask.retest ? '兩天後重測' : '第一次默寫'} ${outlineTask.unit.title}`,
@@ -4503,7 +4540,7 @@ function nextActionCard(action, fullSpan = false) {
 }
 function homeSecondaryTasks(primary) {
   const primaryView = primary && ({
-    'paper-correction':'correct', correction:'correct', vision:'mock', mock:'mock', outline:'outline', concept:'concept',
+    'paper-correction':'correct', 'paper-resume':'mock', correction:'correct', vision:'mock', mock:'mock', outline:'outline', concept:'concept',
     retention:'practice', 'adaptive-textbook':'practice', topic:'practice',
   }[primary.kind]);
   const outlineReady = outlineUnits().some((unit) => unit.reference);
