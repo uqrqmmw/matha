@@ -442,7 +442,7 @@ test('重要定義卡覆蓋數 A 十四單元，要求以自己的話解釋而�
   assert.equal(result.cards.every((card) => card.prompt.length >= 20 && card.reference.length >= 35), true);
 });
 
-test('私有原版模考保留三回舊卷，並加入六回官方來源完整單頁卷', () => {
+test('私有原版模考保留三回舊卷，並加入十四回完整單頁卷', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
     const scans = PAPER_SOURCES.flatMap((source) => source.scans.map((scan) => scan.file));
@@ -454,25 +454,28 @@ test('私有原版模考保留三回舊卷，並加入六回官方來源完整�
     { q:19, min:100, pages:6, scans:6, sides:['left','right','left','right','left','right'] },
     { q:20, min:100, pages:4, scans:4, sides:['left','right','left','right'] },
   ]);
-  assert.equal(result.papers.length, 9);
-  assert.equal(result.papers.slice(3).every((paper) => paper.q === 20 && paper.min === 100 && paper.pages === 8 && paper.scans === 8 && paper.sides.every((side) => side === 'full')), true);
-  assert.equal(result.scans.length, 64);
-  assert.equal(result.unique, 56);
-  assert.equal(result.scans.slice(16).every((name) => /^official-(?:11[1-5]|110-trial)-matha\/page-0[1-8]-[a-f0-9]{12}\.png$/.test(name)), true);
+  assert.equal(result.papers.length, 17);
+  assert.equal(result.papers.slice(3).every((paper) => paper.q === 20 && paper.min === 100 && paper.pages === paper.scans && [3,4,8].includes(paper.pages) && paper.sides.every((side) => side === 'full')), true);
+  assert.equal(result.scans.length, 89);
+  assert.equal(result.unique, 81);
+  assert.equal(result.scans.slice(16).every((name) => /^(?:official-(?:11[1-5]|110-trial)|regional-ra(?:4109|4110|3101|3102|1104|2100|2101|1103))-matha\/page-0[1-8]-[a-f0-9]{12}\.png$/.test(name)), true);
 });
 
-test('六回官方來源卷的 20 題都綁到正確 PDF 頁且不把說明頁或公式頁當題目', () => {
+test('十四回完整卷的 20 題都綁到明示題本頁且不混入答案頁', () => {
   const { run } = loadApp();
-  const result = plain(run(`PAPER_SOURCES.filter((source) => source.official).map((source) => ({
+  const result = plain(run(`PAPER_SOURCES.filter((source) => source.fullPaperSource).map((source) => ({
     id:source.id,
+    pages:source.pages,
     map:Array.from({length:source.questions}, (_, index) => paperQuestionScanIndex(source, index + 1) + 1),
     configured:source.questionPageMap,
     freshnessRequired:source.freshnessRequired,
   }))`));
   assert.deepEqual(result.map((paper) => paper.id), [
+    'paper-regional-ra4109', 'paper-regional-ra4110', 'paper-regional-ra3101', 'paper-regional-ra3102',
+    'paper-regional-ra1104', 'paper-regional-ra2100', 'paper-regional-ra2101', 'paper-regional-ra1103',
     'paper-official-115', 'paper-official-114', 'paper-official-113', 'paper-official-112', 'paper-official-111', 'paper-official-110-trial',
   ]);
-  assert.equal(result.every((paper) => paper.map.length === 20 && paper.map.every((page) => page >= 2 && page <= 7)), true);
+  assert.equal(result.every((paper) => paper.map.length === 20 && paper.map.every((page) => page >= 1 && page <= paper.pages)), true);
   assert.equal(result.every((paper) => JSON.stringify(paper.map) === JSON.stringify(paper.configured)), true);
   assert.equal(result.every((paper) => paper.freshnessRequired === true), true);
 });
@@ -910,7 +913,7 @@ test('第一次整卷結果直接疊加對錯、分數與正確答案，不再�
   assert.doesNotMatch(html, /paper-score|paper-wrong|paperAnswer|答案卡/);
 });
 
-test('既有兩回答案維持歷史相容，其餘七回正式答案不打包進公開前端', () => {
+test('既有兩回答案維持歷史相容，其餘十五回答案不打包進公開前端', () => {
   const { run } = loadApp();
   const result = plain(run(`PAPER_SOURCES.map((source) => ({
     questions:source.questions, key:Array.isArray(source.key) ? source.key.length : 0,
@@ -923,7 +926,7 @@ test('既有兩回答案維持歷史相容，其餘七回正式答案不打包�
     [19, 19, 100, 19, 'legacy-public'],
     [20, 0, 0, 0, 'post-submit-server'],
   ]);
-  assert.equal(result.length, 9);
+  assert.equal(result.length, 17);
   assert.equal(result.slice(2).every((x) => x.questions === 20 && x.key === 0 && x.total === 0 && x.prompt.length === 0 && x.answerAccess === 'post-submit-server'), true);
   assert.equal(result.slice(0, 2).every((x) => x.prompt.every((q) => q.answer && q.page >= 1 && q.page <= 6)), true);
   assert.equal(result.slice(0, 2).every((x) => x.prompt.every((q) => Array.isArray(q.correctOptions))), true);
@@ -1010,6 +1013,20 @@ test('第一次簡批的單選與填答由正式答案重新核分，不採信�
     q14:{ status:'incorrect', points:0 },
     wrong:[1,14],
   });
+});
+
+test('出版社勘誤若允許兩個單選答案，選其中任一個都給滿分但選兩個仍為錯', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = { questions:1, scans:[{}], questionPageMap:[0] };
+    const key = [{ type:'single', ans:[0,3], points:5 }];
+    const grade = (selectedOptions) => paperNormalizeAiGrade(source, { questions:[{
+      no:1, page:1, status:'correct', hasFinalAnswer:true,
+      selectedOptions, finalAnswer:'', points:5, marks:[], topic:'functions',
+    }] }, 'gpt-5.5', key).questions[0].points;
+    return [grade([1]), grade([4]), grade([1,4])];
+  })()`));
+  assert.deepEqual(result, [5, 5, 0]);
 });
 
 test('模型 status 與結構化答案衝突時，以實際辨識答案確定性核分', () => {

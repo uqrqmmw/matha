@@ -1,4 +1,6 @@
 // openai-proxy 的純邏輯層：不碰 Deno.env、不發網路請求，供 index.ts 與 lib.test.ts 共用。
+import { REGIONAL_PAPER_SOLUTION_MAP } from "./paper-solutions.ts";
+
 export const MAX_MESSAGES = 24;
 export const MAX_IMAGES = 8;
 export const MAX_TEXT_CHARS = 80_000;
@@ -544,6 +546,7 @@ const paperSolutionMap: Record<string, Record<number, string[]>> = {
       "paper-official-110-trial/page-08-4ab3b0649c85.png",
     ],
   },
+  ...REGIONAL_PAPER_SOLUTION_MAP,
 };
 
 export function paperSolutionFiles(sourceId: string, questionNo: number) {
@@ -615,7 +618,10 @@ export function paperRuntimeAuditEvidence(
   ) as Record<string, unknown> | undefined;
   if (!run) return null;
   const sourceId = String(run.sourceId || "");
-  if (!/^paper-(?:mock-3|official-(?:11[1-5]|110-trial))$/.test(sourceId)) {
+  if (
+    !/^paper-(?:mock-3|official-(?:11[1-5]|110-trial)|regional-ra(?:4109|4110|3101|3102|1104|2100|2101|1103))$/
+      .test(sourceId)
+  ) {
     return null;
   }
   if (
@@ -676,7 +682,24 @@ export function paperRuntimeAuditEvidence(
   const saveMs = finiteNumbers(audit.localSaveMs, 240).filter((value) =>
     value >= 0
   );
-  const requiredSwitches = sourceId === "paper-mock-3" ? 3 : 7;
+  const sourcePageCounts: Record<string, number> = {
+    "paper-mock-3": 4,
+    "paper-official-110-trial": 8,
+    "paper-official-111": 8,
+    "paper-official-112": 8,
+    "paper-official-113": 8,
+    "paper-official-114": 8,
+    "paper-official-115": 8,
+    "paper-regional-ra4109": 4,
+    "paper-regional-ra4110": 3,
+    "paper-regional-ra3101": 3,
+    "paper-regional-ra3102": 3,
+    "paper-regional-ra1104": 3,
+    "paper-regional-ra2100": 3,
+    "paper-regional-ra2101": 3,
+    "paper-regional-ra1103": 3,
+  };
+  const requiredSwitches = Math.max(1, (sourcePageCounts[sourceId] || 8) - 1);
   const pageP95Ms = percentile(pageSwitches.map((row) => row.ms), 0.95);
   const localSaveP95Ms = percentile(saveMs, 0.95);
   const checks = [

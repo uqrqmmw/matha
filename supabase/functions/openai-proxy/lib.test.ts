@@ -289,6 +289,14 @@ Deno.test("真機驗收封存只接受雲端狀態中的完整 100 分鐘、恢�
   assertEquals(evidence.audit.pageSwitches.length, 3);
   assertEquals("unrelatedPrivateState" in evidence, false);
 
+  const regionalRun = structuredClone(run);
+  regionalRun.sourceId = "paper-regional-ra4109";
+  regionalRun.runtimeAudit.sourceId = "paper-regional-ra4109";
+  assert(
+    paperRuntimeAuditEvidence({ paperRuns: [regionalRun] }, runId),
+    "已列入私有題本的區域模考也必須能封存真機驗收",
+  );
+
   const rejectedMutations: Array<[string, (value: typeof run) => void]> = [
     [
       "未滿 100 分鐘",
@@ -368,6 +376,13 @@ Deno.test("paper_solution 只接受同一來源且已完成隔日重想的題", 
   assertEquals(paperSolutionFiles("paper-official-110-trial", 20), [
     "paper-official-110-trial/page-07-081146b891af.png",
     "paper-official-110-trial/page-08-4ab3b0649c85.png",
+  ]);
+  assertEquals(paperSolutionFiles("paper-regional-ra4109", 7), [
+    "paper-regional-ra4109/solution-page-01-7efbca7b2c8d.png",
+    "paper-regional-ra4109/solution-page-02-01b2aa5a2a31.png",
+  ]);
+  assertEquals(paperSolutionFiles("paper-regional-ra1103", 20), [
+    "paper-regional-ra1103/solution-page-02-ddac60812621.png",
   ]);
   assertEquals(
     absoluteStorageSignedUrl(

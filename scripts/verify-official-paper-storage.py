@@ -34,14 +34,16 @@ def expected_assets(manifest_path: Path) -> dict[str, dict[str, Any]]:
     paper_count = int(manifest.get("paperCount") or 0)
     asset_count = int(manifest.get("assetCount") or 0)
     if (manifest.get("kind") != "matha-official-paper-assets-v1"
-            or paper_count < 1 or asset_count != paper_count * 8):
-        raise ValueError("official asset manifest must contain eight pages per paper")
+            or paper_count < 1 or asset_count < paper_count):
+        raise ValueError("private paper asset manifest has an invalid asset count")
     rows: dict[str, dict[str, Any]] = {}
     for paper in manifest.get("papers") or []:
         paper_id = str(paper.get("paperId") or "")
         assets = paper.get("assets") or []
-        if not paper_id or len(assets) != 8:
-            raise ValueError("official paper must contain exactly eight assets")
+        question_pages = paper.get("questionPdfPages") or []
+        if (not paper_id or not assets or len(assets) != len(question_pages)
+                or len(paper.get("questionPageMap") or []) != 20):
+            raise ValueError("private paper assets must match their explicit question pages")
         for row in assets:
             relative = str(row.get("file") or "").replace("\\", "/")
             if not relative.startswith(f"{paper_id}/") or relative in rows:
@@ -62,9 +64,11 @@ def verify_readback(expected: dict[str, dict[str, Any]], readback_root: Path,
         missing = sorted(expected_paths - listed_paths)
         extra = sorted(listed_paths - expected_paths)
         raise ValueError(f"remote listing mismatch; missing={missing[:3]}, extra={extra[:3]}")
+    expected_paper_dirs = {relative.split("/", 1)[0] for relative in expected_paths}
     actual_files = {
         path.relative_to(readback_root).as_posix()
-        for path in readback_root.rglob("*") if path.is_file()
+        for paper_dir in expected_paper_dirs
+        for path in (readback_root / paper_dir).rglob("*") if path.is_file()
     }
     if actual_files != expected_paths:
         missing = sorted(expected_paths - actual_files)

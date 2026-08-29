@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render verified official Math A PDFs into private, hash-bound PNG pages.
+"""Render verified private Math A papers into hash-bound PNG pages.
 
 This is an offline preparation step.  It never calls OCR, a browser, OpenAI,
 Supabase, or any other network service.  Source PDFs must already be recorded
@@ -21,22 +21,6 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-
-OFFICIAL_PAPER_IDS = (
-    "official-110-trial-matha",
-    *(f"official-{year}-matha" for year in range(111, 116)),
-)
-QUESTION_PAGE_MAPS: dict[str, list[int]] = {
-    # Values are one-based PDF pages. Page 1 is instructions; page 8 is the
-    # reference/formula sheet and remains available to the learner.
-    "official-110-trial-matha": [2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7],
-    "official-111-matha": [2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7],
-    "official-112-matha": [2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7],
-    "official-113-matha": [2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7],
-    "official-114-matha": [2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 7],
-    "official-115-matha": [2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7],
-}
 
 
 def sha256(path: Path) -> str:
@@ -83,25 +67,40 @@ def resolve_hint(path_hint: str, source_root: Path) -> Path:
 
 def build_plan(inventory: dict[str, Any], source_root: Path) -> list[dict[str, Any]]:
     documents = {item["id"]: item for item in inventory.get("sourceDocuments", [])}
-    papers = {item["id"]: item for item in inventory.get("papers", [])}
+    papers = [item for item in inventory.get("papers", [])
+              if item.get("privateAppEligible") is True]
+    if not papers:
+        raise RuntimeError("inventory has no privateAppEligible papers")
     plan: list[dict[str, Any]] = []
-    for paper_id in OFFICIAL_PAPER_IDS:
-        paper = papers.get(paper_id)
-        if not paper or paper.get("questions") != 20 or paper.get("minutes") != 100:
+    seen_ids: set[str] = set()
+    for paper in papers:
+        paper_id = str(paper.get("id") or "")
+        if (not paper_id or paper_id in seen_ids or paper.get("questions") != 20
+                or paper.get("minutes") != 100):
             raise RuntimeError(f"{paper_id} is not a recorded 20-question, 100-minute paper")
+        seen_ids.add(paper_id)
         source = documents.get(paper.get("questionSource"))
         if not source:
             raise RuntimeError(f"{paper_id} question source is missing")
-        page_map = QUESTION_PAGE_MAPS.get(paper_id)
-        if not page_map or len(page_map) != 20 or min(page_map) < 1:
+        question_pages = paper.get("questionPdfPages")
+        page_map = paper.get("questionPageMap")
+        if (not isinstance(question_pages, list) or not question_pages
+                or any(not isinstance(page, int) or page < 1 for page in question_pages)):
+            raise RuntimeError(f"{paper_id} question PDF page list is invalid")
+        if (not isinstance(page_map, list) or len(page_map) != 20
+                or any(not isinstance(page, int) or page < 1
+                       or page > len(question_pages) for page in page_map)):
             raise RuntimeError(f"{paper_id} question page map is invalid")
         plan.append({
             "paperId": paper_id,
+            "appSourceId": paper["appSourceId"],
+            "paperClass": paper.get("paperClass", "official-exam"),
             "title": paper["title"],
             "sourceId": source["id"],
             "sourcePath": resolve_hint(source["pathHint"], source_root),
             "sourceSha256": source["sha256"],
             "sourcePages": int(source["pages"]),
+            "questionPdfPages": question_pages,
             "questionPageMap": page_map,
         })
     return plan
@@ -119,35 +118,35 @@ def verify_source(row: dict[str, Any], pdfinfo: str) -> None:
         raise RuntimeError(
             f"source page count mismatch for {row['paperId']}: {actual_pages}"
         )
-    if max(row["questionPageMap"]) > actual_pages:
-        raise RuntimeError(f"question map exceeds source pages for {row['paperId']}")
+    if max(row["questionPdfPages"]) > actual_pages:
+        raise RuntimeError(f"question PDF pages exceed source pages for {row['paperId']}")
 
 
 def render_paper(row: dict[str, Any], stage: Path, pdftocairo: str,
                  dpi: int) -> dict[str, Any]:
     paper_dir = stage / row["paperId"]
     paper_dir.mkdir(parents=True, exist_ok=False)
-    prefix = paper_dir / "page"
-    completed = subprocess.run(
-        [pdftocairo, "-png", "-r", str(dpi), "-f", "1", "-l",
-         str(row["sourcePages"]), str(row["sourcePath"]), str(prefix)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=180, check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError((completed.stderr or "pdftocairo failed").strip())
-
     assets: list[dict[str, Any]] = []
-    for page in range(1, row["sourcePages"] + 1):
-        rendered = paper_dir / f"page-{page}.png"
+    for app_page, pdf_page in enumerate(row["questionPdfPages"], start=1):
+        prefix = paper_dir / f"render-{app_page:02d}"
+        completed = subprocess.run(
+            [pdftocairo, "-singlefile", "-png", "-r", str(dpi), "-f",
+             str(pdf_page), "-l", str(pdf_page), str(row["sourcePath"]), str(prefix)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=180, check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or "pdftocairo failed").strip())
+        rendered = paper_dir / f"render-{app_page:02d}.png"
         if not rendered.is_file():
             raise RuntimeError(f"rendered page is missing: {rendered}")
         width, height = png_dimensions(rendered)
-        final_name = f"page-{page:02d}-{sha256(rendered)[:12]}.png"
+        final_name = f"page-{app_page:02d}-{sha256(rendered)[:12]}.png"
         final_path = rendered.with_name(final_name)
         rendered.rename(final_path)
         assets.append({
-            "pdfPage": page,
+            "appPage": app_page,
+            "pdfPage": pdf_page,
             "file": f"{row['paperId']}/{final_name}",
             "sha256": sha256(final_path),
             "bytes": final_path.stat().st_size,
@@ -156,11 +155,14 @@ def render_paper(row: dict[str, Any], stage: Path, pdftocairo: str,
         })
     return {
         "paperId": row["paperId"],
+        "appSourceId": row["appSourceId"],
+        "paperClass": row["paperClass"],
         "title": row["title"],
         "sourceId": row["sourceId"],
         "sourceFileName": row["sourcePath"].name,
         "sourceSha256": row["sourceSha256"],
         "sourcePages": row["sourcePages"],
+        "questionPdfPages": row["questionPdfPages"],
         "questionPageMap": row["questionPageMap"],
         "assets": assets,
     }
@@ -207,6 +209,12 @@ def prepare(inventory_path: Path, source_root: Path, output: Path,
             "privateStudyOnly": True,
             "renderDpi": dpi,
             "paperCount": len(papers),
+            "officialPaperCount": sum(
+                paper["paperClass"] == "official-exam" for paper in papers
+            ),
+            "regionalMockPaperCount": sum(
+                paper["paperClass"] == "regional-mock" for paper in papers
+            ),
             "assetCount": sum(len(paper["assets"]) for paper in papers),
             "papers": papers,
             "gates": {

@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829r'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829s'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -2808,14 +2808,16 @@ n 元一次聯立方程：代入消去、加減消去與高斯消去；以增廣
    第三回開始，正式答案不再打包進公開前端；交卷狀態先同步，再由 Edge Function 解鎖。
    第一、二回的 key 只為既有歷史批改相容，兩回均視為已公開／不再作新鮮校準。選項索引採 0 起算。 */
 const PAPER_SOURCE_BUCKET = 'matha-papers';
-function officialPaperSource(year, questionPageMap, files, options = {}) {
+function privatePaperSource(year, questionPageMap, files, options = {}) {
   return {
     id: options.id || `paper-official-${year}`,
     title: options.title || `${year} 學年度學測數學 A`,
     questions: 20,
     minutes: 100,
-    pages: 8,
-    official: true,
+    pages: files.length,
+    official: options.paperClass !== 'regional-mock',
+    paperClass: options.paperClass || 'official-exam',
+    fullPaperSource: true,
     freshnessRequired: true,
     answerAccess: 'post-submit-server',
     answerBackendReady: true,
@@ -2824,7 +2826,63 @@ function officialPaperSource(year, questionPageMap, files, options = {}) {
   };
 }
 const PAPER_SOURCE_CATALOG = [
-  officialPaperSource(115,
+  privatePaperSource('ra4109',
+    [1,1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,3,4,4,4],
+    [
+      'regional-ra4109-matha/page-01-acc4f03027b1.png', 'regional-ra4109-matha/page-02-768a55527abd.png',
+      'regional-ra4109-matha/page-03-cbb0d11270a2.png', 'regional-ra4109-matha/page-04-bddf8a4baec0.png',
+    ],
+    { id:'paper-regional-ra4109', title:'114 學年度第四次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+  privatePaperSource('ra4110',
+    [1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3,3,3],
+    [
+      'regional-ra4110-matha/page-01-cc46e5c3baeb.png', 'regional-ra4110-matha/page-02-34c373d48efa.png',
+      'regional-ra4110-matha/page-03-710b2938f5cb.png',
+    ],
+    { id:'paper-regional-ra4110', title:'114 學年度第四次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+  privatePaperSource('ra3101',
+    [1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3,3,3,3],
+    [
+      'regional-ra3101-matha/page-01-a33a78c5f682.png', 'regional-ra3101-matha/page-02-e8caa0fafb20.png',
+      'regional-ra3101-matha/page-03-67ea52f8d5e5.png',
+    ],
+    { id:'paper-regional-ra3101', title:'114 學年度第三次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+  privatePaperSource('ra3102',
+    [1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,3,3,3],
+    [
+      'regional-ra3102-matha/page-01-ec4df124467b.png', 'regional-ra3102-matha/page-02-0aeb00e0f9c0.png',
+      'regional-ra3102-matha/page-03-726eadb32593.png',
+    ],
+    { id:'paper-regional-ra3102', title:'114 學年度第三次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+  privatePaperSource('ra1104',
+    [1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3],
+    [
+      'regional-ra1104-matha/page-01-05e392240419.png', 'regional-ra1104-matha/page-02-96d03285580f.png',
+      'regional-ra1104-matha/page-03-3d9dcd615a1f.png',
+    ],
+    { id:'paper-regional-ra1104', title:'114 學年度第一次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+  privatePaperSource('ra2100',
+    [1,1,1,1,1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,3],
+    [
+      'regional-ra2100-matha/page-01-816f96b3511b.png', 'regional-ra2100-matha/page-02-e5b641b60c81.png',
+      'regional-ra2100-matha/page-03-b8146866990a.png',
+    ],
+    { id:'paper-regional-ra2100', title:'114 學年度第二次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+  privatePaperSource('ra2101',
+    [1,1,1,1,1,1,1,1,2,2,2,3,3,3,3,3,3,3,3,3],
+    [
+      'regional-ra2101-matha/page-01-7e70b18ba686.png', 'regional-ra2101-matha/page-02-f69375c2c7c5.png',
+      'regional-ra2101-matha/page-03-c1284db2a869.png',
+    ],
+    { id:'paper-regional-ra2101', title:'114 學年度第二次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+  privatePaperSource('ra1103',
+    [1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3],
+    [
+      'regional-ra1103-matha/page-01-25a9a2eacfc3.png', 'regional-ra1103-matha/page-02-a56cc0f1bc31.png',
+      'regional-ra1103-matha/page-03-1cf348e25c48.png',
+    ],
+    { id:'paper-regional-ra1103', title:'114 學年度第一次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+  privatePaperSource(115,
     [2,2,2,2,3,3,3,3,4,4,5,5,6,6,6,6,7,7,7,7],
     [
       'official-115-matha/page-01-f9b57a554e7b.png', 'official-115-matha/page-02-a3ba31680f05.png',
@@ -2832,7 +2890,7 @@ const PAPER_SOURCE_CATALOG = [
       'official-115-matha/page-05-fab9f239ae96.png', 'official-115-matha/page-06-2548f9513d06.png',
       'official-115-matha/page-07-7e52429b12a2.png', 'official-115-matha/page-08-b1e8c6f15575.png',
     ]),
-  officialPaperSource(114,
+  privatePaperSource(114,
     [2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,7,7,7,7],
     [
       'official-114-matha/page-01-b96d45addc85.png', 'official-114-matha/page-02-dd63403e321a.png',
@@ -2840,7 +2898,7 @@ const PAPER_SOURCE_CATALOG = [
       'official-114-matha/page-05-073a3497ec53.png', 'official-114-matha/page-06-4758f91b0619.png',
       'official-114-matha/page-07-13bbd74bfd56.png', 'official-114-matha/page-08-4d5b2a7f319b.png',
     ]),
-  officialPaperSource(113,
+  privatePaperSource(113,
     [2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7],
     [
       'official-113-matha/page-01-eee9343ec22a.png', 'official-113-matha/page-02-23fb165daf4e.png',
@@ -2848,7 +2906,7 @@ const PAPER_SOURCE_CATALOG = [
       'official-113-matha/page-05-48486f917f42.png', 'official-113-matha/page-06-3058d5040f01.png',
       'official-113-matha/page-07-c3883a3588a6.png', 'official-113-matha/page-08-086ada14d28c.png',
     ]),
-  officialPaperSource(112,
+  privatePaperSource(112,
     [2,2,2,2,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7],
     [
       'official-112-matha/page-01-b7f00868bad7.png', 'official-112-matha/page-02-73fc0b04c51b.png',
@@ -2856,7 +2914,7 @@ const PAPER_SOURCE_CATALOG = [
       'official-112-matha/page-05-d03af7835612.png', 'official-112-matha/page-06-e497baa85bbe.png',
       'official-112-matha/page-07-e7000f0b5dba.png', 'official-112-matha/page-08-6202650ec424.png',
     ]),
-  officialPaperSource(111,
+  privatePaperSource(111,
     [2,2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,7,7,7],
     [
       'official-111-matha/page-01-6d2ee0d8e5a2.png', 'official-111-matha/page-02-ba7270acbf4c.png',
@@ -2864,7 +2922,7 @@ const PAPER_SOURCE_CATALOG = [
       'official-111-matha/page-05-419cd72d868e.png', 'official-111-matha/page-06-cefd639d8791.png',
       'official-111-matha/page-07-3f9ada1b9958.png', 'official-111-matha/page-08-1a792ad8df0a.png',
     ]),
-  officialPaperSource(110,
+  privatePaperSource(110,
     [2,2,2,2,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7],
     [
       'official-110-trial-matha/page-01-50c82613a928.png', 'official-110-trial-matha/page-02-a1ddced5d91f.png',
@@ -2932,10 +2990,10 @@ const PAPER_SOURCE_CATALOG = [
       { file: 'mock-3-page-3-4.png', label: '題本第 4 頁', side: 'right' },
     ] },
 ];
-// 舊版批改測試與部分歷史資料仍以第一回為相容基準；學生看到的清單另把官方卷排前面。
+// 舊版批改測試與部分歷史資料仍以第一回為相容基準；學生看到的清單另把完整私有卷排前面。
 const PAPER_SOURCES = [
-  ...PAPER_SOURCE_CATALOG.filter((source) => !source.official),
-  ...PAPER_SOURCE_CATALOG.filter((source) => source.official),
+  ...PAPER_SOURCE_CATALOG.filter((source) => !source.fullPaperSource),
+  ...PAPER_SOURCE_CATALOG.filter((source) => source.fullPaperSource),
 ];
 const PAPER_ERROR_KINDS = [
   '看不出第一個切入點',
@@ -5691,8 +5749,8 @@ function renderMockIntro() {
   const completedPapers = visionCompletedPaperCount();
   app().innerHTML = `
     <div class="hero compact"><h1>模考與破題</h1><p>同一批混合題，分成兩種完全不同的訓練：完整模考建立真實成績；眼睛刷題只練從題目找到第一個切入點。</p></div>
-    <section class="paper-library is-primary"><div class="paper-library-head"><div><span class="eyebrow">最常用｜完整原卷</span><h2>原版模考</h2></div><p>出版社三回與 111–115 學測官方卷都保留原版內容，可直接在題目與留白上寫。正式答案只在交卷後解鎖；第二次模考依原卷為 19 題，其餘七回各 20 題。</p></div>
-      <div class="paper-source-grid">${[...PAPER_SOURCES].sort((a, b) => Number(!!b.official) - Number(!!a.official)).map(paperSourceCardHTML).join('')}</div>
+    <section class="paper-library is-primary"><div class="paper-library-head"><div><span class="eyebrow">最常用｜完整原卷</span><h2>原版模考</h2></div><p>出版社三回、111–115 學測、110 試辦與八回地區模考都保留原版內容，可直接在題目與留白上寫。正式答案只在交卷後解鎖；第二次模考依原卷為 19 題，其餘十六回各 20 題。</p></div>
+      <div class="paper-source-grid">${[...PAPER_SOURCES].sort((a, b) => Number(!!b.fullPaperSource) - Number(!!a.fullPaperSource)).map(paperSourceCardHTML).join('')}</div>
       ${paperRunHistoryHTML()}
     </section>
     <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的題排在前面，再依目前證據混合打底、銜接與伸展題。</p><small>不顯示單題速度；正常情況同單元、同一本教材各最多 2 題，尚未安全匯入的單元由核心題補位。</small></div><button class="btn primary big" onclick="startAdaptiveTextbook(10)">開始今日精選</button></section>
@@ -7967,7 +8025,9 @@ function paperNormalizeAiGrade(source, raw, model, answerKey = source.key) {
         status = selectedOptions.length ? 'incorrect' : 'uncertain';
         points = 0;
       } else {
-        const correct = selectedOptions[0] === correctOptions[0];
+        // 少數出版社勘誤會明示單選題接受兩個等價選項；答案鍵以多個
+        // accepted options 表示，但考生仍只能選其中一個。
+        const correct = correctOptions.includes(selectedOptions[0]);
         status = correct ? 'correct' : 'incorrect';
         points = correct ? q.points : 0;
       }

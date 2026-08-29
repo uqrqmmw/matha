@@ -150,10 +150,7 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
         "appVersion": expected_version,
         "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
         "bucket": "matha-papers",
-        "officialPapers": 6,
-        "officialPages": 48,
         "remoteHashMismatches": 0,
-        "answerKeyPapersBehindPostSubmitGate": 7,
         "officialDetailedSolutionPapers": 1,
         "officialSolutionPages": 8,
         "solutionStorageHashMismatches": 0,
@@ -162,6 +159,15 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
     for key, expected in expected_values.items():
         if row.get(key) != expected:
             raise ReadinessError(f"私有 App 整合證據不符：{key}")
+    paper_count = int(row.get("integratedPapers") or row.get("officialPapers") or 0)
+    page_count = int(row.get("integratedPages") or row.get("officialPages") or 0)
+    official_count = int(row.get("officialPapers") or 0)
+    regional_count = int(row.get("regionalMockPapers") or 0)
+    answer_key_count = int(row.get("answerKeyPapersBehindPostSubmitGate") or 0)
+    if (paper_count < 6 or page_count < paper_count
+            or official_count < 6 or official_count + regional_count != paper_count
+            or answer_key_count < paper_count):
+        raise ReadinessError("私有 App 題本、頁面或伺服器答案鍵計數不合法")
     if int(row.get("edgeFunctionVersion") or 0) < 31:
         raise ReadinessError("私有 App Edge Function 版本尚未包含正式卷安全閘門")
 
@@ -177,6 +183,26 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
         "storage": str(row.get("storageVerificationSha256") or "").lower(),
         "solutions": str(row.get("solutionManifestSha256") or "").lower(),
     }
+    regional_fields = {
+        "regionalSolutions": ("regionalSolutionManifestPathHint", "regionalSolutionManifestSha256"),
+        "regionalVisual": ("regionalSolutionVisualReviewPathHint", "regionalSolutionVisualReviewSha256"),
+        "regionalStorage": (
+            "regionalSolutionStorageVerificationPathHint",
+            "regionalSolutionStorageVerificationSha256",
+        ),
+    }
+    present_regional_fields = [
+        bool(row.get(path_key) or row.get(hash_key))
+        for path_key, hash_key in regional_fields.values()
+    ]
+    if any(present_regional_fields) and not all(present_regional_fields):
+        raise ReadinessError("地區模考詳解證據必須 manifest、視覺複核與回讀驗證成套存在")
+    if regional_count and not all(present_regional_fields):
+        raise ReadinessError("地區模考已接入但缺少詳解安全證據")
+    if all(present_regional_fields):
+        for key, (path_key, hash_key) in regional_fields.items():
+            paths[key] = resolve_private_hint(str(row[path_key]), private_root)
+            hashes[key] = str(row[hash_key]).lower()
     for key, path in paths.items():
         if not path.is_file() or sha256(path) != hashes[key]:
             raise ReadinessError(f"私有 App {key} 證據不存在或雜湊漂移")
@@ -187,30 +213,30 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
     solutions = load_json(paths["solutions"], "官方完整詳解 Storage 回讀驗證")
     if (assets.get("kind") != "matha-official-paper-assets-v1"
             or assets.get("releaseAuthority") is not False
-            or int(assets.get("paperCount") or 0) != 6
-            or int(assets.get("assetCount") or 0) != 48):
-        raise ReadinessError("官方卷 App 資產 manifest 不合法")
+            or int(assets.get("paperCount") or 0) != paper_count
+            or int(assets.get("assetCount") or 0) != page_count):
+        raise ReadinessError("完整卷 App 資產 manifest 不合法")
     checks = visual.get("checks") or {}
     if (visual.get("schema") != 1 or visual.get("releaseAuthority") is not False
-            or int(visual.get("papersReviewed") or 0) != 6
-            or int(visual.get("pagesReviewed") or 0) != 48
+            or int(visual.get("papersReviewed") or 0) != paper_count
+            or int(visual.get("pagesReviewed") or 0) != page_count
             or any(checks.get(key) != "pass" for key in (
                 "pageOrder", "cropCompleteness", "chineseReadability",
                 "formulaReadability", "diagramPreservation", "grayscalePreservation",
             ))
             or checks.get("handwritingPresent") is not False
             or checks.get("answerLeakageInQuestionPages") is not False):
-        raise ReadinessError("官方卷 App 視覺複核不完整")
+        raise ReadinessError("完整卷 App 視覺複核不完整")
     if (storage.get("kind") != "matha-official-paper-storage-verification-v1"
             or storage.get("releaseAuthority") is not False
             or storage.get("readOnlyVerification") is not True
             or storage.get("projectRef") != row["supabaseProjectRef"]
             or storage.get("bucket") != row["bucket"]
             or storage.get("sourceManifestSha256") != hashes["assets"]
-            or int(storage.get("paperCount") or 0) != 6
-            or int(storage.get("assetCount") or 0) != 48
+            or int(storage.get("paperCount") or 0) != paper_count
+            or int(storage.get("assetCount") or 0) != page_count
             or int(storage.get("remoteHashMismatches", -1)) != 0):
-        raise ReadinessError("官方卷 Storage 回讀驗證不合法")
+        raise ReadinessError("完整卷 Storage 回讀驗證不合法")
 
     solution_rows = solutions.get("assets") or []
     if (solutions.get("kind") != "matha-official-solution-assets-v1"
@@ -225,7 +251,13 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
             or int(solutions.get("readbackHashMismatches", -1)) != 0
             or len(solution_rows) != 8):
         raise ReadinessError("官方完整詳解 Storage 回讀驗證不合法")
-    edge_source = (REPO_ROOT / "supabase/functions/openai-proxy/lib.ts").read_text(encoding="utf-8")
+    edge_source = "\n".join(
+        (REPO_ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "supabase/functions/openai-proxy/lib.ts",
+            "supabase/functions/openai-proxy/paper-solutions.ts",
+        )
+    )
     for asset in solution_rows:
         relative = str(asset.get("file") or "").replace("\\", "/")
         path = paths["solutions"].parent / Path(relative)
@@ -236,24 +268,104 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
                 or relative not in edge_source):
             raise ReadinessError(f"官方完整詳解雜湊或 Edge 引用不符：{relative}")
 
+    regional_solution_count = 0
+    regional_solution_pages = 0
+    if "regionalSolutions" in paths:
+        regional_solutions = load_json(paths["regionalSolutions"], "地區模考完整詳解 manifest")
+        regional_visual = load_json(paths["regionalVisual"], "地區模考詳解視覺複核")
+        regional_storage = load_json(paths["regionalStorage"], "地區模考詳解 Storage 回讀驗證")
+        regional_solution_count = int(row.get("regionalDetailedSolutionPapers") or 0)
+        regional_solution_pages = int(row.get("regionalSolutionPages") or 0)
+        if (regional_solution_count != regional_count or regional_solution_pages < regional_count
+                or regional_solutions.get("kind") != "matha-private-paper-solution-assets-v1"
+                or regional_solutions.get("releaseAuthority") is not False
+                or int(regional_solutions.get("paperCount") or 0) != regional_solution_count
+                or int(regional_solutions.get("assetCount") or 0) != regional_solution_pages
+                or int(regional_solutions.get("questionBindingCount") or 0) != regional_count * 20):
+            raise ReadinessError("地區模考完整詳解 manifest 不合法")
+        regional_checks = regional_visual.get("checks") or {}
+        if (regional_visual.get("kind") != "matha-private-solution-visual-review-v1"
+                or regional_visual.get("releaseAuthority") is not False
+                or regional_visual.get("assetManifestSha256") != hashes["regionalSolutions"]
+                or int(regional_visual.get("paperCount") or 0) != regional_solution_count
+                or int(regional_visual.get("pageCount") or 0) != regional_solution_pages
+                or any(regional_checks.get(key) is not True for key in (
+                    "allExpectedPagesPresent", "pageOrderPlausible",
+                    "traditionalChineseReadable", "formulaGlyphsReadable",
+                    "figuresAndTablesPreserved", "grayscaleContentPreserved",
+                    "noHandwritingObserved", "noBlankOrTruncatedPageObserved",
+                ))):
+            raise ReadinessError("地區模考詳解視覺複核不完整")
+        if (regional_storage.get("kind") != "matha-private-paper-solution-storage-verification-v1"
+                or regional_storage.get("releaseAuthority") is not False
+                or regional_storage.get("readOnlyVerification") is not True
+                or regional_storage.get("projectRef") != row["supabaseProjectRef"]
+                or regional_storage.get("bucket") != "matha-solutions"
+                or regional_storage.get("sourceManifestSha256") != hashes["regionalSolutions"]
+                or int(regional_storage.get("paperCount") or 0) != regional_solution_count
+                or int(regional_storage.get("assetCount") or 0) != regional_solution_pages
+                or int(regional_storage.get("remoteHashMismatches", -1)) != 0):
+            raise ReadinessError("地區模考詳解 Storage 回讀驗證不合法")
+        regional_asset_rows: dict[str, dict[str, Any]] = {}
+        regional_source_ids: set[str] = set()
+        for paper in regional_solutions.get("papers") or []:
+            source_id = str(paper.get("appSourceId") or "")
+            mappings = paper.get("questionSolutionFiles") or []
+            if (not source_id.startswith("paper-regional-") or source_id in regional_source_ids
+                    or len(mappings) != 20 or any(not files for files in mappings)):
+                raise ReadinessError("地區模考詳解題號綁定不完整")
+            regional_source_ids.add(source_id)
+            for asset in paper.get("assets") or []:
+                relative = str(asset.get("file") or "").replace("\\", "/")
+                path = paths["regionalSolutions"].parent / Path(relative)
+                if (not relative.startswith(f"{source_id}/") or relative in regional_asset_rows
+                        or not path.is_file()
+                        or sha256(path) != str(asset.get("sha256") or "").lower()
+                        or path.stat().st_size != int(asset.get("bytes") or -1)
+                        or source_id not in edge_source
+                        or Path(relative).name not in edge_source):
+                    raise ReadinessError(f"地區模考詳解雜湊或 Edge 引用不符：{relative}")
+                regional_asset_rows[relative] = asset
+        remote_solution_rows = {
+            str(asset.get("file") or ""): asset
+            for asset in regional_storage.get("assets") or [] if isinstance(asset, dict)
+        }
+        if (len(regional_source_ids) != regional_count
+                or len(regional_asset_rows) != regional_solution_pages
+                or set(remote_solution_rows) != set(regional_asset_rows)
+                or any(remote_solution_rows[path].get("sha256")
+                       != regional_asset_rows[path].get("sha256") for path in regional_asset_rows)):
+            raise ReadinessError("地區模考詳解回讀資產未與 manifest 全數綁定")
+
     app_source = (REPO_ROOT / "app.js").read_text(encoding="utf-8")
     asset_rows: dict[str, dict[str, Any]] = {}
-    expected_papers = {
-        "official-110-trial-matha",
-        *(f"official-{year}-matha" for year in range(111, 116)),
-    }
     manifest_papers = {str(paper.get("paperId") or "") for paper in assets.get("papers") or []}
-    if manifest_papers != expected_papers:
-        raise ReadinessError("官方卷 App 資產年度不完整")
+    if len(manifest_papers) != paper_count:
+        raise ReadinessError("完整卷 App 資產題本 ID 不完整或重複")
     for paper in assets.get("papers") or []:
         paper_id = str(paper.get("paperId"))
-        year = paper_id.split("-")[1]
+        source_id = str(paper.get("appSourceId") or "")
+        paper_class = str(paper.get("paperClass") or "official-exam")
         rows = paper.get("assets") or []
         page_map = paper.get("questionPageMap") or []
-        if (len(rows) != 8 or len(page_map) != 20
-                or any(not isinstance(page, int) or page < 2 or page > 7 for page in page_map)
-                or f"officialPaperSource({year}" not in app_source):
-            raise ReadinessError(f"官方卷 {year} 頁面或題號綁定不完整")
+        if (not rows or len(page_map) != 20
+                or any(not isinstance(page, int) or page < 1 or page > len(rows) for page in page_map)):
+            raise ReadinessError(f"完整卷 {paper_id} 頁面或題號綁定不完整")
+        if source_id and source_id.startswith("paper-regional-"):
+            if source_id not in app_source:
+                raise ReadinessError(f"完整卷 {source_id} 未接入 App")
+        elif source_id and source_id.startswith("paper-official-"):
+            year = paper_id.split("-")[1]
+            if f"privatePaperSource({year}" not in app_source:
+                raise ReadinessError(f"官方卷 {year} 未接入 App")
+        elif paper_id.startswith("official-"):
+            year = paper_id.split("-")[1]
+            if f"privatePaperSource({year}" not in app_source:
+                raise ReadinessError(f"官方卷 {year} 未接入 App")
+        else:
+            raise ReadinessError(f"完整卷 {paper_id} 缺少 App source ID")
+        if paper_class == "regional-mock" and not source_id.startswith("paper-regional-"):
+            raise ReadinessError(f"地區模考 {paper_id} 類別或 App ID 不一致")
         for asset in rows:
             relative = str(asset.get("file") or "").replace("\\", "/")
             path = paths["assets"].parent / Path(relative)
@@ -262,7 +374,7 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
                     or sha256(path) != str(asset.get("sha256") or "").lower()
                     or path.stat().st_size != int(asset.get("bytes") or -1)
                     or relative not in app_source):
-                raise ReadinessError(f"官方卷 App 頁面雜湊或引用不符：{relative}")
+                raise ReadinessError(f"完整卷 App 頁面雜湊或引用不符：{relative}")
             asset_rows[relative] = asset
     remote_rows = {
         str(asset.get("file") or ""): asset for asset in storage.get("assets") or []
@@ -273,11 +385,15 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
                    for path in asset_rows)):
         raise ReadinessError("Storage 回讀資產未與 App manifest 全數綁定")
     return [
-        f"officialAppAssets:{hashes['assets']}:48",
-        f"officialVisualReview:{hashes['visual']}:48",
-        f"officialStorageReadback:{hashes['storage']}:48:mismatch=0",
+        f"privatePaperAppAssets:{hashes['assets']}:{page_count}",
+        f"privatePaperVisualReview:{hashes['visual']}:{page_count}",
+        f"privatePaperStorageReadback:{hashes['storage']}:{page_count}:mismatch=0",
         f"officialDetailedSolutions:{hashes['solutions']}:8:mismatch=0",
-        f"officialAppVersion:{expected_version}:edge={row['edgeFunctionVersion']}:serverKeys=7",
+        *(
+            [f"regionalDetailedSolutions:{hashes['regionalSolutions']}:{regional_solution_pages}:mismatch=0"]
+            if regional_solution_pages else []
+        ),
+        f"privatePaperAppVersion:{expected_version}:edge={row['edgeFunctionVersion']}:serverKeys={answer_key_count}",
     ]
 
 
@@ -301,6 +417,10 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any
         verified.extend(validate_private_app_integration(
             inventory.get("privateAppIntegration"), private_root,
         ))
+        integration = inventory.get("privateAppIntegration") or {}
+        integrated_paper_count = int(
+            integration.get("integratedPapers") or integration.get("officialPapers") or 0
+        )
         ready = [row for row in inventory["papers"] if
                  int(row.get("questions") or 0) == 20
                  and int(row.get("minutes") or 0) == 100
@@ -330,7 +450,7 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any
                 blockers.append(f"仍需 {additional} 回額外的 20 題、100 分鐘且答案完整新來源")
             return gate(
                 "full-papers", "正式校準卷庫存", "blocked",
-                f"已驗證 {source_document_count} 份題本／答案來源；6 / 6 回已接入 App 且私有資產回讀雜湊一致，正式新鮮校準證據為 {len(ready)} / 6 回",
+                f"已驗證 {source_document_count} 份題本／答案來源；{integrated_paper_count} / {integrated_paper_count} 回已接入 App 且私有資產回讀雜湊一致，正式新鮮校準證據為 {len(ready)} / 6 回",
                 evidence=verified,
                 blockers=blockers,
             )

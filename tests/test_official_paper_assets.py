@@ -17,18 +17,33 @@ SPEC.loader.exec_module(assets)
 
 
 class OfficialPaperAssetTests(unittest.TestCase):
-    def test_every_official_question_has_one_valid_page(self):
-        self.assertEqual(set(assets.QUESTION_PAGE_MAPS), set(assets.OFFICIAL_PAPER_IDS))
-        for page_map in assets.QUESTION_PAGE_MAPS.values():
-            self.assertEqual(len(page_map), 20)
-            self.assertTrue(all(2 <= page <= 7 for page in page_map))
-            self.assertEqual(sorted(set(page_map)), [2, 3, 4, 5, 6, 7])
+    def test_build_plan_uses_only_explicit_private_app_papers(self):
+        inventory = {
+            "sourceDocuments": [{
+                "id": "q", "pathHint": "%DESKTOP%/數學檔案/完整模考來源/q.pdf",
+                "sha256": "0" * 64, "pages": 4,
+            }],
+            "papers": [{
+                "id": "regional-a", "appSourceId": "paper-regional-a",
+                "paperClass": "regional-mock", "title": "A", "questions": 20,
+                "minutes": 100, "privateAppEligible": True, "questionSource": "q",
+                "questionPdfPages": [1, 2, 3], "questionPageMap": [1] * 20,
+            }, {
+                "id": "seen", "title": "seen", "questions": 20, "minutes": 100,
+                "privateAppEligible": False,
+            }],
+        }
+        plan = assets.build_plan(inventory, Path("C:/private"))
+        self.assertEqual([row["paperId"] for row in plan], ["regional-a"])
+        self.assertEqual(plan[0]["questionPdfPages"], [1, 2, 3])
 
     def test_build_plan_fails_closed_when_a_required_source_is_missing(self):
         papers = [
-            {"id": paper_id, "title": paper_id, "questions": 20,
-             "minutes": 100, "questionSource": paper_id + "-question"}
-            for paper_id in assets.OFFICIAL_PAPER_IDS
+            {"id": paper_id, "appSourceId": paper_id, "title": paper_id,
+             "questions": 20, "minutes": 100, "privateAppEligible": True,
+             "questionSource": paper_id + "-question",
+             "questionPdfPages": [1], "questionPageMap": [1] * 20}
+            for paper_id in ("paper-a", "paper-b")
         ]
         with self.assertRaisesRegex(RuntimeError, "question source is missing"):
             assets.build_plan({"papers": papers, "sourceDocuments": []}, Path("C:/private"))
