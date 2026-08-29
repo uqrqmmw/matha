@@ -45,3 +45,5 @@
 ## 下一道關卡
 
 先完成 v4 Batch 01 V2 的 35 題具名真人像素 QA、答案／數學 QA 與最小可判分答案輸入。兩份 JSON 都完整通過後，用 `intersect-cleaned-human-reviews.py` 建立 fail-closed 交集；再由 `prepare-starter-private-release.py` 重驗原 PDF、產生固定 10 題視覺抽查與 exact-hash 簽核。簽核後才建立版本化私有 bundle；部署器逐檔回讀驗雜湊，最後原子切換 alias，並保留可驗證回滾記錄。Batch 01 安全上線後再依序處理 Batch 02–11，不必等 364 題全審完才取得第一批正式題。目前仍未有人類完成 Batch 01，正式發布數維持 0。
+
+`advance-starter-release.py` 已把「找出正確下載檔 → 雙審核交集 → 十題簽核包 → 驗簽 → bundle」串成可續作狀態機；每階段採 partial 後原子換名，拒絕錯批、歧義檔與既有雜湊漂移。狀態機刻意停在部署前，不會因檔案剛下載就自動改正式 Supabase alias。

@@ -293,6 +293,21 @@ python scripts/ingest/intersect-cleaned-human-reviews.py \
 
 驗證器會拒絕未完成審核、AI／bot 審核者、無時區時間戳、題目缺漏或重複、來源／題面／答案／紅圖雜湊漂移、通過題仍有未勾安全項、缺少或矛盾的 `structuredAnswer`，以及答案綁定隔離題。只有去筆跡像素 QA 與答案數學 QA 都通過的題會進交集。輸出仍固定 `releaseAuthority:false`、`uploadPerformed:false`；還需要另一道具名真人發布簽核及私有素材部署，不能直接被正式 app 載入。
 
+正式 v4 批次不必手動搬路徑。兩份審核 JSON 下載後，可由協調器依 `candidateManifestSha256` 自動找出這一批最新且不歧義的匯出檔，完成交集並建立固定十題簽核包：
+
+```powershell
+python scripts/ingest/advance-starter-release.py stage --batch 1
+```
+
+協調器會拒絕錯批、同時間但內容不同的歧義匯出，以及任何既有階段的 hash drift。雙審核與發布準備都先寫 `.partial`，完整成功後才原子換名；當機留下的 partial 可安全重建，已完成且 exact hash 一致的階段則續用。十題真人簽核下載後執行：
+
+```powershell
+python scripts/ingest/advance-starter-release.py finalize `
+  --work-root "C:\Users\yenke\Desktop\數學檔案\matha-starter-v4-batch-01-release-workflow-20260829"
+```
+
+它會驗簽、產生具名來源與不可變 bundle，並修正原子搬移後 upload-plan 的本機 bucket root；最後只停在 `ready-for-explicit-supabase-deploy`，不會自行切換正式 alias。
+
 ### 5d. Starter 具名發布、版本化上傳與可驗證回滾
 
 雙審核交集完成後，用 `prepare-starter-private-release.py prepare` 把題圖、14 單元映射、真人輸入的正解與原始 catalog PDF 重新交叉核對。工具不呼叫 OCR 或模型；任一 PDF／題圖／答案圖／題號／頁碼／單元／正解雜湊不一致即停止。它產生 image-first 私有題源、版本化題圖路徑，以及由 exact source hash 決定的固定 10 題視覺抽查頁：
