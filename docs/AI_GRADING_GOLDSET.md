@@ -69,6 +69,18 @@ node scripts/evaluate-paper-detail-gold.js `
   --allow-fail
 ```
 
+實際 prediction 用 `run-paper-detail-gold.js` 經正式 MathA Edge Function 逐題產生；工具不接受 OpenAI key，每題成功即原子落盤，並以 gold、題圖、prompt 與 paper run 雜湊／版本綁定，重跑只復用已完成題，避免重複付費：
+
+```powershell
+$env:MATHA_EVAL_USER_JWT = '<短效 MathA 使用者 session>'
+node scripts/run-paper-detail-gold.js `
+  --gold 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-gold-v1.json' `
+  --paper-run-id 'paper-run-1784325851508' `
+  --out 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-prediction-gpt-5.5-v1.json'
+```
+
+Edge Function 仍會檢查雲端真實流程，不能用此工具繞過隔日重想。2026-08-29 實查首回歷史 run 的 7 題皆為 `attempts=0` 且沒有 `retry` log；測試請求因此在模型呼叫與額度 claim 之前正確回 403，沒有產生模型費用。只有本人在 app 保存真實重想後才可續跑。
+
 正式門檻分開計算：有診斷輸出的 precision ≥ 90%、可診斷案例 coverage ≥ 60%、abstain 題無證據診斷為 0、正確前綴辨識 ≥ 80%，最後再由具名真人把 `releaseAuthority` 簽為 true。
 
 官方詳解圖存放在私有 `matha-solutions` bucket，不設一般登入者讀取 policy。前端只有在雲端已保存「到期隔日訂正＋至少一次真實重想」後，才能向 Edge Function 取得 15 分鐘簽名網址；圖不進 `app_state`、IndexedDB、Service Worker 或首輪批改 response，也不經 OCR 重打。`paper_solution` 不呼叫 OpenAI，因此重開詳解不會產生模型費用。
