@@ -263,6 +263,18 @@ python scripts/ingest/validate-starter-review-packets.py \
 
 驗證器要求每批題號完整且唯一，原題／清理題／移除區／官方答案像素與 template 雜湊完全相符，答案題號集合不可缺漏或多出，所有產物都必須維持 `releaseAuthority:false`。它只證明工作包沒有錯綁或漂移，不會把尚未真人看過的題標成通過。
 
+為避免真人把同一批題分兩次來回複核，可在兩份工作包驗證完成後建立單題整合複核台：
+
+```bash
+python scripts/ingest/prepare-starter-combined-review.py \
+  --batch-manifest "<repo 外>/queue/batch-01-cleaned-candidates.json" \
+  --pixel-dir "<repo 外>/batch-01-pixel" \
+  --answer-dir "<repo 外>/batch-01-answer" \
+  --out "<repo 外>/batch-01-combined" --port 8769
+```
+
+在輸出資料夾執行 `python serve-review.py`，再開啟工具列出的 localhost URL。畫面一次只載入一題，同時呈現原題、去筆跡題、移除區與原書官方答案；圖片可全螢幕放大與雙指縮放。通過時仍須逐項確認原有 7 個像素檢查與 6 個答案／數學檢查，最後分別下載原格式的兩份具名 JSON。整合 UI 只減少重複翻頁，不合併關卡，也不產生發布權限。
+
 ### 5c. `intersect-cleaned-human-reviews.py` — 雙真人審核交集（仍不發布）
 
 兩份工作包都由可辨識真人逐題完成並下載 JSON 後，才能執行：

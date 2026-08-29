@@ -19,6 +19,7 @@
 - 私有候選與 coverage：`C:\Users\yenke\Desktop\數學檔案\matha-starter-queue-v4-20260829`
 - 像素 QA：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v4-batch-01-pixel-20260829` 至 `batch-11-pixel-20260829`
 - 答案／數學 QA：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v4-batch-01-answer-20260829` 至 `batch-11-answer-20260829`
+- 單題整合複核台：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v4-batch-01-combined-20260829` 至 `batch-11-combined-20260829`
 - 工作包全量驗證器：`scripts/ingest/validate-starter-review-packets.py`
 
 舊的 v1–v3 queue 與 v2 的 140 題工作包已被上列 v4 取代，只保留稽核，不得用於新的簽核或發布。
@@ -34,6 +35,8 @@
 5. 任一必要資產缺失或 hash drift。
 
 選題測試覆蓋 14 單元與精確區間、按比例角色目標、可行時的 50% 單書上限、身份錯綁 fail-closed、隔離後自動替補。全量驗證器另逐一重算 364 題的 batch manifest、原題、清理題、紅色移除圖、官方答案與兩份人工審核 template 雜湊；11 批全部一致，且都維持 `releaseAuthority:false`。沒有使用內建 browser、OpenAI API，也沒有重跑 YesScanner。
+
+11 批均另有單題整合複核台；它先呼叫同一個全量驗證器，再把兩道關卡放在同一題畫面，仍各自輸出既有格式。Batch 01 已透過 localhost 實測主頁與四種像素資產皆回應 HTTP 200；畫面一次只掛載一題，避免大量高解析圖片同時佔用記憶體。
 
 題材庫本身無法滿足所有理想比例：10 個單元缺少部分章末角色，12 個單元不足 3 個高信心來源區段。這些限制已逐單元寫入 `starter-review-selection.json`；選題器只在實際有第二來源時強制單一書籍不超過 50%，不會為滿足表格而虛構來源或難度。
 
