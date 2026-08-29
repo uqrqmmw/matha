@@ -22,6 +22,7 @@ const BOOK_BY_SOURCE = new Map(CATALOG_BOOKS.flatMap((book) => (book.sourceNames
 const BOOK_BY_ID = new Map(CATALOG_BOOKS.map((book) => [book.id, book]));
 const UNTRUSTED_REVIEWER_RE = /(?:draft|smoke|not[-_\s]*a[-_\s]*human|not[-_\s]*human|not[-_\s]*importable|qa[-_\s]*only|forced|unsigned)/i;
 const RELEASE_NON_HUMAN_RE = /(?:claude|codex|chatgpt|gpt|gemini|agent|bot|automation|自動|模型|人工智慧|\bai\b)/i;
+const OWNER_DELEGATED_POLICY = 'owner-delegated-agent-direct-pixel-v1';
 /* 逐頁核對後確認：題文已把印刷表格的全部欄列與數值完整序列化，位置/顏色/合併格不影響解題。
    這是 build-time 信任清單；外部 qpack 自報 visualComplete 或仿造 evidence 都不會取得 curated trust。 */
 const VERIFIED_TEXT_COMPLETE_IDS = new Set([
@@ -183,6 +184,37 @@ function untrustedReviewSource(raw) {
   return '';
 }
 
+function namedHumanRelease(raw, trustBlockReason) {
+  return !trustBlockReason && typeof raw.releaseApprovedBy === 'string'
+    && raw.releaseApprovedBy.trim().length >= 3 && !UNTRUSTED_REVIEWER_RE.test(raw.releaseApprovedBy)
+    && !RELEASE_NON_HUMAN_RE.test(raw.releaseApprovedBy)
+    && (!raw.reviewPolicy || raw.reviewPolicy === 'named-human-dual-review-v1');
+}
+
+function ownerDelegatedRelease(raw, trustBlockReason) {
+  if (trustBlockReason || raw.reviewPolicy !== OWNER_DELEGATED_POLICY) return false;
+  const approval = raw.releaseApproval || {}, audit = raw.reviewAudit || {};
+  const owner = String(raw.releaseApprovedBy || '').trim();
+  const reviewer = String(approval.performedBy || '').trim();
+  const version = Number(approval.version);
+  const approvalHashes = Array.isArray(approval.delegatedReviewSha256)
+    ? approval.delegatedReviewSha256 : [approval.delegatedReviewSha256];
+  const validHashChain = (version === 1 && approvalHashes.length === 1)
+    || (version === 2 && approvalHashes.length >= 2);
+  return approval.kind === 'owner-delegated-agent-starter-private-release-signoff'
+    && validHashChain && approval.authorizedBy === owner
+    && owner.length >= 3 && !RELEASE_NON_HUMAN_RE.test(owner)
+    && reviewer.length >= 3 && RELEASE_NON_HUMAN_RE.test(reviewer)
+    && approval.humanPixelReviewClaimed === false
+    && approvalHashes.every((value) => /^[a-f0-9]{64}$/.test(String(value || '')))
+    && Array.isArray(audit.directReviewSha256)
+    && audit.directReviewSha256.length === approvalHashes.length
+    && audit.directReviewSha256.every((value, index) => value === approvalHashes[index])
+    && /^[a-f0-9]{64}$/.test(String(approval.unsignedSourceSha256 || ''))
+    && /^[a-f0-9]{64}$/.test(String(approval.assetManifestSha256 || ''))
+    && Array.isArray(approval.sampleQuestionIds) && approval.sampleQuestionIds.length > 0;
+}
+
 function enrichQuestionMetadata(input) {
   const q = { ...input };
   q.topic = canonicalTopic(q.topic);
@@ -337,6 +369,8 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
   const sourceInventorySha256 = String(raw.sourceInventorySha256 || '');
   const verificationPolicy = String(raw.verificationPolicy || '');
   const reviewAudit = raw.reviewAudit && typeof raw.reviewAudit === 'object' ? raw.reviewAudit : {};
+  const releaseAuthorized = namedHumanRelease(raw, trustBlockReason)
+    || ownerDelegatedRelease(raw, trustBlockReason);
   const releaseChecks = {
     corpusGeneration: corpusGeneration === TRUSTED_CORPUS.generation,
     sourceInventory: sourceInventorySha256 === TRUSTED_CORPUS.sourceInventorySha256,
@@ -356,9 +390,7 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
     reviewAudit: Number(reviewAudit.sourceQuestionCount) === sourceItems.length
       && Number(reviewAudit.approvedQuestionCount) === items.length + pendingVisuals.length
       && typeof reviewAudit.completedAt === 'string' && !Number.isNaN(Date.parse(reviewAudit.completedAt)),
-    trustedHumanReview: !trustBlockReason && typeof raw.releaseApprovedBy === 'string'
-      && raw.releaseApprovedBy.trim().length >= 3 && !UNTRUSTED_REVIEWER_RE.test(raw.releaseApprovedBy)
-      && !RELEASE_NON_HUMAN_RE.test(raw.releaseApprovedBy),
+    releaseAuthorization: releaseAuthorized,
   };
   const releaseReady = Object.values(releaseChecks).every(Boolean);
   const pendingVisualEnvelope = {
@@ -376,10 +408,13 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
     ocrProvider: String(raw.ocrProvider || ''),
     ocrModel: String(raw.ocrModel || ''),
     verificationPolicy,
+    reviewPolicy: String(raw.reviewPolicy || 'named-human-dual-review-v1'),
     mathematicalCorrectnessVerified: raw.mathematicalCorrectnessVerified === true,
     releaseReady,
     releaseChecks,
     releaseApprovedBy: releaseReady ? raw.releaseApprovedBy : null,
+    releaseApproval: releaseReady && raw.releaseApproval && typeof raw.releaseApproval === 'object'
+      ? raw.releaseApproval : null,
     sourceFile: path.basename(sourceFile),
     sourceSha256: sha(fs.readFileSync(sourceFile)),
     report,
@@ -418,4 +453,4 @@ if (require.main === module) {
   console.log(JSON.stringify(manifest, null, 2));
 }
 
-module.exports = { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedStemAsset, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, buildPrivateBank };
+module.exports = { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedStemAsset, verifiedFigureAsset, verifiedVisualEvidence, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, namedHumanRelease, ownerDelegatedRelease, buildPrivateBank };

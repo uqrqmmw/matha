@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829v'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829w'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -781,8 +781,25 @@ function curatedManifestError(m) {
   if (m.verificationPolicy !== CURATED_TRUST.verificationPolicy || m.mathematicalCorrectnessVerified !== true || m.releaseReady !== true) return '題庫尚未完成原卷與答案校驗';
   if (!m.releaseChecks || typeof m.releaseChecks !== 'object' || !Object.values(m.releaseChecks).length
     || !Object.values(m.releaseChecks).every((value) => value === true)) return '題庫發布稽核未全數通過';
+  const nonHuman = /(?:claude|codex|chatgpt|gpt|gemini|agent|bot|automation|自動|模型|人工智慧|\bai\b)/i;
   if (typeof m.releaseApprovedBy !== 'string' || m.releaseApprovedBy.trim().length < 3
-    || /(?:claude|codex|chatgpt|gpt|gemini|agent|bot|automation|自動|模型|人工智慧|\bai\b)/i.test(m.releaseApprovedBy)) return '題庫缺少可信人工發布簽核';
+    || nonHuman.test(m.releaseApprovedBy)) return '題庫缺少可信發布授權';
+  if (m.reviewPolicy === 'owner-delegated-agent-direct-pixel-v1') {
+    const approval = m.releaseApproval || {};
+    const version = Number(approval.version);
+    const approvalHashes = Array.isArray(approval.delegatedReviewSha256)
+      ? approval.delegatedReviewSha256 : [approval.delegatedReviewSha256];
+    const validHashChain = ((version === 1 && approvalHashes.length === 1)
+      || (version === 2 && approvalHashes.length >= 2))
+      && approvalHashes.every((value) => /^[a-f0-9]{64}$/.test(String(value || '')));
+    if (approval.kind !== 'owner-delegated-agent-starter-private-release-signoff'
+      || !validHashChain || approval.authorizedBy !== m.releaseApprovedBy
+      || typeof approval.performedBy !== 'string' || !nonHuman.test(approval.performedBy)
+      || approval.humanPixelReviewClaimed !== false
+      || !Array.isArray(approval.sampleQuestionIds) || !approval.sampleQuestionIds.length) {
+      return '題庫代理審核授權或稽核鏈不完整';
+    }
+  }
   if (!Array.isArray(m.packs) || !m.packs.every((p) => p && typeof p.id === 'string' && /^curated-[\w-]+$/.test(p.id)
     && typeof p.file === 'string' && !p.file.includes('..') && !p.file.startsWith('/')
     && Number.isInteger(Number(p.count)) && Number(p.count) >= 0

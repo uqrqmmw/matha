@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "generatedAt": "2026-08-29T13:37:47+08:00",
+  "generatedAt": "2026-08-29T17:00:00+08:00",
   "releaseAuthority": false,
   "privateAppIntegration": {
     "status": "deployed-and-hash-verified",
-    "appVersion": "0829v",
+    "appVersion": "0829w",
     "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
     "bucket": "matha-papers",
     "integratedPapers": 14,

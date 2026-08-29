@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -71,15 +72,54 @@ def headers(service_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {service_key}", "apikey": service_key}
 
 
+def transient_http_status(status: int) -> bool:
+    """Return whether a Storage response is safe to retry without mutation.
+
+    Supabase's edge can surface Cloudflare/vendor transient gateway codes in
+    the 520-599 range (including 544), not only the conventional 5xx codes.
+    Downloads are read-only, so retrying those responses is safe.
+    """
+    return status in {408, 429, 500, 502, 503, 504} or 520 <= status <= 599
+
+
 def download_object(base_url: str, service_key: str, bucket: str, path: str) -> bytes | None:
-    request = urllib.request.Request(object_url(base_url, bucket, path), headers=headers(service_key))
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return response.read()
-    except urllib.error.HTTPError as error:
-        if error.code in {400, 404}:
-            return None
-        raise DeploymentError(f"Storage download failed for {bucket}/{path}: HTTP {error.code}") from error
+    last_error: BaseException | None = None
+    for attempt in range(4):
+        separator = "&" if "?" in object_url(base_url, bucket, path) else "?"
+        url = f"{object_url(base_url, bucket, path)}{separator}_matha_cb={time.time_ns()}"
+        request = urllib.request.Request(
+            url,
+            headers={**headers(service_key), "Cache-Control": "no-cache", "Pragma": "no-cache"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code in {400, 404}:
+                return None
+            if not transient_http_status(error.code):
+                raise DeploymentError(
+                    f"Storage download failed for {bucket}/{path}: HTTP {error.code}"
+                ) from error
+            last_error = error
+        except (TimeoutError, urllib.error.URLError) as error:
+            last_error = error
+        if attempt < 3:
+            time.sleep(1 << attempt)
+    raise DeploymentError(f"Storage download repeatedly failed for {bucket}/{path}") from last_error
+
+
+def wait_for_hash(downloader: Callable[[str, str, str, str], bytes | None],
+                  base_url: str, service_key: str, bucket: str, path: str,
+                  expected: str, *, attempts: int = 5) -> bytes | None:
+    """Read through transient Storage cache propagation until exact bytes are visible."""
+    for attempt in range(attempts):
+        value = downloader(base_url, service_key, bucket, path)
+        if value is not None and digest(value) == expected:
+            return value
+        if attempt < attempts - 1:
+            time.sleep(1 << min(attempt, 3))
+    return None
 
 
 def upload_object(base_url: str, service_key: str, bucket: str, path: str,
@@ -165,8 +205,10 @@ def deploy(plan_file: Path, record_file: Path, base_url: str, service_key: str,
             uploader(base_url, service_key, row["bucket"], row["path"], data, upsert=False)
         elif digest(existing) != row["sha256"]:
             raise DeploymentError(f"immutable versioned object already differs: {row['bucket']}/{row['path']}")
-        verified = downloader(base_url, service_key, row["bucket"], row["path"])
-        if verified is None or digest(verified) != row["sha256"]:
+        verified = wait_for_hash(
+            downloader, base_url, service_key, row["bucket"], row["path"], row["sha256"]
+        )
+        if verified is None:
             raise DeploymentError(f"uploaded object verification failed: {row['bucket']}/{row['path']}")
         uploaded.append({"bucket": row["bucket"], "path": row["path"],
                          "sha256": row["sha256"], "bytes": row["bytes"]})
@@ -175,8 +217,10 @@ def deploy(plan_file: Path, record_file: Path, base_url: str, service_key: str,
         raise DeploymentError("manifest alias changed during deployment; refusing the switch")
     new_alias = alias["local"].read_bytes()
     uploader(base_url, service_key, alias["bucket"], alias["path"], new_alias, upsert=True)
-    switched = downloader(base_url, service_key, alias["bucket"], alias["path"])
-    if switched is None or digest(switched) != alias["sha256"]:
+    switched = wait_for_hash(
+        downloader, base_url, service_key, alias["bucket"], alias["path"], alias["sha256"]
+    )
+    if switched is None:
         try:
             uploader(base_url, service_key, alias["bucket"], alias["path"], previous, upsert=True)
         finally:
@@ -218,8 +262,11 @@ def rollback(record_file: Path, output_file: Path, base_url: str, service_key: s
     if digest(previous) != alias.get("previousSha256"):
         raise DeploymentError("deployment record prior alias hash is invalid")
     uploader(base_url, service_key, alias["bucket"], alias["path"], previous, upsert=True)
-    verified = downloader(base_url, service_key, alias["bucket"], alias["path"])
-    if verified is None or digest(verified) != alias["previousSha256"]:
+    verified = wait_for_hash(
+        downloader, base_url, service_key, alias["bucket"], alias["path"],
+        alias["previousSha256"],
+    )
+    if verified is None:
         raise DeploymentError("rollback alias verification failed")
     result = {
         "kind": "matha-private-storage-rollback", "version": 1,

@@ -45,6 +45,8 @@ SIGNOFF_STATEMENT = (
     "I reviewed the exact deterministic visual sample and approve this exact "
     "hash-bound starter batch for authenticated private release."
 )
+OWNER_DELEGATED_POLICY = "owner-delegated-agent-direct-pixel-v1"
+OWNER_DELEGATED_KIND = "matha-private-cleaned-owner-delegated-review-candidates"
 
 
 class StarterReleaseError(RuntimeError):
@@ -184,17 +186,48 @@ def prepare(dual_files: list[Path], selection_file: Path, pdf_root: Path,
     trusted, catalog = load_catalog()
 
     dual_documents = []
+    review_policy = None
+    owner_delegations: list[dict[str, Any]] = []
+    owner_authorized_by = None
     eligible: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
     for dual_file in dual_files:
         dual = load_json(dual_file, "dual review")
-        if (dual.get("kind") != "matha-private-cleaned-dual-review-candidates"
+        human_dual = (dual.get("kind") == "matha-private-cleaned-dual-review-candidates"
+                      and dual.get("humanReleaseSignoffStillRequired") is True)
+        delegated_dual = (dual.get("kind") == OWNER_DELEGATED_KIND
+                          and dual.get("reviewPolicy") == OWNER_DELEGATED_POLICY
+                          and dual.get("humanReviewClaimed") is False
+                          and dual.get("ownerReleaseAuthorizationRecorded") is True)
+        if (not (human_dual or delegated_dual)
                 or dual.get("version") != 1 or dual.get("releaseAuthority") is not False
-                or dual.get("humanReleaseSignoffStillRequired") is not True
                 or dual.get("uploadPerformed") is not False):
             raise StarterReleaseError(f"invalid dual review manifest: {dual_file}")
-        if any(NON_HUMAN.search(str(dual.get(field) or ""))
-               for field in ("pixelReviewer", "answerReviewer")):
-            raise StarterReleaseError("dual review contains a non-human reviewer")
+        current_policy = (OWNER_DELEGATED_POLICY if delegated_dual else "named-human-dual-review-v1")
+        if review_policy is not None and review_policy != current_policy:
+            raise StarterReleaseError("cannot mix human and owner-delegated reviews in one release")
+        review_policy = current_policy
+        if human_dual:
+            if any(NON_HUMAN.search(str(dual.get(field) or ""))
+                   for field in ("pixelReviewer", "answerReviewer")):
+                raise StarterReleaseError("human dual review contains a non-human reviewer")
+        else:
+            if any(not NON_HUMAN.search(str(dual.get(field) or ""))
+                   for field in ("pixelReviewer", "answerReviewer")):
+                raise StarterReleaseError("delegated review must transparently identify the agent reviewer")
+            delegation = dual.get("ownerDelegation")
+            if (not isinstance(delegation, dict)
+                    or delegation.get("kind") != "owner-delegated-agent-content-review"
+                    or not isinstance(delegation.get("authorizedBy"), str)
+                    or len(delegation["authorizedBy"].strip()) < 3
+                    or NON_HUMAN.search(delegation["authorizedBy"])
+                    or not isinstance(dual.get("directReviewSha256"), str)
+                    or len(dual["directReviewSha256"]) != 64):
+                raise StarterReleaseError("delegated review authorization is invalid")
+            authorized_by = delegation["authorizedBy"].strip()
+            if owner_authorized_by is not None and owner_authorized_by != authorized_by:
+                raise StarterReleaseError("delegated reviews were not authorized by the same owner")
+            owner_authorized_by = authorized_by
+            owner_delegations.append(delegation)
         rows = unique_rows(dual.get("items"), f"dual review items: {dual_file.name}")
         for question_id, row in rows.items():
             if question_id in eligible:
@@ -332,6 +365,13 @@ def prepare(dual_files: list[Path], selection_file: Path, pdf_root: Path,
     ranked = sorted(questions, key=lambda q: hashlib.sha256(
         f"{seed}|{q['id']}".encode()).hexdigest())
     sample_ids = [question["id"] for question in ranked[:min(10, len(ranked))]]
+    owner_delegation = None
+    if owner_delegations:
+        owner_delegation = owner_delegations[0] if len(owner_delegations) == 1 else {
+            "kind": "owner-delegated-agent-content-review-set",
+            "authorizedBy": owner_authorized_by,
+            "delegationCount": len(owner_delegations),
+        }
     source = {
         "schema": 3,
         "kind": "private-question-source",
@@ -347,6 +387,9 @@ def prepare(dual_files: list[Path], selection_file: Path, pdf_root: Path,
         "answerKeyVerified": True,
         "mathematicalCorrectnessVerified": True,
         "reviewedBy": " / ".join(sorted(set(reviewer_names))),
+        "reviewPolicy": review_policy,
+        "ownerDelegation": owner_delegation,
+        "ownerDelegations": owner_delegations,
         "releaseApprovedBy": None,
         "releaseReviewSampleQuestionIds": sample_ids,
         "reviewAudit": {
@@ -354,6 +397,10 @@ def prepare(dual_files: list[Path], selection_file: Path, pdf_root: Path,
             "approvedQuestionCount": len(questions),
             "completedAt": latest_review,
             "dualReviewSha256": [row["sha256"] for row in dual_documents],
+            "directReviewSha256": [
+                load_json(Path(row["path"]), "delegated review").get("directReviewSha256")
+                for row in dual_documents
+            ] if review_policy == OWNER_DELEGATED_POLICY else [],
             "selectionSha256": sha256(selection_file),
         },
         "questions": questions,
@@ -494,6 +541,121 @@ def finalize(source_file: Path, asset_manifest_file: Path, signoff_file: Path,
     }
 
 
+def finalize_owner_delegated(source_file: Path, asset_manifest_file: Path,
+                             delegated_review_files: list[Path],
+                             output_file: Path) -> dict[str, Any]:
+    """Finalize a release that the owner explicitly delegated to a named agent.
+
+    The delegated review covers the complete input batch rather than only the
+    ten-question release sample.  The output records both the human owner who
+    authorized the work and the automated reviewer that performed it; it does
+    not claim a human inspected the question pixels.
+    """
+    output_file = outside_repo(output_file)
+    if output_file.exists():
+        raise StarterReleaseError("signed output already exists; refusing to overwrite")
+    source = load_json(source_file, "unsigned source")
+    assets = load_json(asset_manifest_file, "asset manifest")
+    if not delegated_review_files:
+        raise StarterReleaseError("at least one delegated direct review is required")
+    reviews = [load_json(path, "delegated direct review")
+               for path in delegated_review_files]
+    if (source.get("kind") != "private-question-source"
+            or source.get("releaseApprovedBy") is not None
+            or source.get("reviewPolicy") != OWNER_DELEGATED_POLICY
+            or assets.get("kind") != "matha-starter-private-asset-manifest"):
+        raise StarterReleaseError("source is not an unsigned owner-delegated starter release")
+    if any(review.get("kind") != "matha-owner-delegated-starter-direct-review"
+           or review.get("version") != 1 or review.get("releaseAuthority") is not False
+           or review.get("reviewPolicy") != OWNER_DELEGATED_POLICY for review in reviews):
+        raise StarterReleaseError("delegated direct review contract is invalid")
+    review_hashes = [sha256(path) for path in delegated_review_files]
+    expected_hashes = (source.get("reviewAudit") or {}).get("directReviewSha256")
+    if not isinstance(expected_hashes, list) or expected_hashes != review_hashes:
+        raise StarterReleaseError("delegated direct review hash binding mismatch")
+    review_delegations = [review.get("delegation") for review in reviews]
+    source_delegations = source.get("ownerDelegations")
+    if source_delegations is None and len(reviews) == 1:
+        source_delegations = [source.get("ownerDelegation")]
+    if source_delegations != review_delegations \
+            or any(not isinstance(value, dict) for value in review_delegations):
+        raise StarterReleaseError("owner delegations changed between review and release")
+    owners = {str(value.get("authorizedBy") or "").strip()
+              for value in review_delegations}
+    if len(owners) != 1:
+        raise StarterReleaseError("delegated reviews were not authorized by one owner")
+    approved_by = next(iter(owners))
+    if len(approved_by) < 3 or NON_HUMAN.search(approved_by):
+        raise StarterReleaseError("owner delegation does not identify a human owner")
+    reviewers = {str(review.get("reviewedBy") or "").strip() for review in reviews}
+    if any(len(reviewer) < 3 or not NON_HUMAN.search(reviewer)
+           for reviewer in reviewers):
+        raise StarterReleaseError("delegated release must identify the automated reviewer")
+    reviewer = " / ".join(sorted(reviewers))
+    source_rows = unique_rows(source.get("questions"), "source questions")
+    asset_rows = unique_rows(assets.get("questions"), "asset manifest questions")
+    review_rows: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for review in reviews:
+        attestation = review.get("passAttestation") or {}
+        for question_id, row in unique_rows(
+                review.get("questions"), "delegated review questions").items():
+            if question_id in review_rows:
+                raise StarterReleaseError(
+                    f"question appears in multiple delegated reviews: {question_id}")
+            review_rows[question_id] = (row, attestation)
+    if set(source_rows) != set(asset_rows) or not set(source_rows).issubset(review_rows):
+        raise StarterReleaseError("source, assets, and delegated review question sets differ")
+    expected_samples = source.get("releaseReviewSampleQuestionIds")
+    if (not isinstance(expected_samples, list) or not expected_samples
+            or len(expected_samples) != min(10, len(source_rows))
+            or any(question_id not in source_rows for question_id in expected_samples)):
+        raise StarterReleaseError("release sample is invalid")
+    for question_id in source_rows:
+        row, attestation = review_rows[question_id]
+        default_pixel_checks = attestation.get("pixelChecks") or {}
+        default_answer_checks = attestation.get("answerChecks") or {}
+        if row.get("pixelDecision") != "pass" or row.get("answerDecision") != "pass":
+            raise StarterReleaseError(f"{question_id}: source question did not pass delegated review")
+        if any((row.get("pixelChecks") or default_pixel_checks).get(key) is not True for key in (
+                "printedContentIntact", "allHandwritingRemoved", "noAnswerOrSolutionLeak",
+                "fullQuestionAndOptions", "figuresAndGreyLinesIntact", "chineseTextIntact",
+                "mathSymbolsAndFormulasIntact")):
+            raise StarterReleaseError(f"{question_id}: delegated pixel review is incomplete")
+        if any((row.get("answerChecks") or default_answer_checks).get(key) is not True for key in (
+                "questionAnswerIdentityVerified", "allSubpartsCovered", "answerLegible",
+                "noAdjacentAnswerConfusion", "figureConditionsHandled", "mathematicallyCorrect",
+                "printedOfficialAnswerPresent")):
+            raise StarterReleaseError(f"{question_id}: delegated answer review is incomplete")
+    performed_at = datetime.now().astimezone().isoformat()
+    approval_version = 1 if len(review_hashes) == 1 else 2
+    approval_hashes: str | list[str] = (
+        review_hashes[0] if len(review_hashes) == 1 else review_hashes)
+    signed = {
+        **source,
+        "releaseApprovedBy": approved_by,
+        "releaseApproval": {
+            "kind": "owner-delegated-agent-starter-private-release-signoff",
+            "version": approval_version,
+            "authorizedBy": approved_by,
+            "authorizedAt": review_delegations[0].get("authorizedAt"),
+            "authorizations": review_delegations,
+            "performedBy": reviewer, "performedAt": performed_at,
+            "humanPixelReviewClaimed": False,
+            "delegatedReviewSha256": approval_hashes,
+            "unsignedSourceSha256": sha256(source_file),
+            "assetManifestSha256": sha256(asset_manifest_file),
+            "sampleQuestionIds": expected_samples,
+        },
+    }
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(signed, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return {
+        "releaseId": source["releaseId"], "questions": len(source_rows),
+        "authorizedBy": approved_by, "performedBy": reviewer,
+        "signedOutput": str(output_file), "signedSha256": sha256(output_file),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -507,13 +669,21 @@ def main(argv: list[str] | None = None) -> int:
     final_parser.add_argument("--asset-manifest", required=True, type=Path)
     final_parser.add_argument("--signoff", required=True, type=Path)
     final_parser.add_argument("--output", required=True, type=Path)
+    delegated_parser = commands.add_parser("finalize-owner-delegated")
+    delegated_parser.add_argument("--source", required=True, type=Path)
+    delegated_parser.add_argument("--asset-manifest", required=True, type=Path)
+    delegated_parser.add_argument(
+        "--delegated-review", action="append", required=True, type=Path)
+    delegated_parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        result = (
-            prepare(args.dual_review, args.selection, args.pdf_root, args.output)
-            if args.command == "prepare"
-            else finalize(args.source, args.asset_manifest, args.signoff, args.output)
-        )
+        if args.command == "prepare":
+            result = prepare(args.dual_review, args.selection, args.pdf_root, args.output)
+        elif args.command == "finalize":
+            result = finalize(args.source, args.asset_manifest, args.signoff, args.output)
+        else:
+            result = finalize_owner_delegated(
+                args.source, args.asset_manifest, args.delegated_review, args.output)
     except (StarterReleaseError, OSError, ValueError, json.JSONDecodeError, fitz.FileDataError) as error:
         print(f"prepare-starter-private-release: {error}", file=sys.stderr)
         return 2

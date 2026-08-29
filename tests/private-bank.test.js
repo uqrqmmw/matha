@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, buildPrivateBank } = require('../scripts/build-private-bank');
+const { cleanText, canonicalTopic, normalizeQuestion, questionSignature, sanitizeBank, validateQuestion, verifiedFigureAsset, questionMissingVisualAsset, enrichQuestionMetadata, untrustedReviewSource, ownerDelegatedRelease, buildPrivateBank } = require('../scripts/build-private-bank');
 
 function q(id, text, extra) {
   return { id, topic: 'num', type: 'fill', diff: 1, q: text, ans: ['1'], sol: '解法', src: '測試', ...(extra || {}) };
@@ -88,6 +88,43 @@ test('只有新版來源清冊與三項人工校驗都齊全時才產生可發�
   assert.equal(pendingManifest.releaseChecks.noPendingVisuals, false);
   assert.equal(pendingManifest.releaseReady, false,
     '同批只要還有一題缺原卷裁圖，就不能把部分題目誤標成正式發布');
+});
+
+test('擁有者明確委託的代理像素審核必須透明記錄且完整 hash-bound', () => {
+  const delegatedReviewSha256 = 'a'.repeat(64);
+  const source = {
+    reviewPolicy:'owner-delegated-agent-direct-pixel-v1',
+    releaseApprovedBy:'uqrqmmw',
+    reviewAudit:{ directReviewSha256:[delegatedReviewSha256] },
+    releaseApproval:{
+      kind:'owner-delegated-agent-starter-private-release-signoff', version:1,
+      authorizedBy:'uqrqmmw', performedBy:'Codex direct-pixel audit',
+      humanPixelReviewClaimed:false, delegatedReviewSha256,
+      unsignedSourceSha256:'b'.repeat(64), assetManifestSha256:'c'.repeat(64),
+      sampleQuestionIds:['q-1'],
+    },
+  };
+  assert.equal(ownerDelegatedRelease(source, ''), true);
+  assert.equal(ownerDelegatedRelease({
+    ...source, releaseApproval:{ ...source.releaseApproval, humanPixelReviewClaimed:true },
+  }, ''), false, '代理審核不得冒充真人逐像素審核');
+  assert.equal(ownerDelegatedRelease(source, 'draft-markers-present'), false,
+    '上游仍有草稿信任問題時，擁有者委託不能繞過封鎖');
+
+  const secondHash = 'd'.repeat(64);
+  const combined = {
+    ...source,
+    reviewAudit:{ directReviewSha256:[delegatedReviewSha256, secondHash] },
+    releaseApproval:{
+      ...source.releaseApproval, version:2,
+      delegatedReviewSha256:[delegatedReviewSha256, secondHash],
+    },
+  };
+  assert.equal(ownerDelegatedRelease(combined, ''), true,
+    '多批次合併發布必須接受逐批 hash-bound 的 version 2 授權鏈');
+  assert.equal(ownerDelegatedRelease({
+    ...combined, reviewAudit:{ directReviewSha256:[secondHash, delegatedReviewSha256] },
+  }, ''), false, '逐批審核雜湊順序漂移時必須 fail closed');
 });
 
 test('掃描教材 apply-review envelope 只有附完整原卷題幹裁圖後才會進正式題包', (t) => {

@@ -110,6 +110,27 @@ class PrivateReleaseDeployTests(unittest.TestCase):
             "https://project.supabase.co", "matha-content", "releases/題.json"
         ))
 
+    def test_hash_wait_tolerates_stale_alias_reads(self):
+        reads = iter((b"old", b"old", b"new"))
+        pauses = deploy.time.sleep
+        deploy.time.sleep = lambda _seconds: None
+        try:
+            value = deploy.wait_for_hash(
+                lambda *_args: next(reads),
+                "https://project.supabase.co", "s" * 40,
+                "matha-content", "manifest.json", digest(b"new"), attempts=3,
+            )
+        finally:
+            deploy.time.sleep = pauses
+        self.assertEqual(value, b"new")
+
+    def test_vendor_gateway_statuses_are_retryable(self):
+        self.assertTrue(deploy.transient_http_status(544))
+        self.assertTrue(deploy.transient_http_status(529))
+        self.assertTrue(deploy.transient_http_status(503))
+        self.assertFalse(deploy.transient_http_status(401))
+        self.assertFalse(deploy.transient_http_status(404))
+
 
 if __name__ == "__main__":
     unittest.main()

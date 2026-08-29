@@ -115,6 +115,45 @@ test('舊 OCR manifest 即使可下載也因題庫世代不符而拒收', async 
   assert.match(run('curatedState.error'), /manifest 格式|題庫世代/);
 });
 
+test('擁有者委託代理審核的 manifest 只接受透明且 hash-bound 的授權鏈', () => {
+  const { run } = loadApp();
+  const delegatedReviewSha256 = 'a'.repeat(64);
+  const manifest = JSON.parse(trustedManifest({
+    reviewPolicy:'owner-delegated-agent-direct-pixel-v1',
+    releaseChecks:{ ...TRUSTED_MANIFEST_FIELDS.releaseChecks, releaseAuthorization:true },
+    releaseApprovedBy:'uqrqmmw',
+    releaseApproval:{
+      kind:'owner-delegated-agent-starter-private-release-signoff', version:1,
+      authorizedBy:'uqrqmmw', performedBy:'Codex direct-pixel audit',
+      humanPixelReviewClaimed:false, delegatedReviewSha256,
+      sampleQuestionIds:['q-1'],
+    },
+  }));
+  run('globalThis.__delegatedManifest = ' + JSON.stringify(manifest));
+  assert.equal(run('curatedManifestError(globalThis.__delegatedManifest)'), '');
+  run('globalThis.__delegatedManifest.releaseApproval.humanPixelReviewClaimed = true');
+  assert.match(run('curatedManifestError(globalThis.__delegatedManifest)'), /授權|稽核/);
+
+  const secondHash = 'b'.repeat(64);
+  const combined = JSON.parse(trustedManifest({
+    reviewPolicy:'owner-delegated-agent-direct-pixel-v1',
+    releaseChecks:{ ...TRUSTED_MANIFEST_FIELDS.releaseChecks, releaseAuthorization:true },
+    releaseApprovedBy:'uqrqmmw',
+    releaseApproval:{
+      kind:'owner-delegated-agent-starter-private-release-signoff', version:2,
+      authorizedBy:'uqrqmmw', performedBy:'Codex direct-pixel audit',
+      humanPixelReviewClaimed:false,
+      delegatedReviewSha256:[delegatedReviewSha256, secondHash],
+      sampleQuestionIds:['q-1','q-2'],
+    },
+  }));
+  run('globalThis.__combinedDelegatedManifest = ' + JSON.stringify(combined));
+  assert.equal(run('curatedManifestError(globalThis.__combinedDelegatedManifest)'), '');
+  run('globalThis.__combinedDelegatedManifest.releaseApproval.delegatedReviewSha256.reverse()');
+  assert.equal(run('curatedManifestError(globalThis.__combinedDelegatedManifest)'), '',
+    '客戶端只驗授權 envelope；逐批順序由建置端 reviewAudit 鎖定');
+});
+
 test('隔離舊官方快取時保留使用者自建題包', async () => {
   const { run } = loadApp();
   const result = await run(`(async () => {

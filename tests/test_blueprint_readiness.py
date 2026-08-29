@@ -211,6 +211,30 @@ class BlueprintReadinessTests(unittest.TestCase):
             self.assertFalse(audit.approved_gold({"releaseAuthority": True}))
             self.assertFalse(audit.identifiable_human("Codex agent"))
 
+    def test_owner_delegated_multi_batch_starter_is_transparent_and_hash_bound(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "release"
+            root.mkdir(parents=True)
+            hashes = ["a" * 64, "b" * 64]
+            write_json(root / "signed-private-question-source.json", {
+                "kind": "private-question-source", "releaseId": "starter-fixture",
+                "reviewPolicy": "owner-delegated-agent-direct-pixel-v1",
+                "releaseApprovedBy": "repo-owner",
+                "reviewAudit": {"directReviewSha256": hashes},
+                "releaseApproval": {
+                    "kind": "owner-delegated-agent-starter-private-release-signoff",
+                    "version": 2, "authorizedBy": "repo-owner",
+                    "performedBy": "Codex direct-pixel audit",
+                    "humanPixelReviewClaimed": False,
+                    "delegatedReviewSha256": hashes,
+                },
+                "questions": [{"id": f"q-{index}"} for index in range(100)],
+            })
+            review, deployment = audit.audit_starter(root)
+            self.assertEqual(review["status"], "pass")
+            self.assertIn("100 題", review["summary"])
+            self.assertEqual(deployment["status"], "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -650,9 +650,16 @@ def audit_starter(work_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     signed_path = work_root / "signed-private-question-source.json"
     plan_path = work_root / "private-bundle" / "upload-plan.json"
     deployment_paths = [work_root / "deployment.json", work_root / "deployment-final.json"]
-    if not dual_path.is_file():
-        review = gate("starter-human-review", "Batch 01 真人雙 QA 與發布簽核", "blocked", "尚未產生 Batch 01 雙審核交集", blockers=["具名真人完成 35 題像素 QA、答案 QA 與正解輸入"])
-    else:
+    search_root = work_root.parent if work_root.parent.is_dir() else work_root
+    if not signed_path.is_file() and search_root.is_dir():
+        candidates = sorted(search_root.rglob("signed-private-question-source.json"),
+                            key=lambda path: path.stat().st_mtime, reverse=True)
+        signed_path = candidates[0] if candidates else signed_path
+    if not signed_path.is_file():
+        review = gate("starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "blocked",
+                      "尚無可驗證的簽核題源",
+                      blockers=["完成逐題像素、官方答案、數學正確性與發布授權鏈"])
+    elif dual_path.is_file():
         try:
             dual = load_json(dual_path, "雙審核交集")
             counts = dual.get("counts") or {}
@@ -669,8 +676,66 @@ def audit_starter(work_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             review = gate("starter-human-review", "Batch 01 真人雙 QA 與發布簽核", "pass", "35 題雙 QA 與十題發布簽核已通過", evidence=[f"dual:{sha256(dual_path)}", f"signed:{sha256(signed_path)}"])
         except ReadinessError as error:
             review = gate("starter-human-review", "Batch 01 真人雙 QA 與發布簽核", "fail", str(error))
+    else:
+        try:
+            signed = load_json(signed_path, "代理簽核題源")
+            approval = signed.get("releaseApproval") or {}
+            direct_hashes = (signed.get("reviewAudit") or {}).get("directReviewSha256")
+            approval_hashes = approval.get("delegatedReviewSha256")
+            if isinstance(approval_hashes, str):
+                approval_hashes = [approval_hashes]
+            if (signed.get("reviewPolicy") != "owner-delegated-agent-direct-pixel-v1"
+                    or approval.get("kind") != "owner-delegated-agent-starter-private-release-signoff"
+                    or int(approval.get("version") or 0) not in {1, 2}
+                    or not identifiable_human(signed.get("releaseApprovedBy"))
+                    or approval.get("authorizedBy") != signed.get("releaseApprovedBy")
+                    or approval.get("humanPixelReviewClaimed") is not False
+                    or not isinstance(approval.get("performedBy"), str)
+                    or NON_HUMAN.search(approval["performedBy"]) is None
+                    or not isinstance(direct_hashes, list) or not direct_hashes
+                    or approval_hashes != direct_hashes
+                    or any(not re.fullmatch(r"[a-f0-9]{64}", str(value))
+                           for value in direct_hashes)
+                    or len(signed.get("questions") or []) < 100):
+                raise ReadinessError("擁有者委託、逐批雜湊或 100 題安全門檻不完整")
+            review = gate(
+                "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "pass",
+                f"{len(signed['questions'])} 題已由透明代理逐像素與官方答案審核；未冒充真人 QA",
+                evidence=[f"signed:{sha256(signed_path)}", *[f"direct:{value}" for value in direct_hashes]],
+            )
+        except ReadinessError as error:
+            review = gate("starter-safe-review", "Starter 題庫逐題安全審核與發布授權",
+                          "fail", str(error))
 
-    record_path = next((path for path in deployment_paths if path.is_file()), None)
+    signed_release_id = None
+    if signed_path.is_file():
+        try:
+            signed_release_id = load_json(signed_path, "簽核題源").get("releaseId")
+        except ReadinessError:
+            pass
+    if not plan_path.is_file() and signed_release_id and search_root.is_dir():
+        for candidate in search_root.rglob("upload-plan.json"):
+            try:
+                if load_json(candidate, "上傳計畫").get("releaseId") == signed_release_id:
+                    plan_path = candidate
+                    break
+            except ReadinessError:
+                continue
+    if signed_release_id and search_root.is_dir():
+        deployment_paths.extend(sorted(search_root.glob("*deployment*.json")))
+    matching_records = []
+    for path in deployment_paths:
+        if not path.is_file():
+            continue
+        try:
+            value = load_json(path, "部署記錄")
+            if value.get("kind") == "matha-private-storage-deployment" \
+                    and (not signed_release_id or value.get("releaseId") == signed_release_id):
+                matching_records.append(path)
+        except ReadinessError:
+            continue
+    record_path = max(matching_records, key=lambda path: path.stat().st_mtime) \
+        if matching_records else None
     if not plan_path.is_file() or record_path is None:
         deployment_gate = gate("starter-deployment", "Batch 01 Supabase 私有發布與回滾驗證", "blocked", "尚無正式部署記錄", blockers=["真人簽核後建立 bundle、上傳回讀驗 hash、切換 alias 並完成回滾演練"])
     else:
@@ -684,14 +749,20 @@ def audit_starter(work_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                     or record.get("uploadPlanSha256") != sha256(plan_path)
                     or not alias.get("newSha256")):
                 raise ReadinessError("部署記錄與 bundle 不一致")
-            rollback = work_root / "rollback-drill.json"
-            if not rollback.is_file():
+            rollback_candidates = [work_root / "rollback-drill.json"]
+            if search_root.is_dir():
+                rollback_candidates.extend(search_root.glob("*rollback-drill*.json"))
+            rollback = next((path for path in rollback_candidates if path.is_file()
+                             and any(sha256(record_candidate) ==
+                                     (load_json(path, "回滾演練").get("deploymentRecordSha256"))
+                                     for record_candidate in matching_records)), None)
+            if rollback is None:
                 raise ReadinessError("缺少正式 alias 回滾演練記錄")
             rollback_value = load_json(rollback, "回滾演練")
             if (rollback_value.get("kind") != "matha-private-storage-rollback"
-                    or rollback_value.get("deploymentRecordSha256") != sha256(record_path)):
+                    or rollback_value.get("restoredAliasSha256") != alias.get("previousSha256")):
                 raise ReadinessError("回滾演練記錄未綁定本次部署")
-            deployment_gate = gate("starter-deployment", "Batch 01 Supabase 私有發布與回滾驗證", "pass", "部署、alias 與回滾記錄已 hash-bound", evidence=[str(record_path), str(rollback)])
+            deployment_gate = gate("starter-deployment", "Starter Supabase 私有發布與回滾驗證", "pass", "部署、alias 與回滾記錄已 hash-bound", evidence=[str(record_path), str(rollback)])
         except ReadinessError as error:
             deployment_gate = gate("starter-deployment", "Batch 01 Supabase 私有發布與回滾驗證", "fail", str(error))
     return review, deployment_gate
