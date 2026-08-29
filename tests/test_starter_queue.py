@@ -112,6 +112,45 @@ class StarterQueueTests(unittest.TestCase):
                 ]},
             })
 
+    def test_large_queue_scales_role_mix_instead_of_filling_with_examples(self):
+        self.assertEqual(starter.role_targets(26), {
+            "example": 8,
+            "chapter-end-easy": 5,
+            "chapter-end-medium": 9,
+            "chapter-end-hard": 4,
+        })
+        rows = []
+        for book in ("book-a", "book-b"):
+            for role in starter.ROLES:
+                for index in range(12):
+                    rows.append({
+                        "id": f"{book}-{role}-{index}",
+                        "bookId": book,
+                        "pdfPage": index + 1,
+                        "role": role,
+                        "figureCount": index % 2,
+                    })
+        selected = starter.select_topic(rows, 26)
+        roles = {role: sum(row["role"] == role for row in selected)
+                 for role in starter.ROLES}
+        books = {book: sum(row["bookId"] == book for row in selected)
+                 for book in ("book-a", "book-b")}
+        self.assertEqual(roles, starter.role_targets(26))
+        self.assertEqual(books, {"book-a": 13, "book-b": 13})
+
+    def test_original_pdf_verified_cross_topic_boundaries_are_high_confidence(self):
+        topic_map = json.loads(starter.DEFAULT_TOPIC_MAP.read_text("utf-8"))
+        linear = topic_map["books"]["matha-114-linear-transform"]
+        cramer = topic_map["books"]["matha-114-cramer-circle"]
+        self.assertEqual([(row["fromPdfPage"], row["toPdfPage"], row["topic"])
+                          for row in linear], [(1, 118, "mat"), (119, 238, "splane")])
+        self.assertEqual([(row["fromPdfPage"], row["toPdfPage"], row["topic"])
+                          for row in cramer], [(1, 86, "line"), (87, 146, "mat"),
+                                               (147, 304, "line")])
+        self.assertTrue(all(row["confidence"] == "high" for row in linear + cramer))
+        self.assertTrue(all(str(row["evidence"]).startswith("verified-original-pdf-")
+                            for row in linear + cramer))
+
     def test_build_balances_all_topics_and_keeps_review_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

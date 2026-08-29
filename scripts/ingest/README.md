@@ -252,6 +252,17 @@ python scripts/ingest/prepare-cleaned-answer-review.py \
 
 每題都會重新核對 catalog PDF 雜湊、book/page/question 關係、原題 crop 像素、清理題雜湊、答案所在 PDF 頁與 answer crop 像素；不以 OCR 文字填答案。缺官方答案或像素不符的題會明確隔離。輸出工作包並排顯示清理題與原書答案，要求真人核對題號、所有小題、圖形條件與數學正確性。這關完成後仍為 `releaseAuthority:false`，必須再與去筆跡人工像素審核交集才有晉級資格。
 
+批次工作包全部產出後，用 `validate-starter-review-packets.py` 逐題重算兩套工作包的 copied pixels 與 manifest hash：
+
+```bash
+python scripts/ingest/validate-starter-review-packets.py \
+  --queue-root "<repo 外>/matha-starter-queue-v4-20260829" \
+  --packets-root "<repo 外>/數學檔案" \
+  --series matha-starter-v4 --date 20260829
+```
+
+驗證器要求每批題號完整且唯一，原題／清理題／移除區／官方答案像素與 template 雜湊完全相符，答案題號集合不可缺漏或多出，所有產物都必須維持 `releaseAuthority:false`。它只證明工作包沒有錯綁或漂移，不會把尚未真人看過的題標成通過。
+
 ### 5c. `intersect-cleaned-human-reviews.py` — 雙真人審核交集（仍不發布）
 
 兩份工作包都由可辨識真人逐題完成並下載 JSON 後，才能執行：

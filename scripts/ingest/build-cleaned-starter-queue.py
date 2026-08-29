@@ -4,7 +4,7 @@
 The command never publishes questions. It intersects the hash-bound YesScanner
 candidate manifest with the independently bound official-answer packet, maps
 topics from book/page evidence (never OCR chapter text), selects a balanced
-140-question starter candidate set, and splits it into small human-QA batches.
+starter candidate set, and splits it into small human-QA batches.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TOPIC_MAP = Path(__file__).with_name("math-a-topic-map.json")
 ROLES = ("example", "chapter-end-easy", "chapter-end-medium", "chapter-end-hard")
-ROLE_TARGETS = {"example": 3, "chapter-end-easy": 2,
-                "chapter-end-medium": 3, "chapter-end-hard": 2}
+ROLE_WEIGHTS = {"example": 0.30, "chapter-end-easy": 0.20,
+                "chapter-end-medium": 0.35, "chapter-end-hard": 0.15}
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 APP_TOPICS = {
     "num", "poly", "exp", "seq", "trig1", "trig2", "line",
@@ -135,11 +135,61 @@ def balanced_take(rows: list[dict[str, Any]], count: int) -> list[dict[str, Any]
     return selected
 
 
+def role_targets(count: int) -> dict[str, int]:
+    """Scale the 3/2/3.5/1.5 mix without making larger queues example-heavy."""
+    raw = {role: count * ROLE_WEIGHTS[role] for role in ROLES}
+    targets = {role: int(raw[role]) for role in ROLES}
+    remaining = count - sum(targets.values())
+    order = sorted(ROLES, key=lambda role: (-(raw[role] - targets[role]), ROLES.index(role)))
+    for role in order[:remaining]:
+        targets[role] += 1
+    return targets
+
+
+def rebalance_books(selected: list[dict[str, Any]], rows: list[dict[str, Any]],
+                    count: int) -> list[dict[str, Any]]:
+    """Keep one book at <=50% when the available pool can actually support it."""
+    available = Counter(row["bookId"] for row in rows)
+    if len(available) < 2:
+        return selected
+    cap = (count + 1) // 2
+    used = {row["id"] for row in selected}
+    output = list(selected)
+    while True:
+        counts = Counter(row["bookId"] for row in output)
+        dominant, amount = counts.most_common(1)[0]
+        if amount <= cap:
+            break
+        replacements = [row for row in rows if row["id"] not in used and row["bookId"] != dominant]
+        if not replacements:
+            break
+        swapped = False
+        for victim_index in reversed(range(len(output))):
+            victim = output[victim_index]
+            if victim["bookId"] != dominant:
+                continue
+            replacements.sort(key=lambda row: (
+                row["role"] != victim["role"],
+                row["figureCount"] == 0,
+                counts[row["bookId"]], row["bookId"], row["pdfPage"], row["id"],
+            ))
+            replacement = replacements[0]
+            used.remove(victim["id"])
+            used.add(replacement["id"])
+            output[victim_index] = replacement
+            swapped = True
+            break
+        if not swapped:
+            break
+    return output
+
+
 def select_topic(rows: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     used: set[str] = set()
+    targets = role_targets(count)
     for role in ROLES:
-        take = min(ROLE_TARGETS[role], count - len(selected))
+        take = min(targets[role], count - len(selected))
         choices = [row for row in rows if row["role"] == role and row["id"] not in used]
         picked = balanced_take(choices, take)
         selected.extend(picked)
@@ -148,10 +198,11 @@ def select_topic(rows: list[dict[str, Any]], count: int) -> list[dict[str, Any]]
         remaining = [row for row in rows if row["id"] not in used]
         remaining.sort(key=lambda row: (
             row["figureCount"] == 0,
-            ROLES.index(row["role"]), row["bookId"], row["pdfPage"], row["id"],
+            ("chapter-end-medium", "chapter-end-hard", "example", "chapter-end-easy").index(row["role"]),
+            row["bookId"], row["pdfPage"], row["id"],
         ))
         selected.extend(remaining[:count - len(selected)])
-    return selected
+    return rebalance_books(selected, rows, count)
 
 
 def interleave(selected: dict[str, list[dict[str, Any]]], topics: list[str]) -> list[dict[str, Any]]:
@@ -181,6 +232,48 @@ def matrix_rows(rows: list[dict[str, Any]], topics: list[str]) -> list[dict[str,
             "highConfidenceRoles": {role: high_roles[role] for role in ROLES},
             "books": sorted({row["bookId"] for row in subset}),
             "highConfidenceBooks": sorted({row["bookId"] for row in high}),
+        })
+    return result
+
+
+def selection_rows(selection_by_topic: dict[str, list[dict[str, Any]]],
+                   joined: list[dict[str, Any]], topics: list[str],
+                   count: int) -> list[dict[str, Any]]:
+    result = []
+    targets = role_targets(count)
+    for topic in topics:
+        rows = selection_by_topic[topic]
+        pool = [row for row in joined
+                if row["topic"] == topic and row["topicConfidence"] == "high"]
+        roles = Counter(row["role"] for row in rows)
+        books = Counter(row["bookId"] for row in rows)
+        pool_books = Counter(row["bookId"] for row in pool)
+        dominant, max_book = books.most_common(1)[0]
+        outside_capacity = len(pool) - pool_books[dominant]
+        cap = (count + 1) // 2
+        if max_book > cap and outside_capacity >= count - cap:
+            raise StarterQueueError(
+                f"Topic {topic} could satisfy the book cap but selection did not")
+        shortfalls = {role: targets[role] - roles[role] for role in ROLES
+                      if roles[role] < targets[role]}
+        source_segments = sorted({
+            f'{row["bookId"]}:{row["topicEvidence"]}' for row in pool
+        })
+        result.append({
+            "topic": topic,
+            "selected": len(rows),
+            "withFigure": sum(row["figureCount"] > 0 for row in rows),
+            "roles": {role: roles[role] for role in ROLES},
+            "roleTargets": dict(targets),
+            "roleShortfalls": shortfalls,
+            "selectedBooks": dict(sorted(books.items())),
+            "availableHighConfidenceBooks": dict(sorted(pool_books.items())),
+            "maxBook": dominant,
+            "maxBookCount": max_book,
+            "maxBookShare": round(max_book / len(rows), 6),
+            "bookCapStatus": "met" if max_book <= cap else "blocked-by-source-capacity",
+            "sourceSegments": source_segments,
+            "sourceSegmentStatus": "met" if len(source_segments) >= 3 else "blocked-by-source-inventory",
         })
     return result
 
@@ -288,6 +381,7 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
             raise StarterQueueError(f"Topic {topic} has only {len(selected)}/{per_topic} safe candidates")
         selection_by_topic[topic] = selected
     selected = interleave(selection_by_topic, topic_order)
+    selected_topics = selection_rows(selection_by_topic, joined, topic_order, per_topic)
     # Revalidate only the selected assets; the full 1,919-item packets already
     # have their own complete hash audit and are not republished here.
     for row in selected:
@@ -312,6 +406,7 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "mappedStarterRoles": len(joined),
         "excluded": dict(sorted(excluded.items())),
         "topics": matrix_rows(joined, topic_order),
+        "selectedTopics": selected_topics,
     }
     (output / "coverage-matrix.json").write_text(
         json.dumps(matrix, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -327,6 +422,7 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "exclusionsSha256": exclusions_hash,
         "explicitExclusions": len(excluded_ids),
         "perTopic": per_topic, "selected": len(selected),
+        "topicSummary": selected_topics,
         "items": selected,
     }
     (output / "starter-review-selection.json").write_text(
@@ -362,6 +458,26 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
             f"{roles['chapter-end-easy']} | {roles['chapter-end-medium']} | "
             f"{roles['chapter-end-hard']} |"
         )
+    lines += ["", "## 本輪實際選取", "",
+              "| 單元 | 題數 | 有圖 | 例題 | 簡單 | 中等 | 困難 | 來源書 | 單書最高 |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for row in selected_topics:
+        roles = row["roles"]
+        lines.append(
+            f"| {topics[row['topic']]} | {row['selected']} | {row['withFigure']} | "
+            f"{roles['example']} | {roles['chapter-end-easy']} | "
+            f"{roles['chapter-end-medium']} | {roles['chapter-end-hard']} | "
+            f"{len(row['selectedBooks'])} | {row['maxBookCount']} ({row['maxBookShare']:.0%}) |"
+        )
+    role_blockers = [row for row in selected_topics if row["roleShortfalls"]]
+    source_blockers = [row for row in selected_topics if row["sourceSegmentStatus"] != "met"]
+    lines += ["", "## 明列阻塞", ""]
+    lines.append("- 難度／角色素材不足：" + (
+        "；".join(f"{topics[row['topic']]}={row['roleShortfalls']}" for row in role_blockers)
+        if role_blockers else "無"))
+    lines.append("- 少於 3 個高信心來源區段：" + (
+        "、".join(topics[row["topic"]] for row in source_blockers)
+        if source_blockers else "無"))
     lines += ["", "## 人工 QA 批次", ""]
     lines.extend(f"- Batch {row['batch']:02d}: {row['questions']} 題；14 單元交錯" for row in batches)
     lines += ["", "OCR 章名不參與單元真值；正式發布時仍須逐題確認單元、題面與答案。", ""]
@@ -374,6 +490,8 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "perTopic": per_topic,
         "withFigure": sum(row["figureCount"] > 0 for row in selected),
         "roles": dict(Counter(row["role"] for row in selected)),
+        "roleShortfallTopics": [row["topic"] for row in role_blockers],
+        "sourceDiversityBlockedTopics": [row["topic"] for row in source_blockers],
         "explicitExclusions": len(excluded_ids),
         "exclusionsSha256": exclusions_hash,
         "batches": batches,

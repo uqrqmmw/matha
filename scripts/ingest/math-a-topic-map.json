@@ -30,8 +30,8 @@
     "matha-114-classical-probability": [{"fromPdfPage": 1, "toPdfPage": 212, "topic": "prob", "confidence": "high", "evidence": "single-topic-book-title"}],
     "matha-114-plane-vector": [{"fromPdfPage": 1, "toPdfPage": 314, "topic": "vec", "confidence": "high", "evidence": "single-topic-book-title"}],
     "matha-114-linear-transform": [
-      {"fromPdfPage": 1, "toPdfPage": 118, "topic": "mat", "confidence": "provisional", "evidence": "structural-section-boundary"},
-      {"fromPdfPage": 119, "toPdfPage": 238, "topic": "splane", "confidence": "provisional", "evidence": "structural-section-boundary"}
+      {"fromPdfPage": 1, "toPdfPage": 118, "topic": "mat", "confidence": "high", "evidence": "verified-original-pdf-title-p003-and-boundary-p119-20260829"},
+      {"fromPdfPage": 119, "toPdfPage": 238, "topic": "splane", "confidence": "high", "evidence": "verified-original-pdf-section-title-p119-20260829"}
     ],
     "matha-114-sine-cosine-law": [
       {"fromPdfPage": 1, "toPdfPage": 172, "topic": "trig1", "confidence": "provisional", "evidence": "structural-section-boundary"},
@@ -39,9 +39,9 @@
     ],
     "matha-114-polynomial-quadratic": [{"fromPdfPage": 1, "toPdfPage": 246, "topic": "poly", "confidence": "high", "evidence": "single-topic-book-title"}],
     "matha-114-cramer-circle": [
-      {"fromPdfPage": 1, "toPdfPage": 86, "topic": "line", "confidence": "provisional", "evidence": "structural-section-boundary"},
-      {"fromPdfPage": 87, "toPdfPage": 146, "topic": "mat", "confidence": "provisional", "evidence": "structural-section-boundary"},
-      {"fromPdfPage": 147, "toPdfPage": 304, "topic": "line", "confidence": "provisional", "evidence": "structural-section-boundary"}
+      {"fromPdfPage": 1, "toPdfPage": 86, "topic": "line", "confidence": "high", "evidence": "verified-original-pdf-title-p003-and-boundary-p087-20260829"},
+      {"fromPdfPage": 87, "toPdfPage": 146, "topic": "mat", "confidence": "high", "evidence": "verified-original-pdf-section-title-p087-and-boundary-p147-20260829"},
+      {"fromPdfPage": 147, "toPdfPage": 304, "topic": "line", "confidence": "high", "evidence": "verified-original-pdf-section-title-p147-20260829"}
     ],
     "matha-114-line-inequality": [{"fromPdfPage": 1, "toPdfPage": 206, "topic": "line", "confidence": "high", "evidence": "single-topic-book-title"}],
     "matha-114-space-plane-line": [{"fromPdfPage": 1, "toPdfPage": 292, "topic": "splane", "confidence": "high", "evidence": "single-topic-book-title"}],
