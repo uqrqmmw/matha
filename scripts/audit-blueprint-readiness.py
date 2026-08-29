@@ -14,7 +14,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -154,12 +154,13 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
         "officialPages": 40,
         "remoteHashMismatches": 0,
         "answerKeyPapersBehindPostSubmitGate": 6,
-        "edgeFunctionVersion": 31,
         "freshnessStillRequiresUserConfirmation": True,
     }
     for key, expected in expected_values.items():
         if row.get(key) != expected:
             raise ReadinessError(f"私有 App 整合證據不符：{key}")
+    if int(row.get("edgeFunctionVersion") or 0) < 31:
+        raise ReadinessError("私有 App Edge Function 版本尚未包含正式卷安全閘門")
 
     paths = {
         "assets": resolve_private_hint(str(row.get("assetManifestPathHint") or ""), private_root),
@@ -242,7 +243,7 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
         f"officialAppAssets:{hashes['assets']}:40",
         f"officialVisualReview:{hashes['visual']}:40",
         f"officialStorageReadback:{hashes['storage']}:40:mismatch=0",
-        f"officialAppVersion:{expected_version}:edge=31:serverKeys=6",
+        f"officialAppVersion:{expected_version}:edge={row['edgeFunctionVersion']}:serverKeys=6",
     ]
 
 
@@ -373,7 +374,7 @@ def audit_device(roots: list[Path], selected_paper: str,
         return gate(
             "galaxy-tab", "Galaxy Tab 100 分鐘真機驗收", "blocked",
             "尚無真機驗收匯出檔",
-            blockers=["在 Galaxy Tab S10 Ultra 完成第三回、滑動翻頁、恢復、交卷與 PDF 後匯出 JSON"],
+            blockers=["在 Galaxy Tab S10 Ultra 完成第三回、滑動翻頁、恢復、交卷與 PDF 後按『同步並匯出驗收檔』"],
         )
     errors = []
     version = current_app_version()
@@ -553,7 +554,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     gates.extend([review, deployment_gate])
     return {
         "kind": "matha-system-blueprint-readiness-v1",
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "generatedAt": datetime.now(timezone(timedelta(hours=8))).isoformat(),
         "appVersion": current_app_version(),
         "complete": all(row["status"] == "pass" for row in gates),
         "counts": {

@@ -26,6 +26,7 @@ import {
   outputText,
   paperDetailGateAllows,
   paperKeyGateAllows,
+  paperRuntimeAuditEvidence,
   paperSolutionFiles,
   paperSolutionGateAllows,
   parsePaperAnswerKeys,
@@ -231,6 +232,103 @@ Deno.test("paper_key 只接受伺服器已保存的同一回 grading 交卷", ()
       "paper-mock-3",
     ),
   );
+});
+
+Deno.test("真機驗收封存只接受雲端狀態中的完整 100 分鐘、恢復、滑動、保存與 PDF 證據", () => {
+  const runId = "paper-run-1234567890123";
+  const run = {
+    id: runId,
+    sourceId: "paper-mock-3",
+    status: "awaiting-correction",
+    d: "2026-08-29",
+    calibrationEligible: true,
+    freshnessConfirmedAt: 123,
+    runtimeAudit: {
+      schema: 1,
+      appVersion: "0829q",
+      runId,
+      sourceId: "paper-mock-3",
+      createdAt: 1,
+      startedAt: 2,
+      submittedAt: 3,
+      activeElapsedMs: 6_000_000,
+      sessions: 2,
+      crashRecoveries: 0,
+      strokesCommitted: 20,
+      pageSwitches: [
+        { at: 1, from: 0, to: 1, method: "swipe", ms: 120 },
+        { at: 2, from: 1, to: 2, method: "button", ms: 180 },
+        { at: 3, from: 2, to: 3, method: "button", ms: 220 },
+      ],
+      localSaveMs: [120, 180],
+      localSaveFailures: 0,
+      pendingAtSubmit: 0,
+      maxSingleCanvasPixels: 10_000_000,
+      maxLiveCanvasCount: 3,
+      pdfPreparedAt: 4,
+      device: {
+        userAgent: "Mozilla/5.0 (Linux; Android 14)",
+        platform: "Linux armv8l",
+        screenWidth: 1315,
+        screenHeight: 821,
+        dpr: 2,
+      },
+      deviceAttestation: {
+        confirmed: true,
+        model: "Samsung Galaxy Tab S10 Ultra",
+        source: "user-confirmation",
+        confirmedAt: "2026-08-29T04:00:00.000Z",
+        browserReportedModel: "SM-X920",
+      },
+    },
+  };
+  const evidence = paperRuntimeAuditEvidence({ paperRuns: [run] }, runId);
+  assert(evidence);
+  assertEquals(evidence.summary.passed, true);
+  assertEquals(evidence.run.sourceId, "paper-mock-3");
+  assertEquals(evidence.audit.pageSwitches.length, 3);
+  assertEquals("unrelatedPrivateState" in evidence, false);
+
+  const rejectedMutations: Array<[string, (value: typeof run) => void]> = [
+    [
+      "未滿 100 分鐘",
+      (value) => value.runtimeAudit.activeElapsedMs = 5_998_999,
+    ],
+    ["沒有實際筆畫", (value) => value.runtimeAudit.strokesCommitted = 0],
+    ["沒有滑動翻頁", (value) => {
+      value.runtimeAudit.pageSwitches[0].method = "button";
+    }],
+    ["翻頁 P95 過慢", (value) => value.runtimeAudit.pageSwitches[2].ms = 800],
+    ["本機保存過慢", (value) => value.runtimeAudit.localSaveMs[1] = 2_001],
+    ["本機保存失敗", (value) => value.runtimeAudit.localSaveFailures = 1],
+    ["交卷仍有待保存", (value) => value.runtimeAudit.pendingAtSubmit = 1],
+    ["Canvas 過大", (value) => {
+      value.runtimeAudit.maxSingleCanvasPixels = 12_000_001;
+    }],
+    ["同時 Canvas 過多", (value) => value.runtimeAudit.maxLiveCanvasCount = 4],
+    ["沒有恢復", (value) => value.runtimeAudit.sessions = 1],
+    ["沒有 PDF", (value) => value.runtimeAudit.pdfPreparedAt = 0],
+    ["不是校準 run", (value) => value.calibrationEligible = false],
+    ["未交卷", (value) => value.status = "active"],
+    [
+      "不是 Android",
+      (value) => value.runtimeAudit.device.userAgent = "Windows",
+    ],
+    ["型號不符", (value) => {
+      value.runtimeAudit.deviceAttestation.browserReportedModel = "SM-T000";
+    }],
+    ["不是本人確認", (value) => {
+      value.runtimeAudit.deviceAttestation.source = "agent-claim";
+    }],
+  ];
+  for (const [label, mutate] of rejectedMutations) {
+    const candidate = structuredClone(run);
+    mutate(candidate);
+    assert(
+      paperRuntimeAuditEvidence({ paperRuns: [candidate] }, runId) === null,
+      label,
+    );
+  }
 });
 
 Deno.test("paper_solution 只接受同一來源且已完成隔日重想的題", () => {

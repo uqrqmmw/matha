@@ -558,6 +558,196 @@ export function paperKeyGateAllows(
     Number.isFinite(Number(run.submittedAt)) && Number(run.submittedAt) > 0;
 }
 
+function finiteNumbers(value: unknown, limit: number) {
+  return (Array.isArray(value) ? value : []).slice(-limit).map(Number).filter(
+    Number.isFinite,
+  );
+}
+
+function percentile(values: number[], ratio: number) {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  return sorted[
+    Math.max(
+      0,
+      Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1),
+    )
+  ];
+}
+
+/* 真機驗收封存只信任 Edge Function 以 service role 重新讀回的 app_state。
+   不接受前端直接上傳一份自稱合格的 JSON，也完全不呼叫 OpenAI。 */
+export function paperRuntimeAuditEvidence(
+  data: Record<string, unknown> | undefined,
+  runId: string,
+) {
+  if (!/^paper-run-\d{10,20}$/.test(runId)) return null;
+  const rawRuns = data?.paperRuns;
+  const runs: unknown[] = Array.isArray(rawRuns) ? rawRuns : [];
+  const run = runs.find((item) =>
+    item && typeof item === "object" &&
+    String((item as Record<string, unknown>).id || "") === runId
+  ) as Record<string, unknown> | undefined;
+  if (!run) return null;
+  const sourceId = String(run.sourceId || "");
+  if (!/^paper-(?:mock-3|official-11[1-5])$/.test(sourceId)) return null;
+  if (
+    !["awaiting-correction", "completed"].includes(String(run.status || ""))
+  ) {
+    return null;
+  }
+  if (
+    run.calibrationEligible !== true || Number(run.freshnessConfirmedAt) <= 0
+  ) {
+    return null;
+  }
+  const audit = run.runtimeAudit && typeof run.runtimeAudit === "object"
+    ? run.runtimeAudit as Record<string, unknown>
+    : undefined;
+  if (
+    !audit || Number(audit.schema) !== 1 ||
+    String(audit.runId || "") !== runId ||
+    String(audit.sourceId || "") !== sourceId ||
+    !/^\d{4}[a-z]$/.test(String(audit.appVersion || ""))
+  ) return null;
+  const attestation = audit.deviceAttestation &&
+      typeof audit.deviceAttestation === "object"
+    ? audit.deviceAttestation as Record<string, unknown>
+    : {};
+  const device = audit.device && typeof audit.device === "object"
+    ? audit.device as Record<string, unknown>
+    : {};
+  const reportedModel = String(attestation.browserReportedModel || "");
+  const userAgent = String(device.userAgent || "");
+  const width = Number(device.screenWidth) || 0;
+  const height = Number(device.screenHeight) || 0;
+  if (
+    attestation.confirmed !== true ||
+    attestation.model !== "Samsung Galaxy Tab S10 Ultra" ||
+    attestation.source !== "user-confirmation" ||
+    !String(attestation.confirmedAt || "") ||
+    !userAgent.includes("Android") ||
+    (reportedModel
+      ? !/SM-X9/i.test(reportedModel)
+      : maxDimension(width, height) < 1100 || minDimension(width, height) < 700)
+  ) return null;
+
+  const rawSwitches =
+    (Array.isArray(audit.pageSwitches) ? audit.pageSwitches : []).slice(-240);
+  const pageSwitches = rawSwitches.map((item) => {
+    const row = item && typeof item === "object"
+      ? item as Record<string, unknown>
+      : {};
+    return {
+      at: Number(row.at) || 0,
+      from: Number(row.from) || 0,
+      to: Number(row.to) || 0,
+      method: String(row.method || "").slice(0, 20),
+      ms: Number(row.ms),
+    };
+  }).filter((row) => Number.isFinite(row.ms) && row.ms >= 0);
+  const saveMs = finiteNumbers(audit.localSaveMs, 240).filter((value) =>
+    value >= 0
+  );
+  const requiredSwitches = sourceId === "paper-mock-3" ? 3 : 7;
+  const pageP95Ms = percentile(pageSwitches.map((row) => row.ms), 0.95);
+  const localSaveP95Ms = percentile(saveMs, 0.95);
+  const checks = [
+    {
+      id: "duration",
+      status: Number(audit.activeElapsedMs) >= 5_999_000 ? "pass" : "fail",
+    },
+    {
+      id: "page",
+      status: pageSwitches.length >= requiredSwitches && pageP95Ms != null &&
+          pageP95Ms <= 500 && pageSwitches.some((row) => row.method === "swipe")
+        ? "pass"
+        : "fail",
+    },
+    {
+      id: "save",
+      status: saveMs.length > 0 && Math.max(...saveMs) <= 2000 &&
+          Number(audit.localSaveFailures) === 0
+        ? "pass"
+        : "fail",
+    },
+    {
+      id: "canvas",
+      status: Number(audit.maxSingleCanvasPixels) > 0 &&
+          Number(audit.maxSingleCanvasPixels) <= 12_000_000 &&
+          Number(audit.maxLiveCanvasCount) <= 3
+        ? "pass"
+        : "fail",
+    },
+    {
+      id: "resume",
+      status: Number(audit.sessions) >= 2 ? "pass" : "fail",
+    },
+    { id: "pdf", status: Number(audit.pdfPreparedAt) > 0 ? "pass" : "fail" },
+  ];
+  if (
+    checks.some((row) => row.status !== "pass") ||
+    Number(audit.strokesCommitted) < 1 ||
+    Number(audit.pendingAtSubmit) !== 0
+  ) return null;
+
+  const safeAudit = {
+    schema: 1,
+    appVersion: String(audit.appVersion),
+    runId,
+    sourceId,
+    createdAt: Number(audit.createdAt) || null,
+    startedAt: Number(audit.startedAt) || null,
+    submittedAt: Number(audit.submittedAt) || null,
+    activeElapsedMs: Number(audit.activeElapsedMs),
+    sessions: Number(audit.sessions),
+    crashRecoveries: Number(audit.crashRecoveries) || 0,
+    strokesCommitted: Number(audit.strokesCommitted),
+    pageSwitches,
+    localSaveMs: saveMs,
+    localSaveFailures: Number(audit.localSaveFailures) || 0,
+    pendingAtSubmit: Number(audit.pendingAtSubmit) || 0,
+    maxSingleCanvasPixels: Number(audit.maxSingleCanvasPixels),
+    maxLiveCanvasCount: Number(audit.maxLiveCanvasCount),
+    pdfPreparedAt: Number(audit.pdfPreparedAt),
+    device: {
+      userAgent: userAgent.slice(0, 320),
+      platform: String(device.platform || "").slice(0, 80),
+      screenWidth: width,
+      screenHeight: height,
+      dpr: Number(device.dpr) || null,
+    },
+  };
+  return {
+    kind: "matha-paper-runtime-audit-v1",
+    exportedAt: String(attestation.confirmedAt),
+    appVersion: String(audit.appVersion),
+    deviceAttestation: {
+      confirmed: true,
+      model: "Samsung Galaxy Tab S10 Ultra",
+      source: "user-confirmation",
+      confirmedAt: String(attestation.confirmedAt),
+      browserReportedModel: reportedModel.slice(0, 80),
+    },
+    run: {
+      id: runId,
+      sourceId,
+      date: String(run.d || ""),
+      status: String(run.status),
+    },
+    summary: { passed: true, checks, pageP95Ms, localSaveP95Ms },
+    audit: safeAudit,
+  };
+}
+
+function maxDimension(a: number, b: number) {
+  return Math.max(a, b);
+}
+
+function minDimension(a: number, b: number) {
+  return Math.min(a, b);
+}
+
 export function outputText(response: Record<string, unknown>) {
   const texts: string[] = [];
   for (const item of Array.isArray(response.output) ? response.output : []) {

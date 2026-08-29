@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829p'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829q'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -6377,7 +6377,11 @@ function paperRuntimeAuditOpen(runId = '') {
   const rows = summary.checks.map((row) => `<tr><th>${escH(row.label)}</th><td><b>${row.status === 'pass' ? '通過' : row.status === 'fail' ? '未通過' : row.status === 'pending' ? '待完成' : '無法量測'}</b><br><small>${escH(row.detail)}</small></td></tr>`).join('');
   const headline = summary.fullyObserved ? '這一回已通過全部真機量測'
     : summary.passed ? '必要項已通過；另有裝置無法直接量測項目' : '這一回仍有驗收項目未完成';
-  modal(`<div class='paper-grade-audit'><span class='eyebrow'>Galaxy Tab 真機驗收｜版本 ${escH(run.runtimeAudit.appVersion)}</span><h2>${headline}</h2><p>數值直接來自這一回的書寫、翻頁、保存與資源紀錄；沒有呼叫 AI。記憶體指標若裝置不提供會明示未知，不會假裝通過。</p><table><tbody>${rows}</tbody></table><div class='actr'><button class='btn' onclick="paperRuntimeAuditDownload('${jsA(run.id)}')">匯出驗收 JSON</button></div></div>`, [['關閉']]);
+  const archive = run.runtimeAudit.archive;
+  const archiveNote = archive && archive.sha256
+    ? `<p class='okc'>私有雲端已封存｜${escH(String(archive.sha256).slice(0, 12))}</p>`
+    : `<p class='dim'>按下方按鈕後會先同步到私人 Supabase，再下載一份本機備份；不呼叫 OpenAI。</p>`;
+  modal(`<div class='paper-grade-audit'><span class='eyebrow'>Galaxy Tab 真機驗收｜版本 ${escH(run.runtimeAudit.appVersion)}</span><h2>${headline}</h2><p>數值直接來自這一回的書寫、翻頁、保存與資源紀錄；沒有呼叫 AI。記憶體指標若裝置不提供會明示未知，不會假裝通過。</p><table><tbody>${rows}</tbody></table>${archiveNote}<div class='actr'><button class='btn' onclick="paperRuntimeAuditDownload('${jsA(run.id)}')">同步並匯出驗收檔</button></div></div>`, [['關閉']]);
 }
 async function paperRuntimeReportedDeviceModel() {
   const data = typeof navigator !== 'undefined' && navigator.userAgentData;
@@ -6387,20 +6391,54 @@ async function paperRuntimeReportedDeviceModel() {
     return String(values && values.model || '').trim().slice(0, 80);
   } catch (_) { return ''; }
 }
+async function paperRuntimeAuditAttest(run) {
+  if (!run || !run.runtimeAudit) return null;
+  const existing = run.runtimeAudit.deviceAttestation;
+  if (existing && existing.confirmed === true && existing.model === 'Samsung Galaxy Tab S10 Ultra') return existing;
+  if (!confirm('請確認目前使用的裝置是 Samsung Galaxy Tab S10 Ultra。確認後才會把裝置聲明寫進驗收檔。')) return null;
+  const confirmedAt = new Date().toISOString();
+  const browserReportedModel = await paperRuntimeReportedDeviceModel();
+  const attestation = { confirmed:true, model:'Samsung Galaxy Tab S10 Ultra', source:'user-confirmation', confirmedAt, browserReportedModel };
+  run.runtimeAudit.deviceAttestation = attestation;
+  run.mt = Date.now();
+  save();
+  return attestation;
+}
+async function paperRuntimeAuditArchive(run) {
+  if (!run || !run.runtimeAudit || !supa || !syncState.user) throw new Error('請先登入，才能把驗收證據封存到私人雲端');
+  await syncPush();
+  if (syncState.pushErr) throw new Error('驗收證據尚未同步，請保持連線後重試');
+  const payload = await openAiInvoke({ responseType:'paper_audit_archive', context:{ paperRunId:run.id } }, 30000);
+  const archive = payload && payload.paperAudit;
+  if (!archive || !archive.path || !/^[a-f0-9]{64}$/.test(String(archive.sha256 || ''))) throw new Error('雲端沒有回傳可驗證的封存證據');
+  run.runtimeAudit.archive = { ...archive, archivedAt:Date.now() };
+  run.mt = Date.now();
+  save();
+  syncPush();
+  return archive;
+}
 async function paperRuntimeAuditDownload(runId) {
   const run = (S.paperRuns || []).find((row) => row && row.id === runId);
   const summary = paperRuntimeAuditSummary(run);
   if (!run || !summary.available) return false;
-  if (!confirm('請確認目前使用的裝置是 Samsung Galaxy Tab S10 Ultra。確認後才會把裝置聲明寫進驗收檔。')) return false;
-  const confirmedAt = new Date().toISOString();
-  const browserReportedModel = await paperRuntimeReportedDeviceModel();
-  const payload = { kind:'matha-paper-runtime-audit-v1', exportedAt:confirmedAt, appVersion:APP_VER, deviceAttestation:{ confirmed:true, model:'Samsung Galaxy Tab S10 Ultra', source:'user-confirmation', confirmedAt, browserReportedModel }, run:{ id:run.id, sourceId:run.sourceId, date:run.d, status:run.status }, summary, audit:run.runtimeAudit };
+  const attestation = await paperRuntimeAuditAttest(run);
+  if (!attestation) return false;
+  let archiveError = '';
+  try {
+    await paperRuntimeAuditArchive(run);
+  } catch (error) {
+    archiveError = (error && error.message) || String(error);
+  }
+  const payload = { kind:'matha-paper-runtime-audit-v1', exportedAt:attestation.confirmedAt, appVersion:APP_VER, deviceAttestation:attestation, run:{ id:run.id, sourceId:run.sourceId, date:run.d, status:run.status }, summary, audit:run.runtimeAudit };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
   link.download = `數A真機驗收-${run.d || today()}-${run.id}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  if (archiveError) alert(`本機驗收檔已下載；私人雲端封存尚未完成：${archiveError}`);
+  else syncState.msg = '真機驗收證據已同步並封存';
+  syncPill();
   return true;
 }
 function paperInkQid(run, page) { return `paper:${run.id}:v${PAPER_LAYOUT_VERSION}:${page}`; }

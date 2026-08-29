@@ -596,7 +596,7 @@ test('真機量測事件與樣本都有固定上限，換 app 版本也不會清
   assert.deepEqual(result, {
     sameObject:true,
     originalVersion:'older-version',
-    lastVersion:'0829p',
+    lastVersion:'0829q',
     events:240,
     firstEvent:160,
     samples:220,
@@ -630,7 +630,7 @@ test('真機驗收只量完成筆畫的本機保存時間，重試失敗依 clie
   assert.deepEqual(result.pending, ['final']);
 });
 
-test('第一次批改頁可打開並匯出本回真機驗收報告', () => {
+test('第一次批改頁可把真機驗收報告同步到私有雲端並匯出本機備份', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const { ROOT } = require('./helpers/load-app');
@@ -638,6 +638,20 @@ test('第一次批改頁可打開並匯出本回真機驗收報告', () => {
   assert.match(source, /paperRuntimeAuditOpen\('\$\{jsA\(run\.id\)\}'\)/);
   assert.match(source, /kind:'matha-paper-runtime-audit-v1'/);
   assert.match(source, /getHighEntropyValues\(\['model'\]\)/);
-  assert.match(source, /deviceAttestation:\{ confirmed:true, model:'Samsung Galaxy Tab S10 Ultra', source:'user-confirmation', confirmedAt, browserReportedModel \}/);
+  assert.match(source, /attestation = \{ confirmed:true, model:'Samsung Galaxy Tab S10 Ultra', source:'user-confirmation', confirmedAt, browserReportedModel \}/);
+  assert.match(source, /responseType:'paper_audit_archive'[^]*paperRunId:run\.id/);
+  assert.match(source, /同步並匯出驗收檔/);
   assert.match(source, /paperRuntimeAuditSample\(\);[\s\S]*paperRecoveryHeartbeat\(\)/);
+});
+
+test('真機驗收封存由後端重讀雲端狀態且不經 OpenAI 金鑰或模型', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { ROOT } = require('./helpers/load-app');
+  const edge = fs.readFileSync(path.join(ROOT, 'supabase/functions/openai-proxy/index.ts'), 'utf8');
+  const branch = edge.indexOf('if (responseType === "paper_audit_archive")');
+  const keyLookup = edge.indexOf('const apiKey = Deno.env.get("OPENAI_API_KEY")');
+  assert.ok(branch > 0 && keyLookup > branch, '驗收封存必須在 OpenAI 金鑰與模型路徑之前完成');
+  assert.match(edge, /const data = await loadAppState\(userId\);[\s\S]*paperRuntimeAuditEvidence\(data, runId\)/);
+  assert.match(edge, /PAPER_AUDIT_BUCKET = "matha-content"/);
 });

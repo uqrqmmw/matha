@@ -70,6 +70,18 @@ test('官方詳解 bucket 為私有且 schema 不授權一般登入者直接讀�
   }
 });
 
+test('真機驗收封存使用私有 JSON bucket，學生端只能讀取、不能寫入或覆寫', () => {
+  const schema = fs.readFileSync(path.join(ROOT, 'supabase', 'schema.sql'), 'utf8');
+  assert.match(schema, /'matha-content',\s*'matha-content',\s*false,\s*1048576,\s*array\['application\/json'\]/);
+  const policies = [...schema.matchAll(/create policy[\s\S]*?;/gi)]
+    .map((match) => match[0])
+    .filter((policy) => /matha-content/i.test(policy));
+  assert.equal(policies.length, 1);
+  assert.match(policies[0], /for select/i);
+  assert.doesNotMatch(policies[0], /for (?:insert|update|delete|all)/i,
+    '真機驗收與正式題包都只能由 service role 發布；學生 JWT 不可竄改');
+});
+
 test('原版模考掃描不進公開站資產或離線快取', () => {
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');

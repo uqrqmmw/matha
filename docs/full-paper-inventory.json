@@ -4,7 +4,7 @@
   "releaseAuthority": false,
   "privateAppIntegration": {
     "status": "deployed-and-hash-verified",
-    "appVersion": "0829p",
+    "appVersion": "0829q",
     "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
     "bucket": "matha-papers",
     "officialPapers": 5,
@@ -17,7 +17,7 @@
     "storageVerificationPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v1-20260829/official-storage-readback-verification.json",
     "storageVerificationSha256": "b769f9cd5b532502f10f653f5d6749aed564057599853a27fe44aa0f87cdbf79",
     "answerKeyPapersBehindPostSubmitGate": 6,
-    "edgeFunctionVersion": 31,
+    "edgeFunctionVersion": 32,
     "freshnessStillRequiresUserConfirmation": true
   },
   "localDiscoveryAudit": {
@@ -336,5 +336,5 @@
   "provisionalFreshCalibrationCount": 6,
   "firstSixSourceCountShortfall": 0,
   "firstSixFreshnessConfirmationsNeeded": 6,
-  "nextP0": "Confirm paper-mock-3 is unseen, pass the seven-part Galaxy Tab preflight, and complete the real 100-minute run with recovery and PDF evidence."
+  "nextP0": "Confirm paper-mock-3 is unseen, pass the seven-part Galaxy Tab preflight, complete the real 100-minute run with recovery and PDF evidence, then use the in-app private audit archive action."
 }

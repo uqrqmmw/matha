@@ -2,13 +2,14 @@
 
 這個 Edge Function 是數A前端與 OpenAI Responses API 之間的安全代理。`OPENAI_API_KEY` 只存在 Supabase Secret，不會進入 `app.js`、localStorage、`app_state`、備份或公開 GitHub 程式碼。
 
-目前支援六種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）、定義語意理解（`concept`）、原版掃描卷整卷批改（`paper_grade`）與逐題詳批（`paper_detail`，由後端驗證隔日＋至少一次獨立重想才解鎖）。另有兩種不呼叫 OpenAI 的私有素材路由：`paper_key` 只在伺服器端 `app_state` 已保存同一回交卷狀態後回傳正式答案；`paper_solution` 只在同一回、同一題已到隔日且保存至少一次真實重想後，從私有 `matha-solutions` bucket 簽發 15 分鐘官方詳解圖網址。逐題詳批固定回傳診斷信心、可驗證的正確前綴、第一錯步原式、錯因、最小修正與完整解法；低信心結果不寫入弱點模型。所有密集卷面都以 Responses API 圖片輸入的 `detail: original` 傳入，不先縮成低解析度；大綱原文只來自使用者的私人內容層。
+目前支援六種嚴格 JSON Schema 回傳：一般手寫答案批改（`grade`）、解題過程分析（`process`）、十一單元手寫大綱比對（`outline`）、定義語意理解（`concept`）、原版掃描卷整卷批改（`paper_grade`）與逐題詳批（`paper_detail`，由後端驗證隔日＋至少一次獨立重想才解鎖）。另有三種不呼叫 OpenAI 的路由：`paper_key` 只在伺服器端 `app_state` 已保存同一回交卷狀態後回傳正式答案；`paper_solution` 只在同一回、同一題已到隔日且保存至少一次真實重想後，從私有 `matha-solutions` bucket 簽發 15 分鐘官方詳解圖網址；`paper_audit_archive` 用 service role 重讀雲端作答狀態，只有 100 分鐘、Galaxy Tab、書寫、滑動翻頁、保存、canvas、恢復與 PDF 證據全通過時，才把去識別、hash-addressed JSON 封存到私有 `matha-content/runtime-audits`。逐題詳批固定回傳診斷信心、可驗證的正確前綴、第一錯步原式、錯因、最小修正與完整解法；低信心結果不寫入弱點模型。所有密集卷面都以 Responses API 圖片輸入的 `detail: original` 傳入，不先縮成低解析度；大綱原文只來自使用者的私人內容層。
 
 ## 專案配置
 
 - 可管理的 Supabase 專案 `rrihysbxhsbxjteqmtdu` 同時負責登入、學習資料、私有題庫 Storage、`openai-proxy` 與 OpenAI Secret，不再依賴舊專案。
 - Edge Function 的「Verify JWT with legacy secret」必須關閉；函式會自行把 Bearer token 交給同一專案 `/auth/v1/user` 驗證，未登入者一律回傳 401。
 - `matha-solutions` bucket 必須維持 private 且不得建立 authenticated select policy；一般 Storage client 不能讀取，只有通過訂正閘門的 Edge Function 可用 service role 簽短效網址。物件路徑對照只存在後端，不進前端、離線快取或學習狀態。
+- `matha-content` bucket 必須維持 private、JSON-only；一般登入者只有核准帳號的讀取 policy，沒有 insert/update/delete。真機驗收只能由 Edge service role 寫入，學生端無法偽造或覆寫封存物件。
 
 ## Secrets
 
@@ -16,7 +17,7 @@
 - 模型固定在程式內的 `gpt-5.5`。所有 AI 功能共用這一個模型，不讀取模型環境變數，也不做自動升級、降級或模型分流。
 - `OPENAI_ALLOWED_EMAILS` 或 `OPENAI_ALLOWED_USER_IDS`：必要，至少設定一項。只有列入白名單的數A帳號能使用；多個值用逗號分隔。未設定時函式會拒絕服務，避免意外成為付費公開代理。
 - `OPENAI_ALLOWED_ORIGINS`：選填。程式已內建正式 GitHub Pages 與 `127.0.0.1:8899`、`localhost:8899`；只有新增其他網站來源時才需要設定。
-- `PAPER_ANSWER_KEYS_JSON`：啟用未作答原卷前必要。JSON object 的 key 是 `paper-mock-*`，value 是逐題 `{type,ans,display?,points}`；只放 Supabase Secret，不得提交 repo、Storage、`app_state` 或前端。
+- `PAPER_ANSWER_KEYS_JSON`：啟用未作答原卷前必要。JSON object 的 key 是核准的 `paper-mock-*` 或 `paper-official-*` source id，value 是逐題 `{type,ans,display?,points,scoringPrinciples?}`；只放 Supabase Secret，不得提交 repo、Storage、`app_state` 或前端。
 
 請在 Supabase Dashboard 的 Edge Functions → Secrets 儲存 Secret，避免 Key 留在 shell history 或 `.env`。更新 Secret 不必重新部署函式。
 

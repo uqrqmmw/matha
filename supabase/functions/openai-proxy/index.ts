@@ -4,6 +4,7 @@ import {
   outputText,
   paperDetailGateAllows,
   paperKeyGateAllows,
+  paperRuntimeAuditEvidence,
   paperSolutionFiles,
   paperSolutionGateAllows,
   parsePaperAnswerKeys,
@@ -19,6 +20,7 @@ const APP_SUPABASE_URL = "https://rrihysbxhsbxjteqmtdu.supabase.co";
 const APP_SUPABASE_KEY = "sb_publishable_p6ThWGf5DLp6XRCovZMVDQ_9vJG_Y41";
 const MAX_BODY_BYTES = 14_000_000;
 const PAPER_SOLUTION_BUCKET = "matha-solutions";
+const PAPER_AUDIT_BUCKET = "matha-content";
 
 const allowedOrigins = new Set([
   "https://uqrqmmw.github.io",
@@ -189,6 +191,57 @@ async function paperSolutionAfterRetry(userId: string, rawContext: unknown) {
   return { images };
 }
 
+async function sha256Text(value: string) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)].map((byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+}
+
+async function archivePaperRuntimeAudit(userId: string, rawContext: unknown) {
+  const context = rawContext && typeof rawContext === "object"
+    ? rawContext as Record<string, unknown>
+    : {};
+  const runId = String(context.paperRunId || "");
+  const data = await loadAppState(userId);
+  const evidence = paperRuntimeAuditEvidence(data, runId);
+  if (!evidence) return null;
+  const content = JSON.stringify(evidence, null, 2) + "\n";
+  const digest = await sha256Text(content);
+  const userHash = await safetyIdentifier(userId);
+  const fileName = `matha-paper-runtime-audit-${runId}-${
+    digest.slice(0, 16)
+  }.json`;
+  const objectPath = `runtime-audits/${userHash}/${fileName}`;
+  const encodedPath = objectPath.split("/").map(encodeURIComponent).join("/");
+  const response = await fetch(
+    `${APP_SUPABASE_URL}/storage/v1/object/${PAPER_AUDIT_BUCKET}/${encodedPath}`,
+    {
+      method: "POST",
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json",
+        "x-upsert": "true",
+      },
+      body: content,
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Cannot archive runtime audit (${response.status})`);
+  }
+  return {
+    bucket: PAPER_AUDIT_BUCKET,
+    path: objectPath,
+    sha256: digest,
+    appVersion: evidence.appVersion,
+    sourceId: evidence.run.sourceId,
+  };
+}
+
 function corsHeaders(origin: string) {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Headers":
@@ -276,6 +329,7 @@ Deno.serve(async (req: Request) => {
         "concept",
         "paper_key",
         "paper_solution",
+        "paper_audit_archive",
         "paper_grade",
         "paper_detail",
         "text",
@@ -313,6 +367,21 @@ Deno.serve(async (req: Request) => {
         });
       }
       return reply(origin, 200, { paperSolution });
+    }
+
+    if (responseType === "paper_audit_archive") {
+      let paperAudit;
+      try {
+        paperAudit = await archivePaperRuntimeAudit(userId, body.context);
+      } catch (_) {
+        return reply(origin, 500, { message: "真機驗收證據暫時無法封存" });
+      }
+      if (!paperAudit) {
+        return reply(origin, 403, {
+          message: "真機驗收尚未全部通過，證據沒有寫入正式封存區。",
+        });
+      }
+      return reply(origin, 200, { paperAudit });
     }
 
     const apiKey = Deno.env.get("OPENAI_API_KEY");
