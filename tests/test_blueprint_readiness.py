@@ -26,6 +26,39 @@ def digest(path: Path) -> str:
 
 
 class BlueprintReadinessTests(unittest.TestCase):
+    def test_local_discovery_requires_exact_report_and_visual_review_hashes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            report = root / "report.json"
+            review = root / "review.json"
+            write_json(report, {
+                "kind": "matha-local-full-paper-discovery-v1",
+                "releaseAuthority": False,
+                "scannedPdfCount": 2,
+                "candidates": [{"sha256": "a"}, {"sha256": "b"}],
+            })
+            write_json(review, {
+                "kind": "matha-local-full-paper-discovery-visual-review-v1",
+                "releaseAuthority": False,
+                "discoveryReport": {"sha256": digest(report), "mathOrExamPathReadErrors": 0},
+                "imageOnlyReview": {
+                    "allFirstPagesReviewed": True, "uniqueHashes": 1,
+                    "mathPaperHashesFound": [],
+                },
+                "namedCandidateReview": {"newCompleteMathAPaperHashesFound": []},
+            })
+            row = {
+                "reportPathHint": str(report), "reportSha256": digest(report),
+                "visualReviewPathHint": str(review), "visualReviewSha256": digest(review),
+                "scannedPdfCount": 2, "candidateRows": 2, "candidateUniqueHashes": 2,
+                "imageOnlyUniqueHashesVisuallyReviewed": 1,
+                "mathOrExamPathReadErrors": 0, "newCompleteMathAPapersFound": 0,
+            }
+            self.assertEqual(len(audit.validate_local_discovery(row, root)), 3)
+            report.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(audit.ReadinessError, "雜湊漂移"):
+                audit.validate_local_discovery(row, root)
+
     def test_full_paper_gate_recomputes_ready_count_and_hashes(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

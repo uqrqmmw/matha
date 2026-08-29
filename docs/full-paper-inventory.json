@@ -1,7 +1,21 @@
 {
   "schema": 1,
-  "generatedAt": "2026-08-29T00:00:00+08:00",
+  "generatedAt": "2026-08-29T10:04:46+08:00",
   "releaseAuthority": false,
+  "localDiscoveryAudit": {
+    "reportFileName": "本機完整卷盤點-20260829.json",
+    "reportPathHint": "%DESKTOP%/數學檔案/完整模考來源/本機完整卷盤點-20260829.json",
+    "reportSha256": "e8649a83fbe525ca3d3cc70c3d259972ce153b0769ee9d71349201c85cb89492",
+    "visualReviewPathHint": "%DESKTOP%/數學檔案/完整模考來源/盤點證據-20260829/visual-review.json",
+    "visualReviewSha256": "b314df23cac63be2a6f0b090816a4ec2a6f4a380a95f68536ff4736f9b8da7d9",
+    "scannedPdfCount": 3086,
+    "candidateRows": 52,
+    "candidateUniqueHashes": 27,
+    "imageOnlyUniqueHashesVisuallyReviewed": 15,
+    "mathOrExamPathReadErrors": 0,
+    "newCompleteMathAPapersFound": 0,
+    "releaseAuthority": false
+  },
   "sourceDocuments": [
     {
       "id": "publisher-question",

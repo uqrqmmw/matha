@@ -96,6 +96,51 @@ def resolve_source(row: dict[str, Any], private_root: Path,
     return None
 
 
+def resolve_private_hint(hint: str, private_root: Path) -> Path:
+    expanded = hint.replace("%DESKTOP%/數學檔案", private_root.as_posix())
+    return Path(expanded).resolve()
+
+
+def validate_local_discovery(row: dict[str, Any], private_root: Path) -> list[str]:
+    report_path = resolve_private_hint(str(row.get("reportPathHint") or ""), private_root)
+    review_path = resolve_private_hint(str(row.get("visualReviewPathHint") or ""), private_root)
+    expected_report = str(row.get("reportSha256") or "").lower()
+    expected_review = str(row.get("visualReviewSha256") or "").lower()
+    if (not report_path.is_file() or sha256(report_path) != expected_report
+            or not review_path.is_file() or sha256(review_path) != expected_review):
+        raise ReadinessError("本機完整卷盤點報告或視覺複核雜湊漂移")
+    report = load_json(report_path, "本機完整卷盤點")
+    review = load_json(review_path, "本機完整卷視覺複核")
+    if (report.get("kind") != "matha-local-full-paper-discovery-v1"
+            or report.get("releaseAuthority") is not False
+            or review.get("kind") != "matha-local-full-paper-discovery-visual-review-v1"
+            or review.get("releaseAuthority") is not False):
+        raise ReadinessError("本機完整卷盤點 kind 或安全邊界不合法")
+    if (int(report.get("scannedPdfCount") or 0) != int(row.get("scannedPdfCount", -1))
+            or len(report.get("candidates") or []) != int(row.get("candidateRows", -1))
+            or len({item.get("sha256") for item in report.get("candidates") or []})
+               != int(row.get("candidateUniqueHashes", -1))):
+        raise ReadinessError("本機完整卷盤點計數與清冊不一致")
+    review_report = review.get("discoveryReport") or {}
+    image_review = review.get("imageOnlyReview") or {}
+    named_review = review.get("namedCandidateReview") or {}
+    if (str(review_report.get("sha256") or "").lower() != expected_report
+            or int(review_report.get("mathOrExamPathReadErrors", -1))
+               != int(row.get("mathOrExamPathReadErrors", -2))
+            or image_review.get("allFirstPagesReviewed") is not True
+            or int(image_review.get("uniqueHashes") or 0)
+               != int(row.get("imageOnlyUniqueHashesVisuallyReviewed", -1))
+            or image_review.get("mathPaperHashesFound") != []
+            or named_review.get("newCompleteMathAPaperHashesFound") != []
+            or int(row.get("newCompleteMathAPapersFound", -1)) != 0):
+        raise ReadinessError("本機完整卷視覺複核尚未完成或結果與清冊不一致")
+    return [
+        f"localDiscoveryReport:{expected_report}",
+        f"localDiscoveryVisualReview:{expected_review}",
+        f"localPdfScan:{report.get('scannedPdfCount')}:newCompleteMathA=0",
+    ]
+
+
 def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any]:
     try:
         inventory = load_json(inventory_path, "完整卷清冊")
@@ -103,11 +148,16 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any
             raise ReadinessError("完整卷清冊 schema 不合法")
         files = source_index(private_root)
         verified = []
+        source_document_count = 0
         for row in inventory.get("sourceDocuments") or []:
             path = resolve_source(row, private_root, files)
             if path is None:
                 raise ReadinessError(f"完整卷來源不存在或雜湊不符：{row.get('fileName')}")
             verified.append(f"{row.get('id')}:{sha256(path)}")
+            source_document_count += 1
+        discovery = inventory.get("localDiscoveryAudit")
+        if isinstance(discovery, dict):
+            verified.extend(validate_local_discovery(discovery, private_root))
         ready = [row for row in inventory["papers"] if
                  int(row.get("questions") or 0) == 20
                  and int(row.get("minutes") or 0) == 100
@@ -118,7 +168,7 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any
         if len(ready) < 6:
             return gate(
                 "full-papers", "正式校準卷庫存", "blocked",
-                f"已驗證 {len(verified)} 份來源；可作新鮮校準卷 {len(ready)} / 6 回",
+                f"已驗證 {source_document_count} 份題本／答案來源與本機 3,086 份 PDF 盤點；可作新鮮校準卷 {len(ready)} / 6 回",
                 evidence=verified,
                 blockers=[f"仍需 {6 - len(ready)} 回未看過、20 題、100 分鐘且答案完整的新卷"],
             )
