@@ -86,10 +86,10 @@
       "minutes": 100,
       "solutionCoverage": "complete",
       "freshness": "no-local-use-evidence-requires-confirmation",
-      "calibrationStatus": "selected-next-blocked",
+      "calibrationStatus": "selected-next-pending-freshness-and-device-check",
       "activationBlockers": [
-        "public-client-answer-key",
-        "freshness-confirmation"
+        "freshness-confirmation",
+        "galaxy-tab-preflight"
       ]
     },
     {
@@ -117,5 +117,5 @@
   "readyFreshCalibrationCount": 0,
   "provisionalFreshCalibrationCount": 1,
   "firstSixAdditionalReadySourcesNeeded": 5,
-  "nextP0": "Remove PAPER_SOURCES.key from public client and gate answer access behind authenticated post-submission backend state."
+  "nextP0": "Confirm paper-mock-3 is unseen, pass the seven-part Galaxy Tab preflight, and complete the real 100-minute run with recovery and PDF evidence."
 }
