@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829q'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829r'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -2808,10 +2808,10 @@ n 元一次聯立方程：代入消去、加減消去與高斯消去；以增廣
    第三回開始，正式答案不再打包進公開前端；交卷狀態先同步，再由 Edge Function 解鎖。
    第一、二回的 key 只為既有歷史批改相容，兩回均視為已公開／不再作新鮮校準。選項索引採 0 起算。 */
 const PAPER_SOURCE_BUCKET = 'matha-papers';
-function officialPaperSource(year, questionPageMap, files) {
+function officialPaperSource(year, questionPageMap, files, options = {}) {
   return {
-    id: `paper-official-${year}`,
-    title: `${year} 學年度學測數學 A`,
+    id: options.id || `paper-official-${year}`,
+    title: options.title || `${year} 學年度學測數學 A`,
     questions: 20,
     minutes: 100,
     pages: 8,
@@ -2864,6 +2864,15 @@ const PAPER_SOURCE_CATALOG = [
       'official-111-matha/page-05-419cd72d868e.png', 'official-111-matha/page-06-cefd639d8791.png',
       'official-111-matha/page-07-3f9ada1b9958.png', 'official-111-matha/page-08-1a792ad8df0a.png',
     ]),
+  officialPaperSource(110,
+    [2,2,2,2,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7],
+    [
+      'official-110-trial-matha/page-01-50c82613a928.png', 'official-110-trial-matha/page-02-a1ddced5d91f.png',
+      'official-110-trial-matha/page-03-fc57a54ad69c.png', 'official-110-trial-matha/page-04-2d6f39c2cc79.png',
+      'official-110-trial-matha/page-05-23bbc9f91fbd.png', 'official-110-trial-matha/page-06-401927da4a18.png',
+      'official-110-trial-matha/page-07-1944757fb86e.png', 'official-110-trial-matha/page-08-d01cc52d121b.png',
+    ],
+    { id: 'paper-official-110-trial', title: '110 年試辦考試數學 A' }),
   { id: 'paper-mock-1', title: '第一次模考', questions: 20, minutes: 100, pages: 6,
     key: [
       { type: 'single', ans: [4], points: 5 }, { type: 'single', ans: [4], points: 5 },

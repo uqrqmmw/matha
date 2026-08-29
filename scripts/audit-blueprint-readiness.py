@@ -150,10 +150,13 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
         "appVersion": expected_version,
         "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
         "bucket": "matha-papers",
-        "officialPapers": 5,
-        "officialPages": 40,
+        "officialPapers": 6,
+        "officialPages": 48,
         "remoteHashMismatches": 0,
-        "answerKeyPapersBehindPostSubmitGate": 6,
+        "answerKeyPapersBehindPostSubmitGate": 7,
+        "officialDetailedSolutionPapers": 1,
+        "officialSolutionPages": 8,
+        "solutionStorageHashMismatches": 0,
         "freshnessStillRequiresUserConfirmation": True,
     }
     for key, expected in expected_values.items():
@@ -166,11 +169,13 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
         "assets": resolve_private_hint(str(row.get("assetManifestPathHint") or ""), private_root),
         "visual": resolve_private_hint(str(row.get("visualReviewPathHint") or ""), private_root),
         "storage": resolve_private_hint(str(row.get("storageVerificationPathHint") or ""), private_root),
+        "solutions": resolve_private_hint(str(row.get("solutionManifestPathHint") or ""), private_root),
     }
     hashes = {
         "assets": str(row.get("assetManifestSha256") or "").lower(),
         "visual": str(row.get("visualReviewSha256") or "").lower(),
         "storage": str(row.get("storageVerificationSha256") or "").lower(),
+        "solutions": str(row.get("solutionManifestSha256") or "").lower(),
     }
     for key, path in paths.items():
         if not path.is_file() or sha256(path) != hashes[key]:
@@ -179,15 +184,16 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
     assets = load_json(paths["assets"], "官方卷 App 資產 manifest")
     visual = load_json(paths["visual"], "官方卷 App 視覺複核")
     storage = load_json(paths["storage"], "官方卷 Storage 回讀驗證")
+    solutions = load_json(paths["solutions"], "官方完整詳解 Storage 回讀驗證")
     if (assets.get("kind") != "matha-official-paper-assets-v1"
             or assets.get("releaseAuthority") is not False
-            or int(assets.get("paperCount") or 0) != 5
-            or int(assets.get("assetCount") or 0) != 40):
+            or int(assets.get("paperCount") or 0) != 6
+            or int(assets.get("assetCount") or 0) != 48):
         raise ReadinessError("官方卷 App 資產 manifest 不合法")
     checks = visual.get("checks") or {}
     if (visual.get("schema") != 1 or visual.get("releaseAuthority") is not False
-            or int(visual.get("papersReviewed") or 0) != 5
-            or int(visual.get("pagesReviewed") or 0) != 40
+            or int(visual.get("papersReviewed") or 0) != 6
+            or int(visual.get("pagesReviewed") or 0) != 48
             or any(checks.get(key) != "pass" for key in (
                 "pageOrder", "cropCompleteness", "chineseReadability",
                 "formulaReadability", "diagramPreservation", "grayscalePreservation",
@@ -201,14 +207,41 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
             or storage.get("projectRef") != row["supabaseProjectRef"]
             or storage.get("bucket") != row["bucket"]
             or storage.get("sourceManifestSha256") != hashes["assets"]
-            or int(storage.get("paperCount") or 0) != 5
-            or int(storage.get("assetCount") or 0) != 40
+            or int(storage.get("paperCount") or 0) != 6
+            or int(storage.get("assetCount") or 0) != 48
             or int(storage.get("remoteHashMismatches", -1)) != 0):
         raise ReadinessError("官方卷 Storage 回讀驗證不合法")
 
+    solution_rows = solutions.get("assets") or []
+    if (solutions.get("kind") != "matha-official-solution-assets-v1"
+            or solutions.get("releaseAuthority") is not False
+            or solutions.get("projectRef") != row["supabaseProjectRef"]
+            or solutions.get("bucket") != "matha-solutions"
+            or solutions.get("appSourceId") != "paper-official-110-trial"
+            or int(solutions.get("sourcePages") or 0) != 8
+            or len(solutions.get("questionPageMap") or []) != 20
+            or int(solutions.get("question20ContinuationPage") or 0) != 8
+            or solutions.get("remoteListingExact") is not True
+            or int(solutions.get("readbackHashMismatches", -1)) != 0
+            or len(solution_rows) != 8):
+        raise ReadinessError("官方完整詳解 Storage 回讀驗證不合法")
+    edge_source = (REPO_ROOT / "supabase/functions/openai-proxy/lib.ts").read_text(encoding="utf-8")
+    for asset in solution_rows:
+        relative = str(asset.get("file") or "").replace("\\", "/")
+        path = paths["solutions"].parent / Path(relative)
+        if (not relative.startswith("paper-official-110-trial/")
+                or not path.is_file()
+                or sha256(path) != str(asset.get("sha256") or "").lower()
+                or path.stat().st_size != int(asset.get("bytes") or -1)
+                or relative not in edge_source):
+            raise ReadinessError(f"官方完整詳解雜湊或 Edge 引用不符：{relative}")
+
     app_source = (REPO_ROOT / "app.js").read_text(encoding="utf-8")
     asset_rows: dict[str, dict[str, Any]] = {}
-    expected_papers = {f"official-{year}-matha" for year in range(111, 116)}
+    expected_papers = {
+        "official-110-trial-matha",
+        *(f"official-{year}-matha" for year in range(111, 116)),
+    }
     manifest_papers = {str(paper.get("paperId") or "") for paper in assets.get("papers") or []}
     if manifest_papers != expected_papers:
         raise ReadinessError("官方卷 App 資產年度不完整")
@@ -240,10 +273,11 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
                    for path in asset_rows)):
         raise ReadinessError("Storage 回讀資產未與 App manifest 全數綁定")
     return [
-        f"officialAppAssets:{hashes['assets']}:40",
-        f"officialVisualReview:{hashes['visual']}:40",
-        f"officialStorageReadback:{hashes['storage']}:40:mismatch=0",
-        f"officialAppVersion:{expected_version}:edge={row['edgeFunctionVersion']}:serverKeys=6",
+        f"officialAppAssets:{hashes['assets']}:48",
+        f"officialVisualReview:{hashes['visual']}:48",
+        f"officialStorageReadback:{hashes['storage']}:48:mismatch=0",
+        f"officialDetailedSolutions:{hashes['solutions']}:8:mismatch=0",
+        f"officialAppVersion:{expected_version}:edge={row['edgeFunctionVersion']}:serverKeys=7",
     ]
 
 

@@ -33,8 +33,7 @@ class BlueprintReadinessTests(unittest.TestCase):
         assets_root = root / "assets"
         papers = []
         storage_assets = []
-        for year in range(111, 116):
-            paper_id = f"official-{year}-matha"
+        for paper_id in ["official-110-trial-matha", *(f"official-{year}-matha" for year in range(111, 116))]:
             rows = []
             names = re.findall(
                 rf"{paper_id}/(page-\d{{2}}-[a-f0-9]{{12}}\.png)", app_source
@@ -55,11 +54,11 @@ class BlueprintReadinessTests(unittest.TestCase):
         asset_manifest = assets_root / "official-paper-assets.json"
         write_json(asset_manifest, {
             "kind": "matha-official-paper-assets-v1", "releaseAuthority": False,
-            "paperCount": 5, "assetCount": 40, "papers": papers,
+            "paperCount": 6, "assetCount": 48, "papers": papers,
         })
         visual = assets_root / "visual.json"
         write_json(visual, {
-            "schema": 1, "releaseAuthority": False, "papersReviewed": 5, "pagesReviewed": 40,
+            "schema": 1, "releaseAuthority": False, "papersReviewed": 6, "pagesReviewed": 48,
             "checks": {
                 "pageOrder": "pass", "cropCompleteness": "pass",
                 "chineseReadability": "pass", "formulaReadability": "pass",
@@ -72,19 +71,47 @@ class BlueprintReadinessTests(unittest.TestCase):
             "kind": "matha-official-paper-storage-verification-v1",
             "releaseAuthority": False, "readOnlyVerification": True,
             "projectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-papers",
-            "sourceManifestSha256": digest(asset_manifest), "paperCount": 5,
-            "assetCount": 40, "remoteHashMismatches": 0, "assets": storage_assets,
+            "sourceManifestSha256": digest(asset_manifest), "paperCount": 6,
+            "assetCount": 48, "remoteHashMismatches": 0, "assets": storage_assets,
+        })
+        solution_root = root / "solutions"
+        solution_names = sorted(set(re.findall(
+            r"paper-official-110-trial/(page-\d{2}-[a-f0-9]{12}\.png)",
+            (ROOT / "supabase/functions/openai-proxy/lib.ts").read_text(encoding="utf-8"),
+        )))
+        self.assertEqual(len(solution_names), 8)
+        solution_assets = []
+        for name in solution_names:
+            relative = f"paper-official-110-trial/{name}"
+            path = solution_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(name.encode())
+            solution_assets.append({
+                "file": relative, "sha256": digest(path), "bytes": path.stat().st_size,
+            })
+        solution_manifest = solution_root / "official-solution-assets.json"
+        write_json(solution_manifest, {
+            "kind": "matha-official-solution-assets-v1", "releaseAuthority": False,
+            "projectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-solutions",
+            "appSourceId": "paper-official-110-trial", "sourcePages": 8,
+            "questionPageMap": [1] * 20, "question20ContinuationPage": 8,
+            "remoteListingExact": True, "readbackHashMismatches": 0,
+            "assets": solution_assets,
         })
         return {
             "status": "deployed-and-hash-verified", "appVersion": app_version,
             "supabaseProjectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-papers",
-            "officialPapers": 5, "officialPages": 40, "remoteHashMismatches": 0,
+            "officialPapers": 6, "officialPages": 48, "remoteHashMismatches": 0,
             "assetManifestPathHint": str(asset_manifest),
             "assetManifestSha256": digest(asset_manifest),
             "visualReviewPathHint": str(visual), "visualReviewSha256": digest(visual),
             "storageVerificationPathHint": str(storage),
             "storageVerificationSha256": digest(storage),
-            "answerKeyPapersBehindPostSubmitGate": 6, "edgeFunctionVersion": 31,
+            "solutionManifestPathHint": str(solution_manifest),
+            "solutionManifestSha256": digest(solution_manifest),
+            "answerKeyPapersBehindPostSubmitGate": 7, "edgeFunctionVersion": 34,
+            "officialDetailedSolutionPapers": 1, "officialSolutionPages": 8,
+            "solutionStorageHashMismatches": 0,
             "freshnessStillRequiresUserConfirmation": True,
         }
 

@@ -39,16 +39,16 @@ class OfficialPaperStorageTests(unittest.TestCase):
                     expected, root, {"official-115-matha": ["page.png"]}
                 )
 
-    def test_manifest_requires_five_papers_and_forty_pages(self):
+    def test_manifest_requires_eight_pages_per_paper(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "manifest.json"
             path.write_text(json.dumps({
                 "kind": "matha-official-paper-assets-v1",
-                "paperCount": 5,
-                "assetCount": 40,
+                "paperCount": 6,
+                "assetCount": 48,
                 "papers": [],
             }), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "40 unique assets"):
+            with self.assertRaisesRegex(ValueError, "asset count"):
                 storage.expected_assets(path)
 
 

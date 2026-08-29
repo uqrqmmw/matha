@@ -23,10 +23,14 @@ from pathlib import Path
 from typing import Any
 
 
-OFFICIAL_PAPER_IDS = tuple(f"official-{year}-matha" for year in range(111, 116))
+OFFICIAL_PAPER_IDS = (
+    "official-110-trial-matha",
+    *(f"official-{year}-matha" for year in range(111, 116)),
+)
 QUESTION_PAGE_MAPS: dict[str, list[int]] = {
     # Values are one-based PDF pages. Page 1 is instructions; page 8 is the
     # reference/formula sheet and remains available to the learner.
+    "official-110-trial-matha": [2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7],
     "official-111-matha": [2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7],
     "official-112-matha": [2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7],
     "official-113-matha": [2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7],

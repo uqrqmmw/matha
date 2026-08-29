@@ -519,6 +519,31 @@ const paperSolutionMap: Record<string, Record<number, string[]>> = {
     14: ["paper-mock-1/q14.png"],
     16: ["paper-mock-1/q16.png"],
   },
+  "paper-official-110-trial": {
+    1: ["paper-official-110-trial/page-01-c7d733fea66b.png"],
+    2: ["paper-official-110-trial/page-01-c7d733fea66b.png"],
+    3: ["paper-official-110-trial/page-01-c7d733fea66b.png"],
+    4: ["paper-official-110-trial/page-02-7ec6c9fe53db.png"],
+    5: ["paper-official-110-trial/page-02-7ec6c9fe53db.png"],
+    6: ["paper-official-110-trial/page-02-7ec6c9fe53db.png"],
+    7: ["paper-official-110-trial/page-03-f784544033ba.png"],
+    8: ["paper-official-110-trial/page-03-f784544033ba.png"],
+    9: ["paper-official-110-trial/page-03-f784544033ba.png"],
+    10: ["paper-official-110-trial/page-04-11fa0ac0d919.png"],
+    11: ["paper-official-110-trial/page-04-11fa0ac0d919.png"],
+    12: ["paper-official-110-trial/page-04-11fa0ac0d919.png"],
+    13: ["paper-official-110-trial/page-05-43f004a0656a.png"],
+    14: ["paper-official-110-trial/page-05-43f004a0656a.png"],
+    15: ["paper-official-110-trial/page-05-43f004a0656a.png"],
+    16: ["paper-official-110-trial/page-05-43f004a0656a.png"],
+    17: ["paper-official-110-trial/page-06-81b4bd1cef16.png"],
+    18: ["paper-official-110-trial/page-06-81b4bd1cef16.png"],
+    19: ["paper-official-110-trial/page-06-81b4bd1cef16.png"],
+    20: [
+      "paper-official-110-trial/page-07-081146b891af.png",
+      "paper-official-110-trial/page-08-4ab3b0649c85.png",
+    ],
+  },
 };
 
 export function paperSolutionFiles(sourceId: string, questionNo: number) {
@@ -590,7 +615,9 @@ export function paperRuntimeAuditEvidence(
   ) as Record<string, unknown> | undefined;
   if (!run) return null;
   const sourceId = String(run.sourceId || "");
-  if (!/^paper-(?:mock-3|official-11[1-5])$/.test(sourceId)) return null;
+  if (!/^paper-(?:mock-3|official-(?:11[1-5]|110-trial))$/.test(sourceId)) {
+    return null;
+  }
   if (
     !["awaiting-correction", "completed"].includes(String(run.status || ""))
   ) {

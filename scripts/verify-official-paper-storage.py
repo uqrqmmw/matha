@@ -31,10 +31,11 @@ def sha256(path: Path) -> str:
 
 def expected_assets(manifest_path: Path) -> dict[str, dict[str, Any]]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    paper_count = int(manifest.get("paperCount") or 0)
+    asset_count = int(manifest.get("assetCount") or 0)
     if (manifest.get("kind") != "matha-official-paper-assets-v1"
-            or int(manifest.get("paperCount") or 0) != 5
-            or int(manifest.get("assetCount") or 0) != 40):
-        raise ValueError("official asset manifest is not the verified 5-paper/40-page set")
+            or paper_count < 1 or asset_count != paper_count * 8):
+        raise ValueError("official asset manifest must contain eight pages per paper")
     rows: dict[str, dict[str, Any]] = {}
     for paper in manifest.get("papers") or []:
         paper_id = str(paper.get("paperId") or "")
@@ -46,8 +47,8 @@ def expected_assets(manifest_path: Path) -> dict[str, dict[str, Any]]:
             if not relative.startswith(f"{paper_id}/") or relative in rows:
                 raise ValueError("official asset path is missing, duplicated, or outside its paper")
             rows[relative] = row
-    if len(rows) != 40:
-        raise ValueError("official asset manifest does not contain 40 unique assets")
+    if len(rows) != asset_count:
+        raise ValueError("official asset manifest asset count does not match unique assets")
     return rows
 
 

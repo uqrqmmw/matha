@@ -1,23 +1,28 @@
 {
   "schema": 1,
-  "generatedAt": "2026-08-29T11:05:00+08:00",
+  "generatedAt": "2026-08-29T12:18:00+08:00",
   "releaseAuthority": false,
   "privateAppIntegration": {
     "status": "deployed-and-hash-verified",
-    "appVersion": "0829q",
+    "appVersion": "0829r",
     "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
     "bucket": "matha-papers",
-    "officialPapers": 5,
-    "officialPages": 40,
+    "officialPapers": 6,
+    "officialPages": 48,
     "remoteHashMismatches": 0,
-    "assetManifestPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v1-20260829/official-paper-assets.json",
-    "assetManifestSha256": "ceae87e89a2e86eedd198ea33c369a109fbb4a88a36ee8a326eaae3df406577b",
-    "visualReviewPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v1-20260829/official-assets-visual-review.json",
-    "visualReviewSha256": "b4c4c28487b6d6baa5197bcc0b0d7bff056076d8470612b7180321f2830965e6",
-    "storageVerificationPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v1-20260829/official-storage-readback-verification.json",
-    "storageVerificationSha256": "b769f9cd5b532502f10f653f5d6749aed564057599853a27fe44aa0f87cdbf79",
-    "answerKeyPapersBehindPostSubmitGate": 6,
-    "edgeFunctionVersion": 32,
+    "assetManifestPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v2-20260829/official-paper-assets.json",
+    "assetManifestSha256": "f1d7adb1d088b52ab2ab31f221fdeb7162d6d274f18acfbfdd60c461dad5b15c",
+    "visualReviewPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v2-20260829/official-assets-visual-review.json",
+    "visualReviewSha256": "ac8dfb0f3143ad414483c3f161e1537ee4b75d465973eb0da42834110cdb3ab7",
+    "storageVerificationPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v2-20260829/official-storage-readback-verification.json",
+    "storageVerificationSha256": "07c6dd2ad0e5860a67759b329e288b311ebbd7f53fb3fb57894996fd6ebc243f",
+    "solutionManifestPathHint": "%DESKTOP%/數學檔案/完整模考來源/official-solutions-v1-20260829/official-solution-assets.json",
+    "solutionManifestSha256": "f3bdb8d8a016b9e64259633393a32bfe6a14a7b74e3647e0dfe8468e11575079",
+    "answerKeyPapersBehindPostSubmitGate": 7,
+    "officialDetailedSolutionPapers": 1,
+    "officialSolutionPages": 8,
+    "solutionStorageHashMismatches": 0,
+    "edgeFunctionVersion": 34,
     "freshnessStillRequiresUserConfirmation": true
   },
   "localDiscoveryAudit": {
@@ -182,6 +187,69 @@
       "pages": 3,
       "sha256": "dd5905060a7eaeb04e994dc27ad08ef5b763dc704db33098839550d65b653015",
       "handling": "private-source"
+    },
+    {
+      "id": "official-110-trial-question",
+      "fileName": "110_trial_mathA_question.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/110-trial/110_trial_mathA_question.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0L251352223653498027/03-110%E8%A9%A6%E8%BE%A6%E8%80%83%E8%A9%A6%E6%95%B8%E5%AD%B8A%E8%A9%A6%E5%8D%B7%E5%AE%9A%E7%A8%BF.pdf",
+      "pages": 8,
+      "sha256": "1ca9666862d7746dd0378e8dcbdd66236cd09af7a7f5db224ab93f6cc8cca129",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-110-trial-answer",
+      "fileName": "110_trial_mathA_answer.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/110-trial/110_trial_mathA_answer.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0L251353878734295125/03-110%E8%A9%A6%E8%BE%A6%E8%80%83%E8%A9%A6%E6%95%B8%E5%AD%B8A%E9%81%B8%E6%93%87%28%E5%A1%AB%29%E9%A1%8C%E5%8F%83%E8%80%83%E7%AD%94%E6%A1%88%28%E5%AE%9A%E7%A8%BF%29.pdf",
+      "pages": 1,
+      "sha256": "0901af3555a20a2f7d795c6e1d0a2e1f9e9db556729cfd9db02da227aaac4e86",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-110-trial-scoring",
+      "fileName": "110_trial_mathA_scoring.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/110-trial/110_trial_mathA_scoring.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0L273432415778177493/03.110%E5%B9%B4%E8%A9%A6%E8%BE%A6%E8%80%83%E8%A9%A6%E6%95%B8%E5%AD%B8A%E8%80%83%E7%A7%91%E9%9D%9E%E9%81%B8%E6%93%87%E9%A1%8C%E8%A9%95%E5%88%86%E5%8E%9F%E5%89%87.pdf",
+      "pages": 3,
+      "sha256": "7c19c8ec0d7001e12dfaa9b452bbb06c8b2c700971a05b6d5a14d31aafc3a19e",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-110-trial-solution",
+      "fileName": "110_trial_mathA_solution.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/110-trial/110_trial_mathA_solution.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0L273571182596386193/03-110%E5%B9%B4%E8%A9%A6%E8%BE%A6%E8%80%83%E8%A9%A6%E6%95%B8%E5%AD%B8A%E8%A7%A3%E6%9E%90.pdf",
+      "pages": 8,
+      "sha256": "a57633987dcbd0977d2c7d1dc56d50422b4ed033de1f0c6ec49718a2c146554e",
+      "handling": "private-source"
+    },
+    {
+      "id": "reference-111-question",
+      "fileName": "111_reference_mathA_question.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/111-reference/111_reference_mathA_question.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0K022544255211681532/A1-%E6%95%B8%E5%AD%B8A%E8%80%83%E7%A7%91%E5%8F%83%E8%80%83%E8%A9%A6%E5%8D%B7.pdf",
+      "pages": 10,
+      "sha256": "1e508331b0183d06786ac7954505f35e7fff5e676c48c7add08d225e4cf9e305",
+      "handling": "private-source"
+    },
+    {
+      "id": "reference-111-answer",
+      "fileName": "111_reference_mathA_answer.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/111-reference/111_reference_mathA_answer.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0K022544255499439586/A3-%E6%95%B8%E5%AD%B8A%E8%80%83%E7%A7%91%E5%8F%83%E8%80%83%E8%A9%A6%E5%8D%B7%E5%8F%83%E8%80%83%E7%AD%94%E6%A1%88.pdf",
+      "pages": 2,
+      "sha256": "2b6354b999a27bbf2858b19ad99075a8c9466942aaf45b5d51379e5ef2ab5faa",
+      "handling": "private-source"
+    },
+    {
+      "id": "reference-111-solution",
+      "fileName": "111_reference_mathA_solution.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/111-reference/111_reference_mathA_solution.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0K022544256033318514/A4-%E6%95%B8%E5%AD%B8A%E8%80%83%E7%A7%91%E5%8F%83%E8%80%83%E8%A9%A6%E5%8D%B7%E8%A9%A6%E9%A1%8C%E8%A7%A3%E6%9E%90.pdf",
+      "pages": 9,
+      "sha256": "7b546931a93d901de5d50c31b18466698d18260499c400c6900dd1cb3ae66fc4",
+      "handling": "private-source"
     }
   ],
   "papers": [
@@ -329,11 +397,45 @@
       "freshness": "unconfirmed-no-local-use-evidence",
       "calibrationStatus": "reserve-pending-freshness-and-device-check",
       "activationBlockers": ["freshness-confirmation", "galaxy-tab-preflight", "missing-official-detailed-solutions-1-18"]
+    },
+    {
+      "id": "official-110-trial-matha",
+      "appSourceId": "paper-official-110-trial",
+      "title": "110年試辦考試數學A",
+      "questionSource": "official-110-trial-question",
+      "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
+      "printedQuestionPages": 7,
+      "answerSource": "official-110-trial-answer",
+      "answerPdfPages": [1],
+      "scoringSource": "official-110-trial-scoring",
+      "scoringPdfPages": [1, 2, 3],
+      "solutionSource": "official-110-trial-solution",
+      "solutionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "complete-official-solutions-1-20",
+      "freshness": "unconfirmed-no-local-use-evidence",
+      "calibrationStatus": "reserve-pending-freshness-and-device-check",
+      "activationBlockers": ["freshness-confirmation", "galaxy-tab-preflight"]
+    },
+    {
+      "id": "reference-111-matha",
+      "title": "111學年度起適用參考試卷數學A",
+      "questionSource": "reference-111-question",
+      "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      "answerSource": "reference-111-answer",
+      "solutionSource": "reference-111-solution",
+      "questions": 19,
+      "minutes": 100,
+      "solutionCoverage": "complete-official-solutions",
+      "freshness": "unconfirmed-no-local-use-evidence",
+      "calibrationStatus": "ineligible-19-questions",
+      "activationBlockers": ["not-a-20-question-paper"]
     }
   ],
   "selectedNextPaperId": "paper-mock-3",
   "readyFreshCalibrationCount": 0,
-  "provisionalFreshCalibrationCount": 6,
+  "provisionalFreshCalibrationCount": 7,
   "firstSixSourceCountShortfall": 0,
   "firstSixFreshnessConfirmationsNeeded": 6,
   "nextP0": "Confirm paper-mock-3 is unseen, pass the seven-part Galaxy Tab preflight, complete the real 100-minute run with recovery and PDF evidence, then use the in-app private audit archive action."

@@ -362,6 +362,13 @@ Deno.test("paper_solution 只接受同一來源且已完成隔日重想的題", 
   ]);
   assertEquals(paperSolutionFiles("paper-mock-1", 10), []);
   assertEquals(paperSolutionFiles("../paper-mock-1", 12), []);
+  assertEquals(paperSolutionFiles("paper-official-110-trial", 1), [
+    "paper-official-110-trial/page-01-c7d733fea66b.png",
+  ]);
+  assertEquals(paperSolutionFiles("paper-official-110-trial", 20), [
+    "paper-official-110-trial/page-07-081146b891af.png",
+    "paper-official-110-trial/page-08-4ab3b0649c85.png",
+  ]);
   assertEquals(
     absoluteStorageSignedUrl(
       "https://example.supabase.co",
