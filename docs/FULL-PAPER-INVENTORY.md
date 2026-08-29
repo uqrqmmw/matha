@@ -64,6 +64,15 @@
 2. 隔日完成不看詳解的重想，再驗證官方詳解與 AI 詳批閉環。
 3. 111–115 已接入；每回第一次建立 run 時 App 會詢問是否未看過。取消仍可練習，但該回不進級分校準；六回若有任一回已看過，才另補外部新來源。
 
+完成真機驗收後，桌面稽核不需要人工搬平板下載檔；在 repo 執行以下兩行即可從私有 Supabase 抓回 hash-bound 封存並重建稽核：
+
+```powershell
+python scripts/fetch-private-runtime-audits.py
+python scripts/audit-blueprint-readiness.py
+```
+
+抓取器固定使用 Windows 已實測能單檔下載的 Supabase CLI 2.115.0；只接受 `runtime-audits/<user-hash>/matha-paper-runtime-audit-<run>-<sha16>.json`，下載後重算完整 SHA-256。沒有檔案時回報 0 筆，不會把索引冒充驗收證據。
+
 ## 安全邊界
 
 - 清冊只保存檔名、頁碼與 hash；題本、答案及詳解 PDF 不進公開 Git repo。
