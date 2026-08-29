@@ -737,7 +737,7 @@ def audit_starter(work_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     record_path = max(matching_records, key=lambda path: path.stat().st_mtime) \
         if matching_records else None
     if not plan_path.is_file() or record_path is None:
-        deployment_gate = gate("starter-deployment", "Batch 01 Supabase 私有發布與回滾驗證", "blocked", "尚無正式部署記錄", blockers=["真人簽核後建立 bundle、上傳回讀驗 hash、切換 alias 並完成回滾演練"])
+        deployment_gate = gate("starter-deployment", "Starter Supabase 私有發布與回滾驗證", "blocked", "尚無正式部署記錄", blockers=["完成 bundle 上傳、回讀驗 hash、切換 alias 並完成回滾演練"])
     else:
         try:
             plan = load_json(plan_path, "上傳計畫")
@@ -764,7 +764,7 @@ def audit_starter(work_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                 raise ReadinessError("回滾演練記錄未綁定本次部署")
             deployment_gate = gate("starter-deployment", "Starter Supabase 私有發布與回滾驗證", "pass", "部署、alias 與回滾記錄已 hash-bound", evidence=[str(record_path), str(rollback)])
         except ReadinessError as error:
-            deployment_gate = gate("starter-deployment", "Batch 01 Supabase 私有發布與回滾驗證", "fail", str(error))
+            deployment_gate = gate("starter-deployment", "Starter Supabase 私有發布與回滾驗證", "fail", str(error))
     return review, deployment_gate
 
 
