@@ -273,7 +273,7 @@ python scripts/ingest/prepare-starter-combined-review.py \
   --out "<repo 外>/batch-01-combined" --port 8769
 ```
 
-在輸出資料夾執行 `python serve-review.py`，再開啟工具列出的 localhost URL。畫面一次只載入一題，同時呈現原題、去筆跡題、移除區與原書官方答案；圖片可全螢幕放大與雙指縮放。通過時仍須逐項確認原有 7 個像素檢查與 6 個答案／數學檢查。V2 另強制正在看官方答案裁圖的真人輸入最小可判分答案：單選／多選填選項總數與正解編號，非選／計算／證明照官方答案輸入所有最終答案。這不是 OCR；少填、超出選項、單選多解或空答案都不能通過或匯出。最後仍分別下載原格式的兩份具名 JSON；答案 JSON 只多出 hash-bound `structuredAnswer`。整合 UI 只減少重複翻頁，不合併關卡，也不產生發布權限。
+在輸出資料夾執行 `python serve-review.py`，再開啟工具列出的 localhost URL。畫面一次只載入一題，同時呈現原題、去筆跡題、移除區與原書官方答案；圖片可全螢幕放大與雙指縮放。通過時仍須逐項確認原有 7 個像素檢查與 6 個答案／數學檢查。V2 另強制正在看官方答案裁圖的真人輸入最小可判分答案：單選／多選填選項總數與正解編號，非選／計算／證明照官方答案輸入所有最終答案。這不是 OCR；少填、超出選項、單選多解或空答案都不能通過或匯出。頁面除了 packet-hash 隔離的 localStorage，還可隨時下載完整進度 checkpoint；恢復時必須題數、題號與 packet SHA-256 全部相符，未知欄位會被清掉，錯批或缺題檔不會覆蓋現有狀態。最後仍分別下載原格式的兩份具名 JSON；答案 JSON 只多出 hash-bound `structuredAnswer`。整合 UI 只減少重複翻頁，不合併關卡，也不產生發布權限。
 
 ### 5c. `intersect-cleaned-human-reviews.py` — 雙真人審核交集（仍不發布）
 

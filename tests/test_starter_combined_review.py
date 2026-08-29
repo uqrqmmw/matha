@@ -121,12 +121,63 @@ class StarterCombinedReviewTests(unittest.TestCase):
             self.assertIn("structuredAnswerRequired", html)
             self.assertIn("officialAnswerText", html)
             self.assertIn("correctOptionNumbers", html)
+            self.assertIn("starter-combined-review-checkpoint", html)
+            self.assertIn("packetSha256!==packetHash", html)
+            self.assertIn("進度檔題數不完整，已拒絕匯入", html)
+            self.assertIn("sanitizeState", html)
             script = html.rsplit("<script>", 1)[1].split("</script>", 1)[0]
             script_path = root / "inline.js"
             script_path.write_text(script, encoding="utf-8")
             check = subprocess.run(["node", "--check", str(script_path)],
                                    capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(check.returncode, 0, check.stderr)
+
+            runner = root / "checkpoint-test.js"
+            runner.write_text(f"""
+const vm = require('vm');
+const assert = require('assert');
+const store = new Map(), alerts = [], nodes = new Map();
+function element() {{
+  const child = {{ classList: {{ add() {{}}, remove() {{}} }} }};
+  return {{ value:'', innerHTML:'', textContent:'', hidden:false, disabled:false,
+    dataset:{{}}, classList:{{ add() {{}}, remove() {{}} }}, click() {{}},
+    querySelector() {{ return child; }} }};
+}}
+const document = {{
+  getElementById(id) {{ if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); }},
+  querySelectorAll() {{ return []; }}, createElement() {{ return element(); }}
+}};
+const context = {{ document, console, Map, Set, JSON, Date, Number, String, Array,
+  localStorage: {{ getItem:k=>store.has(k)?store.get(k):null, setItem:(k,v)=>store.set(k,String(v)) }},
+  alert:message=>alerts.push(String(message)), Blob:class {{}},
+  URL:{{ createObjectURL:()=>'', revokeObjectURL:()=>{{}} }}, setTimeout:fn=>fn() }};
+vm.createContext(context);
+vm.runInContext({json.dumps(script)}, context);
+(async () => {{
+  const hash = {json.dumps(packet['packetSha256'])}, id = 'q-1';
+  await context.importCheckpoint({{ text: async()=>JSON.stringify({{
+    kind:'starter-combined-review-checkpoint',version:1,packetSha256:'wrong',states:[]
+  }}) }});
+  assert.match(alerts.pop(), /不屬於這一批/);
+  assert.strictEqual(store.has(`matha-combined-review:${{hash}}:${{id}}`), false);
+  await context.importCheckpoint({{ text: async()=>JSON.stringify({{
+    kind:'starter-combined-review-checkpoint',version:1,packetSha256:hash,reviewer:'王小明',
+    states:[{{id,state:{{pixelDecision:'pass',answerDecision:'reject',pixelVisual:{{allHandwritingRemoved:true}},answerMode:'unsafe',officialAnswerText:'x',unknown:'drop'}}}}]
+  }}) }});
+  const saved=JSON.parse(store.get(`matha-combined-review:${{hash}}:${{id}}`));
+  assert.strictEqual(saved.pixelDecision,'pass');
+  assert.strictEqual(saved.answerDecision,'reject');
+  assert.strictEqual(saved.pixelVisual.allHandwritingRemoved,true);
+  assert.strictEqual(saved.answerMode,'text');
+  assert.strictEqual(saved.unknown,undefined);
+  assert.strictEqual(store.get(`matha-combined-review:${{hash}}:reviewer`),'王小明');
+  assert.match(alerts.pop(), /進度已恢復/);
+}})().catch(error=>{{ console.error(error); process.exitCode=1; }});
+""", encoding="utf-8")
+            checkpoint = subprocess.run(
+                ["node", str(runner)], capture_output=True, text=True, encoding="utf-8"
+            )
+            self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
 
     def test_refuses_private_combined_packet_inside_repo(self):
         with tempfile.TemporaryDirectory() as temp:

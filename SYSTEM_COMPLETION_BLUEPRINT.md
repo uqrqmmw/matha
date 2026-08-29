@@ -38,7 +38,7 @@
 
 14 單元 coverage matrix 與 364 題 starter 候選已建立；只採高信心 `bookId + PDF 頁碼` 映射入選。兩本跨主題書已回到原始 PDF 印刷章節頁核界，不採信 OCR 章名。每單元 26 題、共 308 題含圖，已切成 11 批並產出兩種人工 QA 工作包。全量驗證器逐題重算 batch、原題、清理題、移除區、官方答案及 review template 雜湊，364/364 一致。抽查發現的 `matrix-equation-p102-ex19` 像素漂移仍隔離；完整證據見 `docs/STARTER_BANK_COVERAGE.md`。
 
-11 批另已產出 hash-bound V2 單題整合複核台，同一畫面核對原題、去筆跡、移除區與官方答案，仍分別輸出兩份相容的具名審核 JSON。答案關卡強制真人把官方答案輸入為 App 可判分結構；空答案、單選多解、選項越界或缺小題不能通過。V2 schema 與來源 template hash 都納入 packet 身分，避免舊 localStorage 審核污染新版。11 包已核對雜湊唯一與 364 題總數；Batch 01 主頁及四種題目／答案資產皆經 localhost 實測 HTTP 200。一次只渲染一題並可全螢幕雙指縮放；舊 V1 與 pre-hashbound V2 複核台不可再用。
+11 批另已產出 resumable hash-bound V2 單題整合複核台，同一畫面核對原題、去筆跡、移除區與官方答案，仍分別輸出兩份相容的具名審核 JSON。答案關卡強制真人把官方答案輸入為 App 可判分結構；空答案、單選多解、選項越界或缺小題不能通過。V2 schema 與來源 template hash 都納入 packet 身分，避免舊 localStorage 審核污染新版；35 題途中可另下載完整 checkpoint，恢復時核對 packet SHA-256、完整題號集合並清洗欄位，瀏覽器狀態遺失時不必重做。11 包已核對 364 題總數；Batch 01 主頁及四種題目／答案資產皆經 localhost 實測 HTTP 200。一次只渲染一題並可全螢幕雙指縮放；所有舊 combined 複核台不可再用。
 
 雙審核後的發布鏈已補齊：交集驗證器拒絕缺少或矛盾的結構化正解；發布準備器重驗 catalog PDF、題圖、答案圖、頁碼、單元與所有 SHA-256，並依 exact source hash 固定抽查 10 題；具名真人完成抽查後才可簽核。Bundle 中題包、題圖與 manifest 都使用不可變 `releases/<releaseId>/...` 路徑；部署器先逐檔上傳回讀驗雜湊，最後才切固定 alias，並保存上一版 alias 供防覆蓋回滾。這只完成工程關卡；目前尚無真人 Batch 01 結果，正式題仍是 0。
 
