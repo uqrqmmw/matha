@@ -81,17 +81,24 @@ test('重建基準只排除舊分析，原始作答與原卷仍保留且舊裝�
     S.corrections = [{ id:'old-batch', name:'舊制系統模考', d:today(), due:today(), mockTs:50, mt:200,
       entries:[{ qid:q.id, done:false, attempts:0, logs:[] }] }];
     S.paperRuns = [{ id:'old-paper', sourceId:source.id, name:source.title, status:'awaiting-correction', due:today(),
-      createdAt:30, submittedAt:50, score:75, wrongNos:[2], aiGrade:{ gradedAt:50, adjustedAt:200, score:75, wrongNos:[2], questions:[] }, review:{} }];
+      createdAt:30, submittedAt:50, mt:200, score:75, wrongNos:[2], aiGrade:{ gradedAt:50, adjustedAt:200, score:75, wrongNos:[2],
+        questions:[{ no:2, topic:'num', status:'incorrect', points:0, maxPoints:5 }] },
+      review:{ 2:{ done:false, attempts:1, logs:[{ ts:200, kind:'retry', topic:'num', direction:'歷史卷的新訂正不得復活舊基準' }] } } }];
     S.learningBaselineResetAt = 100;
+    paperSourceUpdateExtMock(source, S.paperRuns[0]);
     const merged = mergeState({ learningBaselineResetAt:100, attempts:S.attempts }, { learningBaselineResetAt:80, attempts:[] });
     __app.innerHTML = '';
     renderCorrections();
     const correctionHtml = __app.innerHTML;
     startPaperAnswerReview('old-paper');
+    const blockedDirectStart = !paperReview;
+    let archivedStart = null;
+    startPaperAnswerReview = (id, allowArchived) => { archivedStart = { id, allowArchived }; };
+    startArchivedPaperAnswerReview('old-paper', true);
     return { evidence:learningEvidenceLedger().length, cal:mockCalibration().count, action:nextBestAction().kind,
       attempts:S.attempts.length, papers:S.paperRuns.length, history:paperRunHistoryHTML(), corrections:correctionHtml,
       pending:pendingCorrections().length, signals:Object.keys(diagnosticTopicSignals()).length,
-      blockedDirectStart:!paperReview, mergedCut:merged.learningBaselineResetAt };
+      blockedDirectStart, archivedStart, mergedCut:merged.learningBaselineResetAt };
   })()`));
   assert.equal(result.evidence, 0);
   assert.equal(result.cal, 0);
@@ -99,11 +106,13 @@ test('重建基準只排除舊分析，原始作答與原卷仍保留且舊裝�
   assert.equal(result.attempts, 1);
   assert.equal(result.papers, 1);
   assert.match(result.history, /基準重置前，僅保留卷面/);
+  assert.match(result.history, /歷史卷驗收訂正/);
   assert.doesNotMatch(result.history, /75\/100/);
   assert.doesNotMatch(result.corrections, /75\/100|第一次模考|舊制系統模考/);
   assert.equal(result.pending, 0, '舊批次後續同步時間變新，也不能復活成待訂正');
   assert.equal(result.signals, 0, '舊批次後續同步時間變新，也不能污染弱項模型');
   assert.equal(result.blockedDirectStart, true);
+  assert.deepEqual(result.archivedStart, { id:'old-paper', allowArchived:true });
   assert.equal(result.mergedCut, 100);
 });
 

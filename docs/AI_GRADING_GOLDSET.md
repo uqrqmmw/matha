@@ -79,7 +79,7 @@ node scripts/run-paper-detail-gold.js `
   --out 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-prediction-gpt-5.5-v1.json'
 ```
 
-Edge Function 仍會檢查雲端真實流程，不能用此工具繞過隔日重想。2026-08-29 實查首回歷史 run 的 7 題皆為 `attempts=0` 且沒有 `retry` log；測試請求因此在模型呼叫與額度 claim 之前正確回 403，沒有產生模型費用。只有本人在 app 保存真實重想後才可續跑。
+Edge Function 仍會檢查雲端真實流程，不能用此工具繞過隔日重想。2026-08-29 實查首回歷史 run 的 7 題皆為 `attempts=0` 且沒有 `retry` log；測試請求因此在模型呼叫與額度 claim 之前正確回 403，沒有產生模型費用。本人可在 App 依序開啟「模考與破題 → 原卷作答歷史 → 歷史卷驗收訂正」，逐題保存真實重想後再續跑。這條具名入口只建立該歷史卷的詳批驗收證據；直接啟動舊卷仍 fail closed，新增的訂正、同步時間與詳批結果也永不進入重置後的級分、弱點或推薦。
 
 正式門檻分開計算：有診斷輸出的 precision ≥ 90%、可診斷案例 coverage ≥ 60%、abstain 題無證據診斷為 0、正確前綴辨識 ≥ 80%。不得手改 `releaseAuthority`；先建立七題並排視覺複核包：
 

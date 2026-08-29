@@ -904,6 +904,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .paper-work-title b, .paper-work-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .paper-work-title b { font-size: 13px; }
 .paper-work-title small { color: var(--dim); font-size: 11px; }
+.paper-review-eval-note { color: #745f4f; font-size: 10px; line-height: 1.25; white-space: nowrap; }
 .paper-workgroup { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .paper-workgroup.right { justify-content: flex-end; }
 .paper-icon-btn, .paper-ink-tools button { appearance: none; min-width: 44px; min-height: 44px; border: 1px solid var(--border); background: #f8f6f1; color: var(--text); border-radius: var(--r-s); font: inherit; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
