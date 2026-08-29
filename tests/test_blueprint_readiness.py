@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,67 @@ def digest(path: Path) -> str:
 
 
 class BlueprintReadinessTests(unittest.TestCase):
+    def private_integration_fixture(self, root: Path) -> dict:
+        app_version = audit.current_app_version()
+        app_source = (ROOT / "app.js").read_text(encoding="utf-8")
+        assets_root = root / "assets"
+        papers = []
+        storage_assets = []
+        for year in range(111, 116):
+            paper_id = f"official-{year}-matha"
+            rows = []
+            names = re.findall(
+                rf"{paper_id}/(page-\d{{2}}-[a-f0-9]{{12}}\.png)", app_source
+            )
+            self.assertEqual(len(names), 8)
+            for page, name in enumerate(names, start=1):
+                relative = f"{paper_id}/{name}"
+                path = assets_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(f"{paper_id}-{page}".encode())
+                row = {"file": relative, "sha256": digest(path), "bytes": path.stat().st_size}
+                rows.append(row)
+                storage_assets.append(dict(row))
+            papers.append({
+                "paperId": paper_id, "assets": rows,
+                "questionPageMap": [2, 3, 4, 5, 6, 7] + [7] * 14,
+            })
+        asset_manifest = assets_root / "official-paper-assets.json"
+        write_json(asset_manifest, {
+            "kind": "matha-official-paper-assets-v1", "releaseAuthority": False,
+            "paperCount": 5, "assetCount": 40, "papers": papers,
+        })
+        visual = assets_root / "visual.json"
+        write_json(visual, {
+            "schema": 1, "releaseAuthority": False, "papersReviewed": 5, "pagesReviewed": 40,
+            "checks": {
+                "pageOrder": "pass", "cropCompleteness": "pass",
+                "chineseReadability": "pass", "formulaReadability": "pass",
+                "diagramPreservation": "pass", "grayscalePreservation": "pass",
+                "handwritingPresent": False, "answerLeakageInQuestionPages": False,
+            },
+        })
+        storage = assets_root / "storage.json"
+        write_json(storage, {
+            "kind": "matha-official-paper-storage-verification-v1",
+            "releaseAuthority": False, "readOnlyVerification": True,
+            "projectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-papers",
+            "sourceManifestSha256": digest(asset_manifest), "paperCount": 5,
+            "assetCount": 40, "remoteHashMismatches": 0, "assets": storage_assets,
+        })
+        return {
+            "status": "deployed-and-hash-verified", "appVersion": app_version,
+            "supabaseProjectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-papers",
+            "officialPapers": 5, "officialPages": 40, "remoteHashMismatches": 0,
+            "assetManifestPathHint": str(asset_manifest),
+            "assetManifestSha256": digest(asset_manifest),
+            "visualReviewPathHint": str(visual), "visualReviewSha256": digest(visual),
+            "storageVerificationPathHint": str(storage),
+            "storageVerificationSha256": digest(storage),
+            "answerKeyPapersBehindPostSubmitGate": 6, "edgeFunctionVersion": 31,
+            "freshnessStillRequiresUserConfirmation": True,
+        }
+
     def test_local_discovery_requires_exact_report_and_visual_review_hashes(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -67,10 +129,12 @@ class BlueprintReadinessTests(unittest.TestCase):
             inventory = root / "inventory.json"
             ready = [{
                 "id": f"paper-{index}", "questions": 20, "minutes": 100,
+                "appSourceId": f"paper-source-{index}",
                 "freshness": "confirmed-unseen", "calibrationStatus": "ready-fresh",
             } for index in range(6)]
             write_json(inventory, {
                 "schema": 1,
+                "privateAppIntegration": self.private_integration_fixture(root),
                 "sourceDocuments": [{"id": "source", "fileName": source.name, "sha256": digest(source)}],
                 "papers": ready,
             })
@@ -78,6 +142,7 @@ class BlueprintReadinessTests(unittest.TestCase):
             ready.pop()
             write_json(inventory, {
                 "schema": 1,
+                "privateAppIntegration": self.private_integration_fixture(root),
                 "sourceDocuments": [{"id": "source", "fileName": source.name, "sha256": digest(source)}],
                 "papers": ready,
             })

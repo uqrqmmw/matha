@@ -10,6 +10,12 @@
     "officialPapers": 5,
     "officialPages": 40,
     "remoteHashMismatches": 0,
+    "assetManifestPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v1-20260829/official-paper-assets.json",
+    "assetManifestSha256": "ceae87e89a2e86eedd198ea33c369a109fbb4a88a36ee8a326eaae3df406577b",
+    "visualReviewPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v1-20260829/official-assets-visual-review.json",
+    "visualReviewSha256": "b4c4c28487b6d6baa5197bcc0b0d7bff056076d8470612b7180321f2830965e6",
+    "storageVerificationPathHint": "%DESKTOP%/數學檔案/完整模考來源/app-pages-v1-20260829/official-storage-readback-verification.json",
+    "storageVerificationSha256": "b769f9cd5b532502f10f653f5d6749aed564057599853a27fe44aa0f87cdbf79",
     "answerKeyPapersBehindPostSubmitGate": 6,
     "edgeFunctionVersion": 31,
     "freshnessStillRequiresUserConfirmation": true
