@@ -69,6 +69,11 @@ function questionSignature(q, maskNumbers, includeAnswer = true) {
     opts: Array.isArray(q && q.opts) ? q.opts.map(norm) : [],
     ans: includeAnswer && Array.isArray(q && q.ans) ? q.ans.map((value) => norm(value)) : [],
     fig: norm(q && q.fig),
+    // Image-first textbook questions deliberately share a minimal index label.
+    // Their trusted full-stem pixel hash is the question content identity; if it
+    // is omitted, unrelated crops with the same final answer collapse as fake
+    // duplicates during the private build.
+    stemAssetSha256: String(q && q.stemAsset && q.stemAsset.sha256 || ''),
   });
 }
 

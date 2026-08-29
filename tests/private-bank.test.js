@@ -220,6 +220,29 @@ test('同一短問句但題幹或答案不同不得被當成重複題刪除', ()
   assert.notEqual(questionSignature(source[0], false, true), questionSignature(source[1], false, true));
 });
 
+test('影像優先題以完整題面像素雜湊區分，不因相同索引文字與答案被誤刪', () => {
+  const stem = (id, hash) => ({
+    path:`book/${id}.png`, sha256:hash, sourcePdfSha256:'018659d0af52c6464863f5088c29fe8ce0638193faddd2c361a3695687bd5f7b',
+    pageIndex:12, bbox:[0,.1,1,.2], role:'question-stem', assetStatus:'verified', mime:'image/png',
+    width:1200, height:300, containsAnswer:false, containsSolution:false, containsHandwriting:false,
+    questionIds:[id], bookId:'matha-114-real-number-line', producer:'pixel-producer',
+    verifier:{ reviewer:'human-reviewer', reviewVersion:1, questionRoleVerified:true,
+      safetyVerified:true, assetHashVerified:true, fullStemVerified:true, optionsVerified:true,
+      verifiedAt:'2026-08-29T10:00:00+08:00' },
+  });
+  const first = q('image-first-a', '完整題目請見原題裁圖。', {
+    bookId:'matha-114-real-number-line', page:12, displayTruth:'original-pdf-crop',
+    needsStemAsset:true, stemAsset:stem('image-first-a', 'a'.repeat(64)),
+  });
+  const second = q('image-first-b', '完整題目請見原題裁圖。', {
+    bookId:'matha-114-real-number-line', page:12, displayTruth:'original-pdf-crop',
+    needsStemAsset:true, stemAsset:stem('image-first-b', 'b'.repeat(64)),
+  });
+  const result = sanitizeBank([first, second], []);
+  assert.deepEqual(result.items.map((row) => row.id), ['image-first-a', 'image-first-b']);
+  assert.notEqual(questionSignature(first, false, true), questionSignature(second, false, true));
+});
+
 test('只改數字的題目會共用模板群組，避免同輪重複骨架', () => {
   const result = sanitizeBank([q('a-1', '計算 12+3'), q('a-2', '計算 18+7')], []);
   assert.equal(result.items.length, 2);

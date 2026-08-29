@@ -108,6 +108,9 @@ class StarterCombinedReviewTests(unittest.TestCase):
             packet = combined.build(queue, pixel, answer, output, 8769)
             html = (output / "review.html").read_text("utf-8")
             self.assertFalse(packet["releaseAuthority"])
+            self.assertEqual(packet["version"], 2)
+            self.assertTrue(packet["structuredAnswerRequired"])
+            self.assertEqual(packet["combinedReviewVersion"], 2)
             self.assertEqual(packet["questions"], 1)
             self.assertIn("cleaned-handwriting-human-review.json", html)
             self.assertIn("cleaned-answer-human-review.json", html)
@@ -115,11 +118,14 @@ class StarterCombinedReviewTests(unittest.TestCase):
             self.assertIn("allHandwritingRemoved", html)
             self.assertIn("source.png", html)
             self.assertIn("answer.png", html)
+            self.assertIn("structuredAnswerRequired", html)
+            self.assertIn("officialAnswerText", html)
+            self.assertIn("correctOptionNumbers", html)
             script = html.rsplit("<script>", 1)[1].split("</script>", 1)[0]
             script_path = root / "inline.js"
             script_path.write_text(script, encoding="utf-8")
             check = subprocess.run(["node", "--check", str(script_path)],
-                                   capture_output=True, text=True)
+                                   capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_refuses_private_combined_packet_inside_repo(self):

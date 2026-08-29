@@ -9,11 +9,13 @@ import json
 import shutil
 import subprocess
 import sys
+import re
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MANIFEST_ALIAS = "manifest-mistral-ocr4-verified-v1.json"
+SAFE_RELEASE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
 
 
 class BundleError(RuntimeError):
@@ -65,11 +67,18 @@ def assemble(source_file: Path, promotion_root: Path, output_root: Path) -> dict
             or source.get("mathematicalCorrectnessVerified") is not True \
             or not source.get("releaseApprovedBy"):
         raise BundleError("Source must be mathematically verified and human-signed")
+    release_id = source.get("releaseId")
+    if not isinstance(release_id, str) or not SAFE_RELEASE_ID.fullmatch(release_id):
+        raise BundleError("Source releaseId is missing or unsafe")
+    release_prefix = f"releases/{release_id}"
 
     build_root = output_root / "_build"
     command = ["node", str(REPO_ROOT / "scripts" / "build-private-bank.js"),
                "--source", str(source_file.resolve()), "--output", str(build_root)]
-    completed = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True, check=False)
+    completed = subprocess.run(
+        command, cwd=REPO_ROOT, text=True, encoding="utf-8",
+        capture_output=True, check=False,
+    )
     if completed.returncode:
         raise BundleError(f"Private bank build failed: {completed.stderr[:1200]}")
     manifest = read_json(build_root / "manifest.json")
@@ -81,14 +90,34 @@ def assemble(source_file: Path, promotion_root: Path, output_root: Path) -> dict
     content_root.mkdir(parents=True, exist_ok=True)
     figure_root.mkdir(parents=True, exist_ok=True)
     content_files = []
-    for filename in [*(pack["file"] for pack in manifest.get("packs") or []), "pending-visuals.json"]:
+    for pack in manifest.get("packs") or []:
+        filename = pack["file"]
         source_path = build_root / filename
-        target = safe_join(content_root, filename)
+        versioned = f"{release_prefix}/content/{filename}"
+        target = safe_join(content_root, versioned)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, target)
-        content_files.append({"path": filename, "sha256": sha256(target), "bytes": target.stat().st_size})
+        pack["file"] = versioned
+        content_files.append({"path": versioned, "sha256": sha256(target), "bytes": target.stat().st_size})
+    pending_source = build_root / "pending-visuals.json"
+    pending_versioned = f"{release_prefix}/content/pending-visuals.json"
+    pending_target = safe_join(content_root, pending_versioned)
+    pending_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(pending_source, pending_target)
+    content_files.append({"path": pending_versioned, "sha256": sha256(pending_target),
+                          "bytes": pending_target.stat().st_size})
+    manifest["releaseId"] = release_id
+    if isinstance(manifest.get("pendingVisuals"), dict):
+        manifest["pendingVisuals"]["file"] = pending_versioned
+    manifest_bytes = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    versioned_manifest_path = f"{release_prefix}/manifest.json"
+    versioned_manifest = safe_join(content_root, versioned_manifest_path)
+    versioned_manifest.parent.mkdir(parents=True, exist_ok=True)
+    versioned_manifest.write_bytes(manifest_bytes)
+    content_files.append({"path": versioned_manifest_path, "sha256": sha256(versioned_manifest),
+                          "bytes": versioned_manifest.stat().st_size})
     manifest_target = content_root / MANIFEST_ALIAS
-    shutil.copy2(build_root / "manifest.json", manifest_target)
+    manifest_target.write_bytes(manifest_bytes)
     content_files.append({"path": MANIFEST_ALIAS, "sha256": sha256(manifest_target),
                           "bytes": manifest_target.stat().st_size})
 
@@ -115,6 +144,9 @@ def assemble(source_file: Path, promotion_root: Path, output_root: Path) -> dict
     plan = {
         "kind": "matha-private-storage-upload-plan", "version": 1,
         "releaseReady": True, "uploadPerformed": False,
+        "releaseId": release_id,
+        "manifestAlias": MANIFEST_ALIAS,
+        "versionedManifest": versioned_manifest_path,
         "source": str(source_file.resolve()), "sourceSha256": sha256(source_file),
         "releaseApprovedBy": source["releaseApprovedBy"],
         "buckets": {
@@ -127,6 +159,7 @@ def assemble(source_file: Path, promotion_root: Path, output_root: Path) -> dict
     plan_file = output_root / "upload-plan.json"
     plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     return {**plan["summary"], "manifestAlias": MANIFEST_ALIAS,
+            "releaseId": release_id, "versionedManifest": versioned_manifest_path,
             "uploadPlan": str(plan_file), "uploadPlanSha256": sha256(plan_file)}
 
 

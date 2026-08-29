@@ -273,7 +273,7 @@ python scripts/ingest/prepare-starter-combined-review.py \
   --out "<repo 外>/batch-01-combined" --port 8769
 ```
 
-在輸出資料夾執行 `python serve-review.py`，再開啟工具列出的 localhost URL。畫面一次只載入一題，同時呈現原題、去筆跡題、移除區與原書官方答案；圖片可全螢幕放大與雙指縮放。通過時仍須逐項確認原有 7 個像素檢查與 6 個答案／數學檢查，最後分別下載原格式的兩份具名 JSON。整合 UI 只減少重複翻頁，不合併關卡，也不產生發布權限。
+在輸出資料夾執行 `python serve-review.py`，再開啟工具列出的 localhost URL。畫面一次只載入一題，同時呈現原題、去筆跡題、移除區與原書官方答案；圖片可全螢幕放大與雙指縮放。通過時仍須逐項確認原有 7 個像素檢查與 6 個答案／數學檢查。V2 另強制正在看官方答案裁圖的真人輸入最小可判分答案：單選／多選填選項總數與正解編號，非選／計算／證明照官方答案輸入所有最終答案。這不是 OCR；少填、超出選項、單選多解或空答案都不能通過或匯出。最後仍分別下載原格式的兩份具名 JSON；答案 JSON 只多出 hash-bound `structuredAnswer`。整合 UI 只減少重複翻頁，不合併關卡，也不產生發布權限。
 
 ### 5c. `intersect-cleaned-human-reviews.py` — 雙真人審核交集（仍不發布）
 
@@ -289,11 +289,57 @@ python scripts/ingest/intersect-cleaned-human-reviews.py \
   --out "<repo 外>/cleaned-dual-review-candidates.json"
 ```
 
-驗證器會拒絕未完成審核、AI／bot 審核者、無時區時間戳、題目缺漏或重複、來源／題面／答案／紅圖雜湊漂移、通過題仍有未勾安全項，以及答案綁定隔離題。只有去筆跡像素 QA 與答案數學 QA 都通過的題會進交集。輸出仍固定 `releaseAuthority:false`、`uploadPerformed:false`；還需要另一道具名真人發布簽核及私有素材部署，不能直接被正式 app 載入。
+驗證器會拒絕未完成審核、AI／bot 審核者、無時區時間戳、題目缺漏或重複、來源／題面／答案／紅圖雜湊漂移、通過題仍有未勾安全項、缺少或矛盾的 `structuredAnswer`，以及答案綁定隔離題。只有去筆跡像素 QA 與答案數學 QA 都通過的題會進交集。輸出仍固定 `releaseAuthority:false`、`uploadPerformed:false`；還需要另一道具名真人發布簽核及私有素材部署，不能直接被正式 app 載入。
+
+### 5d. Starter 具名發布、版本化上傳與可驗證回滾
+
+雙審核交集完成後，用 `prepare-starter-private-release.py prepare` 把題圖、14 單元映射、真人輸入的正解與原始 catalog PDF 重新交叉核對。工具不呼叫 OCR 或模型；任一 PDF／題圖／答案圖／題號／頁碼／單元／正解雜湊不一致即停止。它產生 image-first 私有題源、版本化題圖路徑，以及由 exact source hash 決定的固定 10 題視覺抽查頁：
+
+```powershell
+python scripts/ingest/prepare-starter-private-release.py prepare `
+  --dual-review "<repo 外>/batch-01-dual-review.json" `
+  --selection "<repo 外>/queue/starter-review-selection.json" `
+  --pdf-root "<原始 PDF 目錄>" `
+  --output "<repo 外>/batch-01-release-preparation"
+```
+
+具名真人在 `release-review.html` 對照即將發布的題面、官方答案與 App 判分答案，十題都確認後匯出 `starter-private-release-signoff.json`。再以 `finalize` 驗證全部 exact hash、抽查題號與簽核人；AI／bot 名稱、未勾抽查、改過的題源或資產都會被拒絕：
+
+```powershell
+python scripts/ingest/prepare-starter-private-release.py finalize `
+  --source "<準備目錄>/unsigned-private-question-source.json" `
+  --asset-manifest "<準備目錄>/asset-manifest.json" `
+  --signoff "<真人下載>/starter-private-release-signoff.json" `
+  --output "<準備目錄>/signed-private-question-source.json"
+
+python scripts/ingest/assemble-private-release.py `
+  --source "<準備目錄>/signed-private-question-source.json" `
+  --promotion-root "<準備目錄>/promotion" `
+  --output "<repo 外>/batch-01-upload-bundle"
+```
+
+Bundle 中所有題包、題圖與版本 manifest 都放在不可變的 `releases/<releaseId>/...`；固定 alias `manifest-mistral-ocr4-verified-v1.json` 只在最後一步切換。`deploy-private-release.py deploy` 會先上傳並逐檔回讀驗 SHA-256，再次確認 alias 未被別人改動，最後才 upsert alias，並把上一版 alias 原始 bytes 保存於 repo 外的 deployment record。部署記錄不保存 service key。正式執行時金鑰只從環境讀取：
+
+```powershell
+$env:SUPABASE_URL = "https://<project-ref>.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY = "<只存在目前安全工作階段>"
+python scripts/ingest/deploy-private-release.py deploy `
+  --plan "<upload-bundle>/upload-plan.json" `
+  --record "<repo 外>/deployment-record.json" `
+  --expected-previous-sha256 "<部署前 alias SHA-256>"
+```
+
+若新版本需撤回，只能在 alias 仍等於該 deployment record 的新版本雜湊時回滾；如果已有更新版本，工具會拒絕覆蓋。回滾只恢復舊 alias，不刪任何版本化物件：
+
+```powershell
+python scripts/ingest/deploy-private-release.py rollback `
+  --deployment-record "<repo 外>/deployment-record.json" `
+  --record "<repo 外>/rollback-record.json"
+```
 
 先前預備的 TextIn 工具仍保留作供應商備援，但目前不作主線：
 
-### 5d. `erase-handwriting-textin.py` — 備援去手寫
+### 5e. `erase-handwriting-textin.py` — 備援去手寫
 
 若原卷只有答案格或頁邊空白上的手寫，可使用 [TextIn 官方「自動擦除手寫文字」API](https://www.textin.com/document/text_auto_removal) 產生待複核衍生圖：
 

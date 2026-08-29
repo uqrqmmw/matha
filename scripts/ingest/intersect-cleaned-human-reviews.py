@@ -141,6 +141,55 @@ def validate_complete_review(
     return rows
 
 
+def validate_structured_answer(value: Any, question_id: str) -> dict[str, Any]:
+    """Validate the human transcription needed by the student app.
+
+    Official-answer pixels remain the source of truth.  This structure is only
+    a minimal, hash-bound grading representation entered while the reviewer is
+    looking at those pixels; absent or ambiguous values fail closed.
+    """
+    if not isinstance(value, dict) or value.get("schema") != 1:
+        raise DualReviewError(f"answer review {question_id}: structured answer missing")
+    mode = value.get("mode")
+    if mode == "text":
+        text = value.get("officialAnswerText")
+        if not isinstance(text, str) or not text.strip() or len(text.strip()) > 4000:
+            raise DualReviewError(
+                f"answer review {question_id}: official answer text is invalid"
+            )
+        if set(value) - {"schema", "mode", "officialAnswerText"}:
+            raise DualReviewError(
+                f"answer review {question_id}: unexpected structured answer fields"
+            )
+        return {"schema": 1, "mode": "text", "officialAnswerText": text.strip()}
+    if mode not in {"single", "multi"}:
+        raise DualReviewError(f"answer review {question_id}: answer mode is invalid")
+    option_count = value.get("optionCount")
+    numbers = value.get("correctOptionNumbers")
+    if (not isinstance(option_count, int) or isinstance(option_count, bool)
+            or not 2 <= option_count <= 12):
+        raise DualReviewError(f"answer review {question_id}: option count is invalid")
+    if (not isinstance(numbers, list) or not numbers
+            or any(not isinstance(number, int) or isinstance(number, bool)
+                   for number in numbers)
+            or len(numbers) != len(set(numbers))
+            or any(number < 1 or number > option_count for number in numbers)
+            or (mode == "single" and len(numbers) != 1)):
+        raise DualReviewError(
+            f"answer review {question_id}: correct option numbers are invalid"
+        )
+    if set(value) - {"schema", "mode", "optionCount", "correctOptionNumbers"}:
+        raise DualReviewError(
+            f"answer review {question_id}: unexpected structured answer fields"
+        )
+    return {
+        "schema": 1,
+        "mode": mode,
+        "optionCount": option_count,
+        "correctOptionNumbers": numbers,
+    }
+
+
 def validate_overlay_assets(
     template: dict[str, Any], review_rows: dict[str, dict[str, Any]], root: Path,
     candidate_hash: str,
@@ -307,10 +356,17 @@ def intersect(
     )
     if answer_review.get("answerBindingSha256") != binding_hash:
         raise DualReviewError("answer review binding manifest hash mismatch")
+    if answer_review.get("structuredAnswerRequired") is not True:
+        raise DualReviewError("answer review does not require structured answers")
     answer_rows = validate_complete_review(
         answer_review, binding_rows, ANSWER_CHECKS,
         ("cleanedSha256", "answerSha256", "sourcePdfSha256"), "answer review",
     )
+    normalized_answers = {
+        qid: validate_structured_answer(row.get("structuredAnswer"), qid)
+        for qid, row in answer_rows.items()
+        if row.get("decision") == "pass"
+    }
 
     pixel_passed = {qid for qid, row in pixel_rows.items() if row["decision"] == "pass"}
     answer_passed = {qid for qid, row in answer_rows.items() if row["decision"] == "pass"}
@@ -349,6 +405,7 @@ def intersect(
             "sourcePdfSha256": answer.get("sourcePdfSha256"),
             "figureCount": answer.get("figureCount"),
             "figureSha256": answer.get("figureSha256"),
+            "structuredAnswer": normalized_answers[qid],
         })
 
     document = {

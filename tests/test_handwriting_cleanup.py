@@ -632,6 +632,10 @@ class CleanedDualHumanReviewTests(unittest.TestCase):
                 "answerSha256": sha(answer), "sourcePdfSha256": sha(source),
                 "decision": "pass",
                 "visual": {key: True for key in intersect_clean_reviews.ANSWER_CHECKS},
+                "structuredAnswer": {
+                    "schema": 1, "mode": "text",
+                    "officialAnswerText": f"答案 {index}",
+                },
                 "notes": "",
             })
         candidate = root / "candidates.json"
@@ -675,6 +679,7 @@ class CleanedDualHumanReviewTests(unittest.TestCase):
         answer_review.write_text(json.dumps({
             "kind": "matha-private-cleaned-answer-human-review", "version": 1,
             "releaseAuthority": False, "humanReviewerRequired": True,
+            "structuredAnswerRequired": True,
             "candidateManifestSha256": candidate_hash,
             "answerBindingSha256": sha(binding), "reviewer": "陳老師",
             "reviewedAt": "2026-08-28T19:00:00+08:00",
@@ -698,6 +703,9 @@ class CleanedDualHumanReviewTests(unittest.TestCase):
             self.assertFalse(result["uploadPerformed"])
             self.assertEqual(result["counts"]["eligibleAfterBothReviews"], 1)
             self.assertEqual([row["id"] for row in result["items"]], ["book-p001-q1"])
+            self.assertEqual(
+                result["items"][0]["structuredAnswer"]["officialAnswerText"], "答案 1"
+            )
             self.assertEqual(result["quarantine"][0]["reasons"], ["pixel-review-rejected"])
 
     def test_ai_reviewer_and_incomplete_review_fail_closed(self):
@@ -727,6 +735,21 @@ class CleanedDualHumanReviewTests(unittest.TestCase):
             )
             with self.assertRaises(intersect_clean_reviews.DualReviewError):
                 intersect_clean_reviews.intersect(*inputs, root / "out.json")
+
+    def test_missing_or_ambiguous_structured_answer_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self.fixture(root)
+            review = json.loads(inputs[4].read_text(encoding="utf-8"))
+            review["questions"][0].pop("structuredAnswer")
+            inputs[4].write_text(json.dumps(review), encoding="utf-8")
+            with self.assertRaises(intersect_clean_reviews.DualReviewError):
+                intersect_clean_reviews.intersect(*inputs, root / "out.json")
+        with self.assertRaises(intersect_clean_reviews.DualReviewError):
+            intersect_clean_reviews.validate_structured_answer(
+                {"schema": 1, "mode": "single", "optionCount": 5,
+                 "correctOptionNumbers": [1, 2]}, "q-ambiguous"
+            )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             inputs = self.fixture(root)
