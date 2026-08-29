@@ -1,7 +1,19 @@
 {
   "schema": 1,
-  "generatedAt": "2026-08-29T10:04:46+08:00",
+  "generatedAt": "2026-08-29T11:05:00+08:00",
   "releaseAuthority": false,
+  "privateAppIntegration": {
+    "status": "deployed-and-hash-verified",
+    "appVersion": "0829p",
+    "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
+    "bucket": "matha-papers",
+    "officialPapers": 5,
+    "officialPages": 40,
+    "remoteHashMismatches": 0,
+    "answerKeyPapersBehindPostSubmitGate": 6,
+    "edgeFunctionVersion": 31,
+    "freshnessStillRequiresUserConfirmation": true
+  },
   "localDiscoveryAudit": {
     "reportFileName": "本機完整卷盤點-20260829.json",
     "reportPathHint": "%DESKTOP%/數學檔案/完整模考來源/本機完整卷盤點-20260829.json",
@@ -55,6 +67,114 @@
       "pathHint": "%DESKTOP%/數學檔案/完整模考來源/115/115_mathA_scoring_after.pdf",
       "pages": 3,
       "sha256": "872f82af8cbf0d4dd4ddd0d0a80d1c400b136b8cad48665b94d6ff5a5ec1430f",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-114-question",
+      "fileName": "114_mathA_question.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/114/114_mathA_question.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0p056503510203248955/03-114%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E8%A9%A6%E9%A1%8C.pdf",
+      "pages": 8,
+      "sha256": "265a18f8de05f24d13a503229943414ca50ad9441f056318d21850386427a290",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-114-answer",
+      "fileName": "114_mathA_answer.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/114/114_mathA_answer.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0p051544393000727284/03-114%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E7%AD%94%E6%A1%88.pdf",
+      "pages": 1,
+      "sha256": "65666aea83fd2c71cb177fcc50852e0c69d0eb8cea8434dceed6e9ff0620803d",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-114-scoring",
+      "fileName": "114_mathA_scoring.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/114/114_mathA_scoring.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0p055379013856943041/04-114%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E8%80%83%E7%A7%91%E9%9D%9E%E9%81%B8%E6%93%87%E9%A1%8C%E5%8F%83%E8%80%83%E7%AD%94%E6%A1%88%E8%88%87%E8%A9%95%E5%88%86%E5%8E%9F%E5%89%87.pdf",
+      "pages": 3,
+      "sha256": "1e17ff84022db05bdb1424ac45f73cb485d01661a8aad0e5f5debf54728168a4",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-113-question",
+      "fileName": "113_mathA_question.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/113/113_mathA_question.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0o051426180137211766/03-113%E5%AD%B8%E6%B8%AC%E6%95%B8a%E8%A9%A6%E9%A1%8C%E5%AE%9A%E7%A8%BF.pdf",
+      "pages": 8,
+      "sha256": "c0dbc1bd50a8bedcf48ead6bf8e1fb0deef03d92113015e37dc20bb097be8e50",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-113-answer",
+      "fileName": "113_mathA_answer.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/113/113_mathA_answer.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0o051426632950938748/03-113%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E7%AD%94%E6%A1%88.pdf",
+      "pages": 1,
+      "sha256": "eecb107883266a831db61b4e2129bc6ca51862e502623bcea6180e3eabe73169",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-113-scoring",
+      "fileName": "113_mathA_scoring.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/113/113_mathA_scoring.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0o051426762594817766/04-113%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E8%80%83%E7%A7%91%E9%9D%9E%E9%81%B8%E6%93%87%E9%A1%8C%E5%8F%83%E8%80%83%E7%AD%94%E6%A1%88%E8%88%87%E8%A9%95%E5%88%86%E5%8E%9F%E5%89%87.pdf",
+      "pages": 2,
+      "sha256": "199887c5a084674cfb8f300facdefc70990a15b0a05b44428e7d75a52d461569",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-112-question",
+      "fileName": "112_mathA_question.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/112/112_mathA_question.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0n045358375872115148/03-112%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E8%A9%A6%E5%8D%B7.pdf",
+      "pages": 8,
+      "sha256": "fd0d3aebd2ff9cd3b775db0642326ce0d5be0f5bf2bb3176294082fabe6b13cc",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-112-answer",
+      "fileName": "112_mathA_answer.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/112/112_mathA_answer.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0n045358876595832120/03-112%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E9%81%B8%E6%93%87%28%E5%A1%AB%29%E9%A1%8C%E7%AD%94%E6%A1%88.pdf",
+      "pages": 1,
+      "sha256": "d096806d2441209d715f16eec62e4834760032a830ffa30818d473dff5b3202d",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-112-scoring",
+      "fileName": "112_mathA_scoring.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/112/112_mathA_scoring.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0n049421028143125535/04-112%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E9%9D%9E%E9%81%B8%E6%93%87%E9%A1%8C%E5%8F%83%E8%80%83%E7%AD%94%E6%A1%88%E8%88%87%E8%A9%95%E5%88%86%E5%8E%9F%E5%89%87.pdf",
+      "pages": 3,
+      "sha256": "b56034e4428cd8a1f733b8d90d891c6429c6eefc06fe8dfe820f81c3057360ad",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-111-question",
+      "fileName": "111_mathA_question.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/111/111_mathA_question.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0m052633042401295651/03-111%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E8%A9%A6%E5%8D%B7%E5%AE%9A%E7%A8%BF.pdf",
+      "pages": 8,
+      "sha256": "01ceb21ac453e1b8f1e2cdbc015f0d648f3b63c72d5d0c64555d6fd085c5aa9f",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-111-answer",
+      "fileName": "111_mathA_answer.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/111/111_mathA_answer.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0m053361187672613478/03-111%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E9%81%B8%E6%93%87%28%E5%A1%AB%29%E9%A1%8C%E7%AD%94%E6%A1%88.pdf",
+      "pages": 1,
+      "sha256": "176497242f9910d56ba0441bddae22ea9be597e48b6a3239ebb19860b11b6c1c",
+      "handling": "private-source"
+    },
+    {
+      "id": "official-111-scoring",
+      "fileName": "111_mathA_scoring.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/111/111_mathA_scoring.pdf",
+      "officialUrl": "https://www.ceec.edu.tw/files/file_pool/1/0m053361096038734441/03-111%E5%AD%B8%E6%B8%AC%E6%95%B8%E5%AD%B8a%E9%9D%9E%E9%81%B8%E6%93%87%E9%A1%8C%E8%A9%95%E5%88%86%E5%8E%9F%E5%89%87.pdf",
+      "pages": 3,
+      "sha256": "dd5905060a7eaeb04e994dc27ad08ef5b763dc704db33098839550d65b653015",
       "handling": "private-source"
     }
   ],
@@ -111,6 +231,7 @@
     },
     {
       "id": "official-115-matha",
+      "appSourceId": "paper-official-115",
       "title": "115學年度學測數學A",
       "questionSource": "official-115-question",
       "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
@@ -123,16 +244,91 @@
       "minutes": 100,
       "solutionCoverage": "answer-key-1-18-detailed-19-20",
       "freshness": "unconfirmed",
-      "calibrationStatus": "reserve-blocked",
+      "calibrationStatus": "reserve-pending-freshness-and-device-check",
       "activationBlockers": [
         "freshness-confirmation",
+        "galaxy-tab-preflight",
         "missing-official-detailed-solutions-1-18"
       ]
+    },
+    {
+      "id": "official-114-matha",
+      "appSourceId": "paper-official-114",
+      "title": "114學年度學測數學A",
+      "questionSource": "official-114-question",
+      "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
+      "printedQuestionPages": 7,
+      "answerSource": "official-114-answer",
+      "answerPdfPages": [1],
+      "scoringSource": "official-114-scoring",
+      "scoringPdfPages": [1, 2, 3],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "answer-key-1-18-detailed-19-20",
+      "freshness": "unconfirmed-old-plan-only",
+      "freshnessEvidence": "A 2026-06-23 local plan mentioned future use, but no local question PDF, run, rescue, or grading artifact existed before this acquisition.",
+      "calibrationStatus": "reserve-pending-freshness-and-device-check",
+      "activationBlockers": ["freshness-confirmation", "galaxy-tab-preflight", "missing-official-detailed-solutions-1-18"]
+    },
+    {
+      "id": "official-113-matha",
+      "appSourceId": "paper-official-113",
+      "title": "113學年度學測數學A",
+      "questionSource": "official-113-question",
+      "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
+      "printedQuestionPages": 7,
+      "answerSource": "official-113-answer",
+      "answerPdfPages": [1],
+      "scoringSource": "official-113-scoring",
+      "scoringPdfPages": [1, 2],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "answer-key-1-18-detailed-19-20",
+      "freshness": "unconfirmed-no-local-use-evidence",
+      "calibrationStatus": "reserve-pending-freshness-and-device-check",
+      "activationBlockers": ["freshness-confirmation", "galaxy-tab-preflight", "missing-official-detailed-solutions-1-18"]
+    },
+    {
+      "id": "official-112-matha",
+      "appSourceId": "paper-official-112",
+      "title": "112學年度學測數學A",
+      "questionSource": "official-112-question",
+      "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
+      "printedQuestionPages": 7,
+      "answerSource": "official-112-answer",
+      "answerPdfPages": [1],
+      "scoringSource": "official-112-scoring",
+      "scoringPdfPages": [1, 2, 3],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "answer-key-1-18-detailed-19-20",
+      "freshness": "unconfirmed-no-local-use-evidence",
+      "calibrationStatus": "reserve-pending-freshness-and-device-check",
+      "activationBlockers": ["freshness-confirmation", "galaxy-tab-preflight", "missing-official-detailed-solutions-1-18"]
+    },
+    {
+      "id": "official-111-matha",
+      "appSourceId": "paper-official-111",
+      "title": "111學年度學測數學A",
+      "questionSource": "official-111-question",
+      "questionPdfPages": [1, 2, 3, 4, 5, 6, 7, 8],
+      "printedQuestionPages": 7,
+      "answerSource": "official-111-answer",
+      "answerPdfPages": [1],
+      "scoringSource": "official-111-scoring",
+      "scoringPdfPages": [1, 2, 3],
+      "questions": 20,
+      "minutes": 100,
+      "solutionCoverage": "answer-key-1-18-detailed-19-20",
+      "freshness": "unconfirmed-no-local-use-evidence",
+      "calibrationStatus": "reserve-pending-freshness-and-device-check",
+      "activationBlockers": ["freshness-confirmation", "galaxy-tab-preflight", "missing-official-detailed-solutions-1-18"]
     }
   ],
   "selectedNextPaperId": "paper-mock-3",
   "readyFreshCalibrationCount": 0,
-  "provisionalFreshCalibrationCount": 1,
-  "firstSixAdditionalReadySourcesNeeded": 5,
+  "provisionalFreshCalibrationCount": 6,
+  "firstSixSourceCountShortfall": 0,
+  "firstSixFreshnessConfirmationsNeeded": 6,
   "nextP0": "Confirm paper-mock-3 is unseen, pass the seven-part Galaxy Tab preflight, and complete the real 100-minute run with recovery and PDF evidence."
 }

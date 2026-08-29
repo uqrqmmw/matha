@@ -442,21 +442,59 @@ test('重要定義卡覆蓋數 A 十四單元，要求以自己的話解釋而�
   assert.equal(result.cards.every((card) => card.prompt.length >= 20 && card.reference.length >= 35), true);
 });
 
-test('三回私有原版模考依正式題數拆成清晰單頁，且左右頁共用私有高解析跨頁', () => {
+test('私有原版模考保留三回舊卷，並加入五回官方完整單頁卷', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
     const scans = PAPER_SOURCES.flatMap((source) => source.scans.map((scan) => scan.file));
     return { bucket:PAPER_SOURCE_BUCKET, papers:PAPER_SOURCES.map((source) => ({ q:source.questions, min:source.minutes, pages:source.pages, scans:source.scans.length, sides:source.scans.map((scan) => scan.side) })), scans, unique:new Set(scans).size };
   })()`));
   assert.equal(result.bucket, 'matha-papers');
-  assert.deepEqual(result.papers, [
+  assert.deepEqual(result.papers.slice(0, 3), [
     { q:20, min:100, pages:6, scans:6, sides:['left','right','left','right','left','right'] },
     { q:19, min:100, pages:6, scans:6, sides:['left','right','left','right','left','right'] },
     { q:20, min:100, pages:4, scans:4, sides:['left','right','left','right'] },
   ]);
-  assert.equal(result.scans.length, 16);
-  assert.equal(result.unique, 8);
-  assert.equal(result.scans.every((name) => /^mock-[123]-page-[1-6]-[1-6]\.png$/.test(name)), true);
+  assert.equal(result.papers.length, 8);
+  assert.equal(result.papers.slice(3).every((paper) => paper.q === 20 && paper.min === 100 && paper.pages === 8 && paper.scans === 8 && paper.sides.every((side) => side === 'full')), true);
+  assert.equal(result.scans.length, 56);
+  assert.equal(result.unique, 48);
+  assert.equal(result.scans.slice(16).every((name) => /^official-11[1-5]-matha\/page-0[1-8]-[a-f0-9]{12}\.png$/.test(name)), true);
+});
+
+test('五回官方卷的 20 題都綁到正確 PDF 頁且不把說明頁或公式頁當題目', () => {
+  const { run } = loadApp();
+  const result = plain(run(`PAPER_SOURCES.filter((source) => source.official).map((source) => ({
+    id:source.id,
+    map:Array.from({length:source.questions}, (_, index) => paperQuestionScanIndex(source, index + 1) + 1),
+    configured:source.questionPageMap,
+    freshnessRequired:source.freshnessRequired,
+  }))`));
+  assert.deepEqual(result.map((paper) => paper.id), [
+    'paper-official-115', 'paper-official-114', 'paper-official-113', 'paper-official-112', 'paper-official-111',
+  ]);
+  assert.equal(result.every((paper) => paper.map.length === 20 && paper.map.every((page) => page >= 2 && page <= 7)), true);
+  assert.equal(result.every((paper) => JSON.stringify(paper.map) === JSON.stringify(paper.configured)), true);
+  assert.equal(result.every((paper) => paper.freshnessRequired === true), true);
+});
+
+test('官方卷只有本人確認未看過才會進正式級分校準', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const sourceId = 'paper-official-115';
+    const base = { id:'external-r1', paperRunId:'r1', sourceId, questions:20 };
+    S.paperRuns = [{ id:'r1', sourceId }];
+    const withoutConfirmation = extMockCalibrationEligible(base);
+    S.paperRuns[0].freshnessConfirmedAt = 123;
+    const confirmedOnRun = extMockCalibrationEligible(base);
+    delete S.paperRuns[0].freshnessConfirmedAt;
+    const confirmedOnRecord = extMockCalibrationEligible({ ...base, freshnessConfirmedAt:456 });
+    return { withoutConfirmation, confirmedOnRun, confirmedOnRecord };
+  })()`));
+  assert.deepEqual(result, {
+    withoutConfirmation:false,
+    confirmedOnRun:true,
+    confirmedOnRecord:true,
+  });
 });
 
 test('模考與破題把原版模考置頂，並依每回自動日期保留可回看的批改歷史', () => {
@@ -872,7 +910,7 @@ test('第一次整卷結果直接疊加對錯、分數與正確答案，不再�
   assert.doesNotMatch(html, /paper-score|paper-wrong|paperAnswer|答案卡/);
 });
 
-test('既有兩回答案維持歷史相容，下一回正式答案不再打包進公開前端', () => {
+test('既有兩回答案維持歷史相容，其餘六回正式答案不打包進公開前端', () => {
   const { run } = loadApp();
   const result = plain(run(`PAPER_SOURCES.map((source) => ({
     questions:source.questions, key:Array.isArray(source.key) ? source.key.length : 0,
@@ -880,11 +918,13 @@ test('既有兩回答案維持歷史相容，下一回正式答案不再打包�
     prompt:Array.isArray(source.key) ? paperGradePromptKey(source, source.key) : [],
     answerAccess:source.answerAccess || 'legacy-public',
   }))`));
-  assert.deepEqual(result.map((x) => [x.questions, x.key, x.total, x.prompt.length, x.answerAccess]), [
+  assert.deepEqual(result.slice(0, 3).map((x) => [x.questions, x.key, x.total, x.prompt.length, x.answerAccess]), [
     [20, 20, 100, 20, 'legacy-public'],
     [19, 19, 100, 19, 'legacy-public'],
     [20, 0, 0, 0, 'post-submit-server'],
   ]);
+  assert.equal(result.length, 8);
+  assert.equal(result.slice(2).every((x) => x.questions === 20 && x.key === 0 && x.total === 0 && x.prompt.length === 0 && x.answerAccess === 'post-submit-server'), true);
   assert.equal(result.slice(0, 2).every((x) => x.prompt.every((q) => q.answer && q.page >= 1 && q.page <= 6)), true);
   assert.equal(result.slice(0, 2).every((x) => x.prompt.every((q) => Array.isArray(q.correctOptions))), true);
 });
@@ -919,6 +959,26 @@ test('GPT-5.5 多選批分會強制收斂到正式的 5、3、1、0 分', () => 
     return [source.key[multiNos[3] - 1].points, ...multiNos.slice(0, 3).map((no) => grade.questions[no - 1].points)];
   })()`));
   assert.deepEqual(result, [5, 3, 1, 0]);
+});
+
+test('官方非選題依公開評分原則給整數部分分，不捏造固定步驟配分', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = { id:'paper-test-constructed', questions:1, scans:Array.from({length:8}, () => ({})), questionPageMap:[7] };
+    const key = [{ type:'constructed', ans:['體積 10；距離 √94'], display:'體積 10；距離 √94', points:8,
+      rubric:[{label:'求出體積'},{label:'比較各頂點距離'}] }];
+    const make = (points, finalAnswer, hasFinalAnswer=true) => paperNormalizeAiGrade(source, { questions:[{
+      no:1, page:7, topic:'space', read:finalAnswer, status:'incorrect', hasFinalAnswer,
+      finalAnswer, selectedOptions:[], points, marks:[],
+    }] }, 'gpt-5.5', key).questions[0];
+    const prompt = paperGradePromptKey(source, key)[0];
+    return { partial:make(3.6, '體積 10'), full:make(8, '體積 10；距離 √94'), blank:make(8, '', false), prompt };
+  })()`));
+  assert.deepEqual([result.partial.status, result.partial.points], ['incorrect', 4]);
+  assert.deepEqual([result.full.status, result.full.points], ['correct', 8]);
+  assert.deepEqual([result.blank.status, result.blank.points], ['unanswered', 0]);
+  assert.equal(result.prompt.page, 7);
+  assert.deepEqual(result.prompt.rubric, [{label:'求出體積'},{label:'比較各頂點距離'}]);
 });
 
 test('第一次簡批的單選與填答由正式答案重新核分，不採信模型自稱答對', () => {

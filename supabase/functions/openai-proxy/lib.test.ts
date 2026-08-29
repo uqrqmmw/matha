@@ -284,10 +284,21 @@ Deno.test("PAPER_ANSWER_KEYS_JSON 嚴格驗證題型、答案與配分", () => {
     "paper-mock-3": [
       { type: "single", ans: [3], points: 5 },
       { type: "fill", ans: ["13/6"], display: "13/6", points: 5 },
+      {
+        type: "constructed",
+        ans: ["體積 10；最遠距離 √94"],
+        display: "體積 10；最遠距離 √94",
+        points: 8,
+        rubric: [
+          { label: "求出體積" },
+          { label: "比較各頂點距離" },
+        ],
+      },
     ],
   }));
   assertEquals(parsed["paper-mock-3"][0].ans, [3]);
   assertEquals(parsed["paper-mock-3"][1].display, "13/6");
+  assertEquals(parsed["paper-mock-3"][2].rubric?.[1].label, "比較各頂點距離");
   assertThrows(() => parsePaperAnswerKeys(undefined));
   assertThrows(() =>
     parsePaperAnswerKeys(
@@ -297,6 +308,11 @@ Deno.test("PAPER_ANSWER_KEYS_JSON 嚴格驗證題型、答案與配分", () => {
   assertThrows(() =>
     parsePaperAnswerKeys(
       '{"paper-mock-3":[{"type":"fill","ans":[],"points":5}]}',
+    )
+  );
+  assertThrows(() =>
+    parsePaperAnswerKeys(
+      '{"paper-mock-3":[{"type":"constructed","ans":["10"],"points":8,"rubric":[]}]}',
     )
   );
 });

@@ -165,12 +165,25 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any
                  and str(row.get("calibrationStatus") or "") in {
                      "ready", "ready-fresh", "eligible-fresh"
                  }]
+        potential = [row for row in inventory["papers"] if
+                     int(row.get("questions") or 0) == 20
+                     and int(row.get("minutes") or 0) == 100
+                     and str(row.get("freshness") or "") != "seen"
+                     and not str(row.get("calibrationStatus") or "").startswith("ineligible-")]
         if len(ready) < 6:
+            needed = 6 - len(ready)
+            pending = min(needed, len([row for row in potential if row not in ready]))
+            additional = max(0, needed - pending)
+            blockers = []
+            if pending:
+                blockers.append(f"{pending} 回既有候選仍需本人確認未看過並完成 Galaxy Tab 真機開考驗收")
+            if additional:
+                blockers.append(f"仍需 {additional} 回額外的 20 題、100 分鐘且答案完整新來源")
             return gate(
                 "full-papers", "正式校準卷庫存", "blocked",
-                f"已驗證 {source_document_count} 份題本／答案來源與本機 3,086 份 PDF 盤點；可作新鮮校準卷 {len(ready)} / 6 回",
+                f"已驗證 {source_document_count} 份題本／答案來源；6 回合格結構候選已備齊，但新鮮度確認與 App 整合為 {len(ready)} / 6 回",
                 evidence=verified,
-                blockers=[f"仍需 {6 - len(ready)} 回未看過、20 題、100 分鐘且答案完整的新卷"],
+                blockers=blockers,
             )
         return gate(
             "full-papers", "正式校準卷庫存", "pass",

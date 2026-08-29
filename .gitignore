@@ -8,3 +8,4 @@ private-content/
 __pycache__/
 *.py[cod]
 tmp/
+.tmp-storage-verify/

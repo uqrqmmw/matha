@@ -65,8 +65,8 @@ test('開考前診斷實測本機、私有原卷與未交卷答案閘門，且�
 test('新開原版模考必須先通過當版安全檢查，但既有考卷仍可直接救援續寫', () => {
   const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   const start = source.slice(source.indexOf('async function startPaperSource'), source.indexOf('function paperSourceRender'));
-  assert.match(start, /let run = paperActiveRun\(sourceId\);[\s\S]*if \(!run && !systemReadinessSummary\(S\.systemReadiness\)\.ready\)/);
-  assert.match(start, /await runSystemReadiness\(\);[\s\S]*nav\('stats'\)[\s\S]*return;/);
+  assert.match(start, /let run = paperActiveRun\(sourceId\);[\s\S]*readinessMatches[\s\S]*if \(!run && \(!systemReadinessSummary\(S\.systemReadiness\)\.ready \|\| !readinessMatches\)\)/);
+  assert.match(start, /await runSystemReadiness\(sourceId\);[\s\S]*paperSourceId !== sourceId[\s\S]*nav\('stats'\)[\s\S]*return;/);
   assert.match(start, /paperSourceRelease\(\);[\s\S]*if \(!run\) \{/);
 });
 

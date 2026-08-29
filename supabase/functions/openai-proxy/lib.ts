@@ -20,10 +20,11 @@ export const requestWeights: Record<string, number> = {
 };
 
 export type PaperAnswerKeyItem = {
-  type: "single" | "multi" | "fill";
+  type: "single" | "multi" | "fill" | "constructed";
   ans: Array<number | string>;
   display?: string;
   points: number;
+  rubric?: Array<{ label: string }>;
 };
 
 export function parsePaperAnswerKeys(raw: string | undefined) {
@@ -49,12 +50,13 @@ export function parsePaperAnswerKeys(raw: string | undefined) {
       const points = Number(item.points);
       const answers = Array.isArray(item.ans) ? item.ans : [];
       if (
-        !["single", "multi", "fill"].includes(type) || !answers.length ||
+        !["single", "multi", "fill", "constructed"].includes(type) ||
+        !answers.length ||
         !Number.isFinite(points) || points <= 0 || points > 10
       ) {
         throw new Error("PAPER_ANSWER_KEYS_JSON 題目內容不合法");
       }
-      if (type === "fill") {
+      if (type === "fill" || type === "constructed") {
         if (
           answers.some((answer) => typeof answer !== "string" || !answer.trim())
         ) {
@@ -74,6 +76,32 @@ export function parsePaperAnswerKeys(raw: string | undefined) {
       };
       if (typeof item.display === "string" && item.display.trim()) {
         normalized.display = item.display.trim();
+      }
+      if (type === "constructed") {
+        if (
+          !Array.isArray(item.rubric) || !item.rubric.length ||
+          item.rubric.length > 6
+        ) {
+          throw new Error("PAPER_ANSWER_KEYS_JSON 非選題評分規準不合法");
+        }
+        normalized.rubric = item.rubric.map((rawCriterion) => {
+          if (
+            !rawCriterion || typeof rawCriterion !== "object" ||
+            Array.isArray(rawCriterion)
+          ) {
+            throw new Error("PAPER_ANSWER_KEYS_JSON 非選題評分規準不合法");
+          }
+          const criterion = rawCriterion as Record<string, unknown>;
+          const label = typeof criterion.label === "string"
+            ? criterion.label.trim()
+            : "";
+          if (!label || label.length > 180) {
+            throw new Error("PAPER_ANSWER_KEYS_JSON 非選題評分規準不合法");
+          }
+          return { label };
+        });
+      } else if (item.rubric != null) {
+        throw new Error("PAPER_ANSWER_KEYS_JSON 只有非選題可設定評分規準");
       }
       return normalized;
     });
@@ -243,7 +271,7 @@ export const responseSchemas = {
           additionalProperties: false,
           properties: {
             no: { type: "integer", minimum: 1, maximum: 20 },
-            page: { type: "integer", minimum: 1, maximum: 6 },
+            page: { type: "integer", minimum: 1, maximum: 8 },
             topic: {
               type: "string",
               enum: [

@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829o'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829p'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -2808,7 +2808,62 @@ n 元一次聯立方程：代入消去、加減消去與高斯消去；以增廣
    第三回開始，正式答案不再打包進公開前端；交卷狀態先同步，再由 Edge Function 解鎖。
    第一、二回的 key 只為既有歷史批改相容，兩回均視為已公開／不再作新鮮校準。選項索引採 0 起算。 */
 const PAPER_SOURCE_BUCKET = 'matha-papers';
-const PAPER_SOURCES = [
+function officialPaperSource(year, questionPageMap, files) {
+  return {
+    id: `paper-official-${year}`,
+    title: `${year} 學年度學測數學 A`,
+    questions: 20,
+    minutes: 100,
+    pages: 8,
+    official: true,
+    freshnessRequired: true,
+    answerAccess: 'post-submit-server',
+    answerBackendReady: true,
+    questionPageMap,
+    scans: files.map((file, index) => ({ file, label: `題本第 ${index + 1} 頁`, side: 'full' })),
+  };
+}
+const PAPER_SOURCE_CATALOG = [
+  officialPaperSource(115,
+    [2,2,2,2,3,3,3,3,4,4,5,5,6,6,6,6,7,7,7,7],
+    [
+      'official-115-matha/page-01-f9b57a554e7b.png', 'official-115-matha/page-02-a3ba31680f05.png',
+      'official-115-matha/page-03-a78109d8868b.png', 'official-115-matha/page-04-127ecb9f9422.png',
+      'official-115-matha/page-05-fab9f239ae96.png', 'official-115-matha/page-06-2548f9513d06.png',
+      'official-115-matha/page-07-7e52429b12a2.png', 'official-115-matha/page-08-b1e8c6f15575.png',
+    ]),
+  officialPaperSource(114,
+    [2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,7,7,7,7],
+    [
+      'official-114-matha/page-01-b96d45addc85.png', 'official-114-matha/page-02-dd63403e321a.png',
+      'official-114-matha/page-03-a7228cc1ef21.png', 'official-114-matha/page-04-f7bafb6e70d2.png',
+      'official-114-matha/page-05-073a3497ec53.png', 'official-114-matha/page-06-4758f91b0619.png',
+      'official-114-matha/page-07-13bbd74bfd56.png', 'official-114-matha/page-08-4d5b2a7f319b.png',
+    ]),
+  officialPaperSource(113,
+    [2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7],
+    [
+      'official-113-matha/page-01-eee9343ec22a.png', 'official-113-matha/page-02-23fb165daf4e.png',
+      'official-113-matha/page-03-2d9710d3f56c.png', 'official-113-matha/page-04-fbf39e6bbb8e.png',
+      'official-113-matha/page-05-48486f917f42.png', 'official-113-matha/page-06-3058d5040f01.png',
+      'official-113-matha/page-07-c3883a3588a6.png', 'official-113-matha/page-08-086ada14d28c.png',
+    ]),
+  officialPaperSource(112,
+    [2,2,2,2,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7],
+    [
+      'official-112-matha/page-01-b7f00868bad7.png', 'official-112-matha/page-02-73fc0b04c51b.png',
+      'official-112-matha/page-03-cd8ea07294ef.png', 'official-112-matha/page-04-6ffec5c90c8c.png',
+      'official-112-matha/page-05-d03af7835612.png', 'official-112-matha/page-06-e497baa85bbe.png',
+      'official-112-matha/page-07-e7000f0b5dba.png', 'official-112-matha/page-08-6202650ec424.png',
+    ]),
+  officialPaperSource(111,
+    [2,2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,7,7,7],
+    [
+      'official-111-matha/page-01-6d2ee0d8e5a2.png', 'official-111-matha/page-02-ba7270acbf4c.png',
+      'official-111-matha/page-03-a12b580d5897.png', 'official-111-matha/page-04-29887ee5a84a.png',
+      'official-111-matha/page-05-419cd72d868e.png', 'official-111-matha/page-06-cefd639d8791.png',
+      'official-111-matha/page-07-3f9ada1b9958.png', 'official-111-matha/page-08-1a792ad8df0a.png',
+    ]),
   { id: 'paper-mock-1', title: '第一次模考', questions: 20, minutes: 100, pages: 6,
     key: [
       { type: 'single', ans: [4], points: 5 }, { type: 'single', ans: [4], points: 5 },
@@ -2867,6 +2922,11 @@ const PAPER_SOURCES = [
       { file: 'mock-3-page-3-4.png', label: '題本第 3 頁', side: 'left' },
       { file: 'mock-3-page-3-4.png', label: '題本第 4 頁', side: 'right' },
     ] },
+];
+// 舊版批改測試與部分歷史資料仍以第一回為相容基準；學生看到的清單另把官方卷排前面。
+const PAPER_SOURCES = [
+  ...PAPER_SOURCE_CATALOG.filter((source) => !source.official),
+  ...PAPER_SOURCE_CATALOG.filter((source) => source.official),
 ];
 const PAPER_ERROR_KINDS = [
   '看不出第一個切入點',
@@ -3348,12 +3408,15 @@ function mockCalibration() {
 function extMockCalibrationEligible(record) {
   if (!record || record.calibrationEligible === false) return false;
   let sourceId = String(record.sourceId || '');
+  let run = null;
   if (!sourceId && record.paperRunId) {
-    const run = (S.paperRuns || []).find((item) => item && item.id === record.paperRunId);
+    run = (S.paperRuns || []).find((item) => item && item.id === record.paperRunId);
     sourceId = String(run && run.sourceId || '');
   }
+  if (!run && record.paperRunId) run = (S.paperRuns || []).find((item) => item && item.id === record.paperRunId);
   const source = PAPER_SOURCES.find((item) => item.id === sourceId);
   if (source && (source.questions !== 20 || source.calibrationEligible === false)) return false;
+  if (source && source.freshnessRequired && !(record.freshnessConfirmedAt || run && run.freshnessConfirmedAt)) return false;
   return record.questions == null || Number(record.questions) === 20;
 }
 function pendingCorrections() {
@@ -5619,8 +5682,8 @@ function renderMockIntro() {
   const completedPapers = visionCompletedPaperCount();
   app().innerHTML = `
     <div class="hero compact"><h1>模考與破題</h1><p>同一批混合題，分成兩種完全不同的訓練：完整模考建立真實成績；眼睛刷題只練從題目找到第一個切入點。</p></div>
-    <section class="paper-library is-primary"><div class="paper-library-head"><div><span class="eyebrow">最常用｜你提供的紙本來源</span><h2>原版模考</h2></div><p>三回保留原版內容，作答時拆成清晰單頁並可直接在題目與留白上寫。答案本已逐題核對；第二回依原卷為 19 題，其餘兩回各 20 題。</p></div>
-      <div class="paper-source-grid">${PAPER_SOURCES.map(paperSourceCardHTML).join('')}</div>
+    <section class="paper-library is-primary"><div class="paper-library-head"><div><span class="eyebrow">最常用｜完整原卷</span><h2>原版模考</h2></div><p>出版社三回與 111–115 學測官方卷都保留原版內容，可直接在題目與留白上寫。正式答案只在交卷後解鎖；第二次模考依原卷為 19 題，其餘七回各 20 題。</p></div>
+      <div class="paper-source-grid">${[...PAPER_SOURCES].sort((a, b) => Number(!!b.official) - Number(!!a.official)).map(paperSourceCardHTML).join('')}</div>
       ${paperRunHistoryHTML()}
     </section>
     <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的題排在前面，再依目前證據混合打底、銜接與伸展題。</p><small>不顯示單題速度；正常情況同單元、同一本教材各最多 2 題，尚未安全匯入的單元由核心題補位。</small></div><button class="btn primary big" onclick="startAdaptiveTextbook(10)">開始今日精選</button></section>
@@ -5972,10 +6035,11 @@ async function startPaperSource(sourceId) {
   }
   if (!supa || !syncState.user) { alert('原版紙本卷存放在私有雲端；請先到「進度與設定」登入。'); return; }
   let run = paperActiveRun(sourceId);
-  if (!run && !systemReadinessSummary(S.systemReadiness).ready) {
+  const readinessMatches = S.systemReadiness && S.systemReadiness.paperSourceId === sourceId;
+  if (!run && (!systemReadinessSummary(S.systemReadiness).ready || !readinessMatches)) {
     app().innerHTML = `<div class="card"><h1>開考前安全檢查</h1><p class="dim">正在確認本機筆跡、雲端同步、私有題本與答案鎖定；全部通過才建立新考試。</p></div>`;
-    await runSystemReadiness();
-    if (!systemReadinessSummary(S.systemReadiness).ready) {
+    await runSystemReadiness(sourceId);
+    if (!systemReadinessSummary(S.systemReadiness).ready || S.systemReadiness.paperSourceId !== sourceId) {
       nav('stats');
       alert('開考前必要條件尚未全部通過。已保留既有資料，請依「開考前一鍵檢查」的阻擋項目處理後再開始。');
       return;
@@ -5984,8 +6048,11 @@ async function startPaperSource(sourceId) {
   paperSourceRelease();
   if (!run) {
     const now = Date.now();
+    const freshnessConfirmed = !source.freshnessRequired || confirm(`這是「${source.title}」第一次在目前基準期作答，而且你尚未看過題目或答案嗎？\n\n確定：列入正式級分校準。\n取消：仍可完整練習，但不列入級分校準。`);
     run = { id: `paper-run-${now}`, sourceId, name: source.title, d: today(), createdAt: now, mt: now,
       status: 'paused', remainingMs: source.minutes * 60000, resumeAt: null, wrongNos: [], paperPage: 0,
+      freshnessConfirmedAt: freshnessConfirmed ? now : null,
+      calibrationEligible: source.questions === 20 && source.calibrationEligible !== false && freshnessConfirmed,
       paperLayoutVersion: PAPER_LAYOUT_VERSION };
     S.paperRuns = S.paperRuns || []; S.paperRuns.push(run); save();
   }
@@ -7636,12 +7703,15 @@ async function paperCompositeImage(source, urls, inkPages, page, includeGrade, o
   canvas.width = width; canvas.height = height;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#fffefa'; ctx.fillRect(0, 0, width, height);
-  const crop = { x: width * .03, y: height * .025, w: width * .708, h: height * .94 };
-  const half = image.naturalWidth / 2, sourceX = scan.side === 'right' ? half : 0;
+  const fullPage = scan.side === 'full';
+  const crop = { x: width * .03, y: height * .025, w: width * (fullPage ? .8 : .708), h: height * .94 };
+  const half = image.naturalWidth / 2;
+  const sourceWidth = scan.side === 'full' ? image.naturalWidth : half;
+  const sourceX = scan.side === 'right' ? half : 0;
   ctx.filter = 'grayscale(.92) contrast(1.1) brightness(1.035)';
-  ctx.drawImage(image, sourceX, 0, half, image.naturalHeight, crop.x, crop.y, crop.w, crop.h);
+  ctx.drawImage(image, sourceX, 0, sourceWidth, image.naturalHeight, crop.x, crop.y, crop.w, crop.h);
   ctx.filter = 'none';
-  const marginX = width * .756;
+  const marginX = width * (fullPage ? .834 : .756);
   ctx.strokeStyle = '#d5d0c7'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(marginX, height * .03); ctx.lineTo(marginX, height * .97); ctx.stroke();
   ctx.strokeStyle = 'rgba(122,112,100,.16)';
@@ -7745,6 +7815,7 @@ function paperGradePromptKey(source, answerKey) {
     answer: paperFinalAnswerText(q),
     correctOptions: q.type === 'single' || q.type === 'multi' ? q.ans.map((option) => option + 1) : [],
     points: q.points,
+    rubric: q.type === 'constructed' && Array.isArray(q.rubric) ? q.rubric : [],
   }));
 }
 async function paperAnswerKeyAfterSubmit(source, run) {
@@ -7779,7 +7850,7 @@ async function paperAiGradeCall(source, pages, answerKey = source.key) {
 2. 只把考生自己寫的黑／藍／綠筆跡視為作答。印刷題目不是作答，右側留白也可能有最後答案。
 3. 特別防止誤判：圈住「印刷的題號」只代表考生想回頭看，絕對不是選了同號選項。若只圈題號並寫「不會」、沒有另外寫最終答案，必須回傳 hasFinalAnswer=false、status=unanswered、selectedOptions=[]；例如圈住印刷題號 4 不等於單選答案 (4)。
 4. hasFinalAnswer 只表示你是否真的找到考生另外寫出的最終答案。finalAnswer 必須逐字填入你辨識到的最終答案；沒有答案填空字串。單選與填答答對得該題滿分，答錯或未答 0 分；等價分數、根式、小數形式可算對。
-5. 單選與多選的 selectedOptions 都必須列出你從考生「最終答案清單」辨識到的 1 起算選項，不可從算式中猜；填答題固定回傳空陣列。多選依五個選項逐一比較：全對 5 分、差 1 個選項 3 分、差 2 個選項 1 分、差 3 個以上 0 分；系統會以 selectedOptions 與正式答案重新計分，不採信模型自行填的 status 或 points。
+5. 單選與多選的 selectedOptions 都必須列出你從考生「最終答案清單」辨識到的 1 起算選項，不可從算式中猜；填答與非選題固定回傳空陣列。多選依五個選項逐一比較：全對 5 分、差 1 個選項 3 分、差 2 個選項 1 分、差 3 個以上 0 分；系統會以 selectedOptions 與正式答案重新計分，不採信模型自行填的 status 或 points。非選題 constructed 必須依正式 rubric 整體核分；若官方規準沒有固定細項權重，不得自行捏造每一步幾分，也不得因解法不同但正確而扣分。
 6. status：正確 correct、錯誤 incorrect、沒有作答 unanswered、筆跡真的無法辨識 uncertain。不要為了湊答案而猜。
 7. marks 的 box 是該張完整單頁 [左,上,右,下] 0–1 座標，必須落在考生實際寫下的最終答案或答案清單上，不可框題目、題號或中間算式。定位優先順序是：「考生另外寫在左側或右側留白的答案數字」優先於「印刷選項那一行」；若沒有另外寫答案，才框考生親手圈、勾或劃記的選項。單選／填答各回傳一個 kind=check 或 cross；未答用 unanswered、看不清楚用 uncertain，option=0。
 8. 複選題必須像真人逐項批改：每個正確選到的手寫選項回傳 kind=check；每個錯選的手寫選項回傳 kind=strike；每個漏選的正確選項回傳 kind=add，box 放在答案清單旁可補寫的位置。這三種 mark 的 option 都填該選項 1–5。若部分得分，可另回傳一個 option=0 的 partial，但不可省略逐項 marks。
@@ -7833,7 +7904,7 @@ function paperNormalizeAiGrade(source, raw, model, answerKey = source.key) {
     const finalAnswer = finalAnswerProvided ? item.finalAnswer.trim() : '';
     const correctOptions = q.type === 'single' || q.type === 'multi'
       ? q.ans.map((option) => option + 1).sort((a, b) => a - b) : [];
-    const concreteAnswer = q.type === 'fill'
+    const concreteAnswer = q.type === 'fill' || q.type === 'constructed'
       ? finalAnswerProvided && !!finalAnswer
       : selectedOptionsProvided && selectedOptions.length > 0;
     // `status` 是模型摘要，結構化答案才是確定性核分依據。只有明確說「沒找到答案」，
@@ -7868,6 +7939,18 @@ function paperNormalizeAiGrade(source, raw, model, answerKey = source.key) {
         else if (status === 'correct') points = q.points;
         else if (status === 'incorrect' || status === 'unanswered') points = 0;
         else { status = 'uncertain'; points = 0; }
+      }
+    }
+    else if (q.type === 'constructed') {
+      if (explicitlyUnanswered) {
+        status = 'unanswered';
+        points = 0;
+      } else if (!finalAnswerProvided || !finalAnswer) {
+        status = 'uncertain';
+        points = 0;
+      } else {
+        points = Math.round(Math.max(0, Math.min(q.points, Number(points) || 0)));
+        status = points === q.points ? 'correct' : 'incorrect';
       }
     }
     else if (q.type === 'multi' && selectedOptionsProvided) {
@@ -8115,7 +8198,8 @@ function paperSourceUpdateExtMock(source, run) {
   const record = {
     id: `external-${run.id}`, paperRunId: run.id, sourceId: source.id, d: run.d || today(), ts: run.submittedAt,
     name: source.title, score: grade.score, total: 100, questions: source.questions,
-    calibrationEligible: source.questions === 20 && source.calibrationEligible !== false,
+    calibrationEligible: source.questions === 20 && source.calibrationEligible !== false && (!source.freshnessRequired || !!run.freshnessConfirmedAt),
+    freshnessConfirmedAt: run.freshnessConfirmedAt || null,
     minutesLeft: Math.max(0, Math.round(run.remainingMs / 60000)),
     topics: tags.topics, errors: tags.errors,
     err: tags.errors[0] || String(run.err || ''),
@@ -9036,6 +9120,10 @@ function paperFinalAnswerText(q) {
   return q.display || q.ans[0];
 }
 function paperQuestionScanIndex(source, no) {
+  if (Array.isArray(source.questionPageMap) && source.questionPageMap.length === source.questions) {
+    const pdfPage = Number(source.questionPageMap[no - 1]);
+    if (Number.isInteger(pdfPage) && pdfPage >= 1 && pdfPage <= source.scans.length) return pdfPage - 1;
+  }
   if (source.id === 'paper-mock-1') return no <= 5 ? 0 : no <= 8 ? 1 : no <= 11 ? 2 : no <= 14 ? 3 : no <= 17 ? 4 : 5;
   if (source.id === 'paper-mock-2') return no <= 4 ? 0 : no <= 7 ? 1 : no <= 10 ? 2 : no <= 13 ? 3 : no <= 17 ? 4 : 5;
   return no <= 5 ? 0 : no <= 8 ? 1 : no <= 13 ? 2 : 3;
@@ -10219,9 +10307,10 @@ async function systemReadinessWorkerVersion() {
   if (version !== APP_VER) throw new Error(`頁面 ${APP_VER}、離線外殼 ${version || '未知'}；重新整理後再檢查`);
   return version;
 }
-async function systemReadinessPaperAssets() {
+async function systemReadinessPaperAssets(source) {
   if (!supa || !syncState.user || !supa.storage) throw new Error('尚未登入私有教材雲端');
-  const files = [...new Set(PAPER_SOURCES.flatMap((source) => source.scans.map((scan) => scan.file)))];
+  if (!source || !Array.isArray(source.scans) || !source.scans.length) throw new Error('沒有可檢查的題本來源');
+  const files = [...new Set(source.scans.map((scan) => scan.file))];
   const bucket = supa.storage.from(PAPER_SOURCE_BUCKET);
   for (const file of files) {
     const signed = await bucket.createSignedUrl(file, 60);
@@ -10242,20 +10331,24 @@ async function systemReadinessPaperAssets() {
   }
   return files.length;
 }
-async function systemReadinessAnswerGate(session) {
+async function systemReadinessAnswerGate(session, sourceId) {
   const response = await fetch(AI_FUNCTION_URL, {
     method:'POST',
     headers: { 'content-type':'application/json', Authorization:`Bearer ${session.access_token}` },
-    body: JSON.stringify({ responseType:'paper_key', context:{ paperRunId:`readiness-${Date.now()}`, sourceId:'paper-mock-3' } }),
+    body: JSON.stringify({ responseType:'paper_key', context:{ paperRunId:`readiness-${Date.now()}`, sourceId:sourceId || 'paper-mock-3' } }),
   });
   const payload = await response.json().catch(() => ({}));
   if (response.status === 403 && /鎖定|交卷/.test(String(payload.message || ''))) return true;
   if (response.ok) throw new Error('安全失敗：未交卷測試竟取得正式答案');
   throw new Error(`答案閘門回應異常（HTTP ${response.status}）`);
 }
-async function runSystemReadiness() {
+async function runSystemReadiness(sourceId) {
   if (systemReadinessRunning) return;
   systemReadinessRunning = true;
+  const paperSource = paperSourceById(sourceId)
+    || paperSourceById(S.systemReadiness && S.systemReadiness.paperSourceId)
+    || PAPER_SOURCES.find((source) => source.questions === 20 && source.answerBackendReady === true)
+    || PAPER_SOURCES[0];
   if (document.body.dataset.view === 'stats') renderStats();
   const results = [];
   const add = (id, label, status, detail, required = true) => results.push({ id, label, status, detail, required });
@@ -10293,12 +10386,12 @@ async function runSystemReadiness() {
       else add('sync', '狀態與筆跡雲端同步', 'pass', `狀態 revision ${syncState.revision}；待補傳 0 份`);
 
       try {
-        const count = await systemReadinessPaperAssets();
-        add('papers', '私有原版題本', 'pass', `${count} 個掃描檔皆以短效網址讀到 PNG 標頭`);
+        const count = await systemReadinessPaperAssets(paperSource);
+        add('papers', '私有原版題本', 'pass', `${paperSource.title} 的 ${count} 頁皆以短效網址讀到 PNG 標頭`);
       } catch (error) { add('papers', '私有原版題本', 'fail', error.message || String(error)); }
 
       try {
-        await systemReadinessAnswerGate(session);
+        await systemReadinessAnswerGate(session, paperSource.id);
         add('answer-gate', '未交卷答案鎖定', 'pass', '偽造未交卷 run 得到 403；此測試不呼叫 GPT');
       } catch (error) { add('answer-gate', '未交卷答案鎖定', 'fail', error.message || String(error)); }
     } else {
@@ -10315,11 +10408,11 @@ async function runSystemReadiness() {
     else add('bank', '真人核准私有題庫', 'warn', `尚未發布；正式練習只會使用 ${BUILTIN_N} 題非 OCR 核心題`, false);
 
     const completePapers = PAPER_SOURCES.filter((source) => source.questions === 20 && source.minutes === 100).length;
-    add('inventory', '完整校準卷庫存', completePapers >= 6 ? 'pass' : 'warn', `目前 ${completePapers} 回符合 20 題、100 分鐘；藍圖門檻為 6 回`, false);
+    add('inventory', '完整卷來源', completePapers >= 6 ? 'pass' : 'warn', `目前 ${completePapers} 回符合 20 題、100 分鐘；正式級分只採計當次確認未看過的卷`, false);
   } catch (error) {
     add('unexpected', '診斷流程', 'fail', error.message || String(error));
   } finally {
-    S.systemReadiness = { version:APP_VER, ts:Date.now(), results };
+    S.systemReadiness = { version:APP_VER, ts:Date.now(), paperSourceId:paperSource.id, results };
     save();
     systemReadinessRunning = false;
     if (document.body.dataset.view === 'stats') renderStats();
