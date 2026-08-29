@@ -26,6 +26,17 @@ def write_json(path: Path, value: dict) -> None:
 
 
 class StarterCombinedReviewTests(unittest.TestCase):
+    def test_windows_launcher_rejects_old_or_incomplete_packets(self):
+        launcher = (ROOT / "scripts" / "ingest" / "start-starter-review.ps1").read_text("utf-8")
+        self.assertTrue(launcher.isascii(), "Windows PowerShell 5.1 requires an ASCII-safe script")
+        self.assertIn("combined-v2-resumable-hashbound", launcher)
+        self.assertIn("structuredAnswerRequired", launcher)
+        self.assertIn("packetSha256", launcher)
+        self.assertIn("Start-Process -FilePath 'python'", launcher)
+        self.assertIn("-WindowStyle Hidden", launcher)
+        self.assertIn("Invoke-WebRequest", launcher)
+        self.assertIn("Stop-Process", launcher)
+
     def make_fixture(self, root: Path):
         question_id = "q-1"
         queue = root / "batch-01-cleaned-candidates.json"
