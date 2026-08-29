@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const NON_HUMAN = /(?:^|\b)(?:ai|bot|agent|codex|claude|chatgpt|openai)(?:\b|$)/i;
 
 function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').toUpperCase();
@@ -48,6 +49,29 @@ function validateGold(gold, { verifySources = true } = {}) {
         const file = path.resolve(gold.assetRoot, asset.file);
         if (!fs.existsSync(file)) throw new Error(`第 ${row.no} 題像素不存在：${asset.file}`);
         if (sha256(file) !== String(asset.sha256).toUpperCase()) throw new Error(`第 ${row.no} 題像素雜湊漂移：${asset.file}`);
+      }
+    }
+    if (gold.releaseAuthority === true) {
+      const approval = gold.releaseApproval || {};
+      const approvedBy = String(approval.approvedBy || '').trim();
+      const unsigned = path.resolve(String(approval.unsignedGoldPath || ''));
+      const packet = path.resolve(String(approval.reviewPacketPath || ''));
+      const signoff = path.resolve(String(approval.signoffPath || ''));
+      if (approval.kind !== 'named-human-paper-detail-gold-signoff' || approvedBy.length < 3
+        || NON_HUMAN.test(approvedBy) || !fs.existsSync(unsigned) || !fs.statSync(unsigned).isFile()
+        || !fs.existsSync(packet) || !fs.statSync(packet).isFile()
+        || !fs.existsSync(signoff) || !fs.statSync(signoff).isFile()
+        || sha256(unsigned) !== String(approval.unsignedGoldSha256 || '').toUpperCase()
+        || sha256(packet) !== String(approval.reviewPacketSha256 || '').toUpperCase()
+        || sha256(signoff) !== String(approval.signoffSha256 || '').toUpperCase()) {
+        throw new Error('detail gold 具名真人簽核或 exact-hash 證據不合法');
+      }
+      const signed = JSON.parse(fs.readFileSync(signoff, 'utf8'));
+      if (signed.kind !== 'matha-paper-detail-gold-signoff' || signed.releaseAuthority !== true
+        || signed.approvedBy !== approvedBy || signed.goldId !== gold.id
+        || String(signed.unsignedGoldSha256 || '').toUpperCase() !== sha256(unsigned)
+        || String(signed.reviewPacketSha256 || '').toUpperCase() !== sha256(packet)) {
+        throw new Error('detail gold 簽核檔未綁定本次來源');
       }
     }
   }

@@ -22,6 +22,7 @@
     {
       "id": "official-115-question",
       "fileName": "115_mathA_question.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/115/115_mathA_question.pdf",
       "pages": 8,
       "sha256": "e867988978a81ecf07e58d9e6bf9164afae7be20590cf023fb618efae275c2e3",
       "handling": "private-source"
@@ -29,6 +30,7 @@
     {
       "id": "official-115-answer",
       "fileName": "115_mathA_answer_after.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/115/115_mathA_answer_after.pdf",
       "pages": 1,
       "sha256": "0308d00e554aa2b1a1f68215df8c93943d4aa2ecd326127c3828b971867f67c0",
       "handling": "private-source"
@@ -36,6 +38,7 @@
     {
       "id": "official-115-scoring",
       "fileName": "115_mathA_scoring_after.pdf",
+      "pathHint": "%DESKTOP%/數學檔案/完整模考來源/115/115_mathA_scoring_after.pdf",
       "pages": 3,
       "sha256": "872f82af8cbf0d4dd4ddd0d0a80d1c400b136b8cad48665b94d6ff5a5ec1430f",
       "handling": "private-source"

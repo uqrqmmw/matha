@@ -81,6 +81,24 @@ node scripts/run-paper-detail-gold.js `
 
 Edge Function 仍會檢查雲端真實流程，不能用此工具繞過隔日重想。2026-08-29 實查首回歷史 run 的 7 題皆為 `attempts=0` 且沒有 `retry` log；測試請求因此在模型呼叫與額度 claim 之前正確回 403，沒有產生模型費用。只有本人在 app 保存真實重想後才可續跑。
 
-正式門檻分開計算：有診斷輸出的 precision ≥ 90%、可診斷案例 coverage ≥ 60%、abstain 題無證據診斷為 0、正確前綴辨識 ≥ 80%，最後再由具名真人把 `releaseAuthority` 簽為 true。
+正式門檻分開計算：有診斷輸出的 precision ≥ 90%、可診斷案例 coverage ≥ 60%、abstain 題無證據診斷為 0、正確前綴辨識 ≥ 80%。不得手改 `releaseAuthority`；先建立七題並排視覺複核包：
+
+```powershell
+python scripts/prepare-paper-detail-gold-signoff.py prepare `
+  --gold 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-gold-v1.json' `
+  --output 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-gold-human-review'
+```
+
+具名真人逐題核對學生卷面、官方詳解、diagnose／abstain 真值、第一錯步與做對部分後匯出簽核 JSON，再以 `finalize` 產生 signed gold。Finalize 拒絕 AI／agent 名稱、漏勾、題號改動、來源／review packet／signoff 任一 SHA-256 漂移與覆寫既有輸出。Evaluator 和整體完工稽核都會重新驗這三份 exact-hash 證據，單一布林值不再具有發布權限。
+
+目前七題包已建立於私人 eval 目錄；桌面 `開始審核七題AI詳批.cmd` 會先驗 packet 與頁面 hash，再用 localhost 開啟一般瀏覽器。匯出簽核檔後執行：
+
+```powershell
+python scripts/prepare-paper-detail-gold-signoff.py finalize `
+  --gold 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-gold-v1.json' `
+  --packet 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-gold-human-review-v1-20260829\review-packet.json' `
+  --signoff 'C:\Users\yenke\Downloads\paper-detail-gold-signoff.json' `
+  --output 'C:\Users\yenke\Desktop\數學檔案\matha-private-evals\paper-mock-1-detail-gold-v1.signed.json'
+```
 
 官方詳解圖存放在私有 `matha-solutions` bucket，不設一般登入者讀取 policy。前端只有在雲端已保存「到期隔日訂正＋至少一次真實重想」後，才能向 Edge Function 取得 15 分鐘簽名網址；圖不進 `app_state`、IndexedDB、Service Worker 或首輪批改 response，也不經 OCR 重打。`paper_solution` 不呼叫 OpenAI，因此重開詳解不會產生模型費用。

@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829n'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829o'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -6312,11 +6312,22 @@ function paperRuntimeAuditOpen(runId = '') {
     : summary.passed ? '必要項已通過；另有裝置無法直接量測項目' : '這一回仍有驗收項目未完成';
   modal(`<div class='paper-grade-audit'><span class='eyebrow'>Galaxy Tab 真機驗收｜版本 ${escH(run.runtimeAudit.appVersion)}</span><h2>${headline}</h2><p>數值直接來自這一回的書寫、翻頁、保存與資源紀錄；沒有呼叫 AI。記憶體指標若裝置不提供會明示未知，不會假裝通過。</p><table><tbody>${rows}</tbody></table><div class='actr'><button class='btn' onclick="paperRuntimeAuditDownload('${jsA(run.id)}')">匯出驗收 JSON</button></div></div>`, [['關閉']]);
 }
-function paperRuntimeAuditDownload(runId) {
+async function paperRuntimeReportedDeviceModel() {
+  const data = typeof navigator !== 'undefined' && navigator.userAgentData;
+  if (!data || typeof data.getHighEntropyValues !== 'function') return '';
+  try {
+    const values = await data.getHighEntropyValues(['model']);
+    return String(values && values.model || '').trim().slice(0, 80);
+  } catch (_) { return ''; }
+}
+async function paperRuntimeAuditDownload(runId) {
   const run = (S.paperRuns || []).find((row) => row && row.id === runId);
   const summary = paperRuntimeAuditSummary(run);
   if (!run || !summary.available) return false;
-  const payload = { kind:'matha-paper-runtime-audit-v1', exportedAt:new Date().toISOString(), appVersion:APP_VER, run:{ id:run.id, sourceId:run.sourceId, date:run.d, status:run.status }, summary, audit:run.runtimeAudit };
+  if (!confirm('請確認目前使用的裝置是 Samsung Galaxy Tab S10 Ultra。確認後才會把裝置聲明寫進驗收檔。')) return false;
+  const confirmedAt = new Date().toISOString();
+  const browserReportedModel = await paperRuntimeReportedDeviceModel();
+  const payload = { kind:'matha-paper-runtime-audit-v1', exportedAt:confirmedAt, appVersion:APP_VER, deviceAttestation:{ confirmed:true, model:'Samsung Galaxy Tab S10 Ultra', source:'user-confirmation', confirmedAt, browserReportedModel }, run:{ id:run.id, sourceId:run.sourceId, date:run.d, status:run.status }, summary, audit:run.runtimeAudit };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);

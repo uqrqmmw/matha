@@ -30,6 +30,14 @@ Node 20 以上可執行完整的零依賴檢查：
 npm test
 ```
 
+整份施工藍圖另有 fail-closed 完工稽核；它會重新核對完整卷來源、真機 JSON、詳批 gold／prediction、真人題庫簽核與私有部署記錄，不會用測試綠燈替代尚未發生的真人證據：
+
+```powershell
+python scripts/audit-blueprint-readiness.py
+```
+
+結果固定輸出到桌面的 `數學系統完工稽核.md` 與 `.json`。只有六道外部關卡全部以 exact-hash、具名真人或真機證據通過時，`complete` 才會是 `true`。
+
 檢查內容包括：
 
 - `app.js`、`bank.js`、`practice-bank.js`、`sw.js` 語法

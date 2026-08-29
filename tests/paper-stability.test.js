@@ -596,7 +596,7 @@ test('真機量測事件與樣本都有固定上限，換 app 版本也不會清
   assert.deepEqual(result, {
     sameObject:true,
     originalVersion:'older-version',
-    lastVersion:'0829n',
+    lastVersion:'0829o',
     events:240,
     firstEvent:160,
     samples:220,
@@ -637,5 +637,7 @@ test('第一次批改頁可打開並匯出本回真機驗收報告', () => {
   const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   assert.match(source, /paperRuntimeAuditOpen\('\$\{jsA\(run\.id\)\}'\)/);
   assert.match(source, /kind:'matha-paper-runtime-audit-v1'/);
+  assert.match(source, /getHighEntropyValues\(\['model'\]\)/);
+  assert.match(source, /deviceAttestation:\{ confirmed:true, model:'Samsung Galaxy Tab S10 Ultra', source:'user-confirmation', confirmedAt, browserReportedModel \}/);
   assert.match(source, /paperRuntimeAuditSample\(\);[\s\S]*paperRecoveryHeartbeat\(\)/);
 });

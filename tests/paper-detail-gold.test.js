@@ -14,7 +14,7 @@ function syntheticGold() {
     studentEvidence: { file: 'student.png', sha256: 'X' },
     solutionEvidence: [{ file: 'solution.png', sha256: 'Y' }],
   }));
-  return { schema: 1, id: 'synthetic-detail', assetRoot: '.', releaseAuthority: true, cases };
+  return { schema: 1, id: 'synthetic-detail', assetRoot: '.', releaseAuthority: false, cases };
 }
 
 test('詳批 evaluator 分開計算 precision、coverage 與無證據亂猜', () => {
