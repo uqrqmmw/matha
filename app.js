@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829s'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0829t'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -2818,6 +2818,7 @@ function privatePaperSource(year, questionPageMap, files, options = {}) {
     official: options.paperClass !== 'regional-mock',
     paperClass: options.paperClass || 'official-exam',
     fullPaperSource: true,
+    officialSolutionCoverage: options.officialSolutionCoverage || 'none',
     freshnessRequired: true,
     answerAccess: 'post-submit-server',
     answerBackendReady: true,
@@ -2832,56 +2833,56 @@ const PAPER_SOURCE_CATALOG = [
       'regional-ra4109-matha/page-01-acc4f03027b1.png', 'regional-ra4109-matha/page-02-768a55527abd.png',
       'regional-ra4109-matha/page-03-cbb0d11270a2.png', 'regional-ra4109-matha/page-04-bddf8a4baec0.png',
     ],
-    { id:'paper-regional-ra4109', title:'114 學年度第四次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra4109', title:'114 學年度第四次模擬考數學 A（南一）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource('ra4110',
     [1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3,3,3],
     [
       'regional-ra4110-matha/page-01-cc46e5c3baeb.png', 'regional-ra4110-matha/page-02-34c373d48efa.png',
       'regional-ra4110-matha/page-03-710b2938f5cb.png',
     ],
-    { id:'paper-regional-ra4110', title:'114 學年度第四次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra4110', title:'114 學年度第四次模擬考數學 A（北北基）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource('ra3101',
     [1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3,3,3,3],
     [
       'regional-ra3101-matha/page-01-a33a78c5f682.png', 'regional-ra3101-matha/page-02-e8caa0fafb20.png',
       'regional-ra3101-matha/page-03-67ea52f8d5e5.png',
     ],
-    { id:'paper-regional-ra3101', title:'114 學年度第三次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra3101', title:'114 學年度第三次模擬考數學 A（北北基）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource('ra3102',
     [1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,3,3,3],
     [
       'regional-ra3102-matha/page-01-ec4df124467b.png', 'regional-ra3102-matha/page-02-0aeb00e0f9c0.png',
       'regional-ra3102-matha/page-03-726eadb32593.png',
     ],
-    { id:'paper-regional-ra3102', title:'114 學年度第三次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra3102', title:'114 學年度第三次模擬考數學 A（南一）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource('ra1104',
     [1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3],
     [
       'regional-ra1104-matha/page-01-05e392240419.png', 'regional-ra1104-matha/page-02-96d03285580f.png',
       'regional-ra1104-matha/page-03-3d9dcd615a1f.png',
     ],
-    { id:'paper-regional-ra1104', title:'114 學年度第一次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra1104', title:'114 學年度第一次模擬考數學 A（北北基）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource('ra2100',
     [1,1,1,1,1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,3],
     [
       'regional-ra2100-matha/page-01-816f96b3511b.png', 'regional-ra2100-matha/page-02-e5b641b60c81.png',
       'regional-ra2100-matha/page-03-b8146866990a.png',
     ],
-    { id:'paper-regional-ra2100', title:'114 學年度第二次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra2100', title:'114 學年度第二次模擬考數學 A（南一）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource('ra2101',
     [1,1,1,1,1,1,1,1,2,2,2,3,3,3,3,3,3,3,3,3],
     [
       'regional-ra2101-matha/page-01-7e70b18ba686.png', 'regional-ra2101-matha/page-02-f69375c2c7c5.png',
       'regional-ra2101-matha/page-03-c1284db2a869.png',
     ],
-    { id:'paper-regional-ra2101', title:'114 學年度第二次模擬考數學 A（北北基）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra2101', title:'114 學年度第二次模擬考數學 A（北北基）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource('ra1103',
     [1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3],
     [
       'regional-ra1103-matha/page-01-25a9a2eacfc3.png', 'regional-ra1103-matha/page-02-a56cc0f1bc31.png',
       'regional-ra1103-matha/page-03-1cf348e25c48.png',
     ],
-    { id:'paper-regional-ra1103', title:'114 學年度第一次模擬考數學 A（南一）', paperClass:'regional-mock' }),
+    { id:'paper-regional-ra1103', title:'114 學年度第一次模擬考數學 A（南一）', paperClass:'regional-mock', officialSolutionCoverage:'full' }),
   privatePaperSource(115,
     [2,2,2,2,3,3,3,3,4,4,5,5,6,6,6,6,7,7,7,7],
     [
@@ -2930,7 +2931,7 @@ const PAPER_SOURCE_CATALOG = [
       'official-110-trial-matha/page-05-23bbc9f91fbd.png', 'official-110-trial-matha/page-06-401927da4a18.png',
       'official-110-trial-matha/page-07-1944757fb86e.png', 'official-110-trial-matha/page-08-d01cc52d121b.png',
     ],
-    { id: 'paper-official-110-trial', title: '110 年試辦考試數學 A' }),
+    { id: 'paper-official-110-trial', title: '110 年試辦考試數學 A', officialSolutionCoverage:'full' }),
   { id: 'paper-mock-1', title: '第一次模考', questions: 20, minutes: 100, pages: 6,
     key: [
       { type: 'single', ans: [4], points: 5 }, { type: 'single', ans: [4], points: 5 },
@@ -5704,7 +5705,10 @@ function paperSourceCardHTML(source) {
   const calibration = source.calibrationEligible === false
     ? `<p class="paper-practice-note"><b>練習卷，不列入級分校準。</b>${escH(source.practiceReason || '')}</p>`
     : '<p class="paper-calibration-note">完整 20 題，可列入級分校準。</p>';
-  return `<section class="paper-source-card${source.calibrationEligible === false ? ' is-practice' : ''}"><div><span class="eyebrow">私有原卷｜${source.questions} 題・${source.minutes} 分鐘</span><h3>${escH(source.title)}</h3><p>${escH(status)}</p>${calibration}<small>直接在高解析題本上作答；交卷後 GPT‑5.5 讀取整份筆跡，以紅筆圈記並批分。</small></div>${actions}</section>`;
+  const solution = source.officialSolutionCoverage === 'full'
+    ? '<p class="paper-calibration-note">隔日重想後，可逐題查看出版者完整詳解原圖。</p>'
+    : '<p class="paper-practice-note">隔日有正式答案與 GPT‑5.5 詳批；此卷沒有全題出版者詳解原圖。</p>';
+  return `<section class="paper-source-card${source.calibrationEligible === false ? ' is-practice' : ''}"><div><span class="eyebrow">私有原卷｜${source.questions} 題・${source.minutes} 分鐘${source.officialSolutionCoverage === 'full' ? '｜有逐題官方詳解' : ''}</span><h3>${escH(source.title)}</h3><p>${escH(status)}</p>${calibration}${solution}<small>直接在高解析題本上作答；交卷後 GPT‑5.5 讀取整份筆跡，以紅筆圈記並批分。</small></div>${actions}</section>`;
 }
 function paperRunDisplayDate(run) {
   const saved = String(run && run.d || '');

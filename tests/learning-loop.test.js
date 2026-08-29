@@ -480,6 +480,24 @@ test('十四回完整卷的 20 題都綁到明示題本頁且不混入答案頁'
   assert.equal(result.every((paper) => paper.freshnessRequired === true), true);
 });
 
+test('原卷卡明示九回有逐題官方詳解，其餘卷不會冒充有完整出版者解答', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const sources = PAPER_SOURCES.filter((source) => source.questions === 20);
+    const full = sources.filter((source) => source.officialSolutionCoverage === 'full');
+    return {
+      ids:full.map((source) => source.id),
+      fullHtml:paperSourceCardHTML(full[0]),
+      limitedHtml:paperSourceCardHTML(sources.find((source) => source.fullPaperSource && source.officialSolutionCoverage !== 'full')),
+    };
+  })()`));
+  assert.equal(result.ids.length, 9);
+  assert.deepEqual(result.ids.slice(0, 2), ['paper-regional-ra4109', 'paper-regional-ra4110']);
+  assert.equal(result.ids.includes('paper-official-110-trial'), true);
+  assert.match(result.fullHtml, /有逐題官方詳解|出版者完整詳解原圖/);
+  assert.match(result.limitedHtml, /沒有全題出版者詳解原圖/);
+});
+
 test('官方卷只有本人確認未看過才會進正式級分校準', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
