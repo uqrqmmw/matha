@@ -58,6 +58,7 @@ EXPECTED_CORPUS = {
 EXPECTED_REVIEW_POLICY = "owner-delegated-agent-direct-pixel-v1"
 EXPECTED_EDGE_FUNCTION_VERSION = 37
 EXPECTED_MIGRATIONS = [f"2026083000{number:02d}" for number in range(1, 12)]
+STARTER_CAPACITY_MINIMUM = 1200
 _RUNTIME_VERIFIER: Any | None = None
 _APP_LOADER_VERIFIER: Any | None = None
 _GITHUB_DELIVERY_VERIFIER: Any | None = None
@@ -2292,7 +2293,11 @@ def validate_starter_review_files(signed_path: Path, plan_path: Path,
         [search_root], ["*decisions*.json", "*direct-review*.json", "delegated-review.json"],
     )
     dual_candidates = find_json_files(
-        [search_root], ["*owner-delegated-intersection*.json", "dual-review.json"],
+        [search_root], [
+            "*owner-delegated-intersection*.json",
+            "owner-delegated-review.intersection.json",
+            "dual-review.json",
+        ],
     )
     binding_candidates = find_json_files(
         [search_root], ["answer-binding-candidates.json"],
@@ -2741,22 +2746,23 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         if match:
             starter_count = int(match.group(1))
             break
-    if starter_count >= 350 and all(
+    if starter_count >= STARTER_CAPACITY_MINIMUM and all(
         row["status"] == "pass"
         for row in (review, deployment_gate, runtime_gate, app_loader_gate)
     ):
         starter_capacity = gate(
             "starter-capacity", "Starter 題庫容量與難度平衡", "pass",
-            f"正式庫 {starter_count} 題，已達藍圖 M3 的 350 題安全門檻",
-            evidence=[f"current:{starter_count}", "targetMinimum:350", "remainingMinimum:0"],
+            f"正式庫 {starter_count} 題，已達藍圖 M4 的 {STARTER_CAPACITY_MINIMUM:,} 題最低門檻",
+            evidence=[f"current:{starter_count}",
+                      f"targetMinimum:{STARTER_CAPACITY_MINIMUM}", "remainingMinimum:0"],
             required_for_delivery=False,
         )
     else:
-        remaining = max(0, 350 - starter_count)
+        remaining = max(0, STARTER_CAPACITY_MINIMUM - starter_count)
         starter_capacity = gate(
             "starter-capacity", "Starter 題庫容量與難度平衡", "blocked",
-            f"目前可驗證正式庫 {starter_count} 題，尚未達藍圖 M3 的 350 題",
-            evidence=[f"current:{starter_count}", "targetMinimum:350",
+            f"目前可驗證正式庫 {starter_count} 題，尚未達藍圖 M4 的 {STARTER_CAPACITY_MINIMUM:,} 題",
+            evidence=[f"current:{starter_count}", f"targetMinimum:{STARTER_CAPACITY_MINIMUM}",
                       f"remainingMinimum:{remaining}"],
             blockers=["從既有候選繼續逐題像素與官方答案 QA，不重跑付費 OCR"],
             required_for_delivery=False,
@@ -2857,7 +2863,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=desktop / "數學系統完工稽核.json")
     parser.add_argument("--require-delivery-ready", action="store_true")
     parser.add_argument("--require-complete", action="store_true",
-                        help="require the whole blueprint, including M3 and real-use outcomes")
+                        help="require the whole blueprint, including M4 and real-use outcomes")
     args = parser.parse_args(argv)
     report = build_report(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)

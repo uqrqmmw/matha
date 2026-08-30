@@ -1158,6 +1158,18 @@ class BlueprintReadinessTests(unittest.TestCase):
             self.assertEqual(runtime["status"], "blocked")
             self.assertEqual(loader["status"], "blocked")
 
+    def test_current_intersection_filename_is_discovered_by_hash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            harness = runtime_fixtures.PrivateReleaseRuntimeTests(methodName="runTest")
+            fixture = harness.fixture(root)
+            current_name = root / "owner-delegated-review.intersection.json"
+            fixture["dual_review"].replace(current_name)
+            evidence = audit.validate_starter_review_files(
+                fixture["source"], fixture["plan"], root,
+            )
+            self.assertIn(f"dualFile:{digest(current_name)}", evidence)
+
     def test_runtime_verification_binds_complete_release_and_current_app(self):
         with tempfile.TemporaryDirectory() as temp:
             runtime_path, plan_path, record_path = trusted_runtime_verification_fixture(Path(temp))
