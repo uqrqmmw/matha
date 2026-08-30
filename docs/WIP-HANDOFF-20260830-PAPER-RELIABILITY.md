@@ -1,9 +1,9 @@
 # WIP 交接：原卷交卷、批改與隔日詳批可靠性
 
-時間：2026-08-30（Asia/Taipei）  
-工作分支：`codex/paper-reliability-checkpoint-20260830`  
-可恢復 checkpoint：`2b23a49f1705bfdf8e8f42c61b231e7f346915e0`  
-正式 `main` 基準：`863beaf957d9d27dcc04e7002d6f2808b7c2501b`  
+時間：2026-08-30（Asia/Taipei）
+工作分支：`codex/paper-reliability-checkpoint-20260830`
+可恢復 checkpoint：`2b23a49f1705bfdf8e8f42c61b231e7f346915e0`
+正式 `main` 基準：`863beaf957d9d27dcc04e7002d6f2808b7c2501b`
 狀態：資料庫協定已部署；Edge Function 與正式前端尚未部署，不能宣稱工程或使用目標完成。
 
 ## 最終成功條件
