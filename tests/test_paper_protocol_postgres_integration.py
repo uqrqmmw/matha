@@ -965,10 +965,98 @@ class PaperProtocolPostgresIntegrationTests(unittest.TestCase):
             "run_id": run_id,
             "source_id": "paper-mock-1",
             "question_no": 1,
+            "attempt_id": attempt_id,
             "receipt_id": receipt_id,
             "receipt_digest": receipt["canonicalDigest"],
             "binding": hashlib.sha256(f"binding:{run_id}".encode()).hexdigest(),
         }
+
+    @staticmethod
+    def _canonical_digest(value):
+        encoded = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _detail_fixture(self):
+        identity = self._correction_grade_fixture()
+        binding = {
+            "promptContractVersion": "paper-detail-server-v1",
+            "promptSha256": "a" * 64,
+            "acceptedInitialInk": {"fullInkSha256": "b" * 64},
+            "correction": {"fullInkSha256": "c" * 64},
+        }
+        background = {"userNote": "", "attemptLogs": []}
+        return {
+            **identity,
+            "binding_json": binding,
+            "binding": self._canonical_digest(binding),
+            "background": background,
+            "background_digest": self._canonical_digest(background),
+        }
+
+    def _detail_claim(self, cursor, identity, *, generation=0, binding_json=None,
+                      binding=None, background=None, background_digest=None):
+        cursor.execute(
+            """
+            select public.matha_paper_detail_job_claim(
+              %s, %s, %s, %s, %s, %s, %s, %s,
+              %s::jsonb, %s, %s::jsonb, %s, 120
+            )
+            """,
+            (
+                self.user_id, identity["run_id"], identity["source_id"],
+                identity["question_no"], identity["attempt_id"],
+                identity["receipt_id"], identity["receipt_digest"], generation,
+                json.dumps(binding_json or identity["binding_json"], separators=(",", ":")),
+                binding or identity["binding"],
+                json.dumps(background or identity["background"], separators=(",", ":")),
+                background_digest or identity["background_digest"],
+            ),
+        )
+        return cursor.fetchone()[0]
+
+    def _detail_dispatch(self, cursor, claim):
+        cursor.execute(
+            "select public.matha_paper_detail_job_mark_dispatched(%s, %s, %s)",
+            (self.user_id, claim["job_id"], claim["lease_token"]),
+        )
+        return cursor.fetchone()[0]
+
+    def _detail_complete(self, cursor, claim, result, metadata):
+        cursor.execute(
+            """
+            select public.matha_paper_detail_job_complete(
+              %s, %s, %s, %s::jsonb, %s::jsonb
+            )
+            """,
+            (
+                self.user_id, claim["job_id"], claim["lease_token"],
+                json.dumps(result, separators=(",", ":")),
+                json.dumps(metadata, separators=(",", ":")),
+            ),
+        )
+        return cursor.fetchone()[0]
+
+    def _detail_issue(self, cursor, identity, previous, request_id):
+        cursor.execute(
+            """
+            select public.matha_paper_detail_issue_generation(
+              %s, %s, %s, %s, %s, %s, %s,
+              %s::jsonb, %s, %s::jsonb, %s, %s, %s
+            )
+            """,
+            (
+                self.user_id, identity["run_id"], identity["source_id"],
+                identity["question_no"], identity["attempt_id"],
+                identity["receipt_id"], identity["receipt_digest"],
+                json.dumps(identity["binding_json"], separators=(",", ":")),
+                identity["binding"],
+                json.dumps(identity["background"], separators=(",", ":")),
+                identity["background_digest"], previous, request_id,
+            ),
+        )
+        return cursor.fetchone()[0]
 
     def _correction_grade_claim(self, cursor, identity, *, binding=None, user_id=None,
                                 question_no=None, receipt_id=None, receipt_digest=None,
@@ -1350,6 +1438,131 @@ class PaperProtocolPostgresIntegrationTests(unittest.TestCase):
                 )
         self.assertEqual(tampered.exception.pgcode, "55000")
 
+    def test_same_detail_identity_has_one_invoker_and_coexists_with_correction_grade(self):
+        identity = self._detail_fixture()
+        with self._connection() as connection, connection.cursor() as cursor:
+            correction = self._correction_grade_claim(cursor, identity)
+        self.assertEqual(correction["action"], "invoke")
+
+        def claim(cursor):
+            return self._detail_claim(cursor, identity)
+
+        results = self._run_race([(claim, False), (claim, False)])
+        self.assertTrue(all(result["ok"] for result in results), results)
+        payloads = [result["value"] for result in results]
+        self.assertEqual(sorted(row["action"] for row in payloads), ["invoke", "pending"])
+        self.assertEqual(len({row["job_id"] for row in payloads}), 1)
+        invoke = next(row for row in payloads if row["action"] == "invoke")
+        pending = next(row for row in payloads if row["action"] == "pending")
+        self.assertRegex(invoke["lease_token"], r"^paper-detail-lease-")
+        self.assertNotIn("lease_token", pending)
+        with self._connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select
+                  (select count(*) from public.paper_detail_jobs
+                   where user_id = %s and retry_receipt_id = %s),
+                  (select count(*) from public.paper_correction_grade_jobs
+                   where user_id = %s and retry_receipt_id = %s)
+                """,
+                (self.user_id, identity["receipt_id"],
+                 self.user_id, identity["receipt_id"]),
+            )
+            self.assertEqual(cursor.fetchone(), (1, 1))
+
+    def test_detail_dispatched_replays_one_immutable_result_and_rejects_tamper(self):
+        identity = self._detail_fixture()
+        result = {
+            "readable": True, "confidence": "high", "read": "x=2",
+            "goodWork": ["代入正確"], "firstErrorEvidence": "x=2",
+            "firstError": "下一行漏項", "errorKind": "漏項",
+            "whyWrong": "代回不成立", "repair": "補回常數項",
+            "explanation": "先整理", "solution": ["整理", "代入"],
+            "nextTime": "檢查常數", "marks": [],
+        }
+        metadata = {
+            "model": "gpt-5.5", "requestId": "resp-detail-1",
+            "usage": {"input_tokens": 10}, "budget": {"allowed": True},
+        }
+        with self._connection() as connection, connection.cursor() as cursor:
+            claim = self._detail_claim(cursor, identity)
+            dispatched = self._detail_dispatch(cursor, claim)
+        self.assertEqual(dispatched["action"], "dispatched")
+        with self._connection() as connection, connection.cursor() as cursor:
+            retry = self._detail_claim(cursor, identity)
+            cursor.execute(
+                """
+                select public.matha_paper_detail_job_status(
+                  %s, %s, %s, %s, %s, %s, %s, 0
+                )
+                """,
+                (
+                    self.user_id, identity["run_id"], identity["source_id"],
+                    identity["question_no"], identity["attempt_id"],
+                    identity["receipt_id"], identity["receipt_digest"],
+                ),
+            )
+            pending = cursor.fetchone()[0]
+        self.assertEqual(retry["action"], "pending")
+        self.assertEqual(pending["action"], "pending")
+
+        with self._connection() as connection, connection.cursor() as cursor:
+            completed = self._detail_complete(cursor, claim, result, metadata)
+        receipt = completed["result"]["receipt"]
+        self.assertEqual(completed["action"], "completed")
+        self.assertEqual(receipt["authority"], "supabase-immutable-paper-detail-result-v1")
+        self.assertEqual(receipt["jobKind"], "paper_detail")
+        self.assertEqual(receipt["generation"], 0)
+        self.assertEqual(receipt["acceptedAttemptId"], identity["attempt_id"])
+        self.assertEqual(receipt["retryReceiptId"], identity["receipt_id"])
+        self.assertEqual(receipt["modelInputBindingSha256"], identity["binding"])
+        self.assertEqual(receipt["inputBackgroundSha256"], identity["background_digest"])
+        self.assertRegex(receipt["canonicalDigest"], r"^[0-9a-f]{64}$")
+        with self._connection() as connection, connection.cursor() as cursor:
+            replay = self._detail_complete(cursor, claim, result, metadata)
+            after = self._detail_claim(cursor, identity)
+        self.assertEqual(replay, completed)
+        self.assertEqual(after, completed)
+        with self.assertRaises(psycopg2.Error) as tampered:
+            with self._connection() as connection, connection.cursor() as cursor:
+                self._detail_complete(cursor, claim, {**result, "read": "x=3"}, metadata)
+        self.assertEqual(tampered.exception.pgcode, "55000")
+
+    def test_detail_generation_cas_converges_and_hash_drift_fails_closed(self):
+        identity = self._detail_fixture()
+        with self._connection() as connection, connection.cursor() as cursor:
+            initial = self._detail_claim(cursor, identity)
+        self.assertEqual(initial["action"], "invoke")
+
+        requests = [f"paper-detail-generation-{uuid.uuid4()}" for _ in range(2)]
+        def issue(index):
+            return lambda cursor: self._detail_issue(cursor, identity, 0, requests[index])
+        results = self._run_race([(issue(0), False), (issue(1), False)])
+        self.assertTrue(all(result["ok"] for result in results), results)
+        issued = [result["value"] for result in results]
+        self.assertEqual({row["generation"] for row in issued}, {1})
+        self.assertEqual(len({row["job_id"] for row in issued}), 1)
+
+        with self._connection() as connection, connection.cursor() as cursor:
+            generation_one = self._detail_claim(cursor, identity, generation=1)
+        self.assertEqual(generation_one["action"], "invoke")
+        mutated_binding = {**identity["binding_json"], "promptSha256": "d" * 64}
+        with self.assertRaises(psycopg2.Error) as digest_mismatch:
+            with self._connection() as connection, connection.cursor() as cursor:
+                self._detail_claim(
+                    cursor, identity, generation=1,
+                    binding_json=mutated_binding, binding=identity["binding"],
+                )
+        self.assertEqual(digest_mismatch.exception.pgcode, "22023")
+        with self.assertRaises(psycopg2.Error) as binding_drift:
+            with self._connection() as connection, connection.cursor() as cursor:
+                self._detail_claim(
+                    cursor, identity, generation=1,
+                    binding_json=mutated_binding,
+                    binding=self._canonical_digest(mutated_binding),
+                )
+        self.assertEqual(binding_drift.exception.pgcode, "22023")
+
     def test_auth_user_delete_cascades_all_protocol_rows(self):
         run_id, attempt_id, _original, correction = self._past_accepted_with_correction()
         receipt_id = f"paper-correction-retry-{uuid.uuid4().hex}"
@@ -1373,6 +1586,15 @@ class PaperProtocolPostgresIntegrationTests(unittest.TestCase):
             )
             self._claim(cursor, run_id, attempt_id, "1" * 64, token)
             self._correction_grade_claim(cursor, correction_grade_identity)
+            detail_identity = {
+                **correction_grade_identity,
+                "attempt_id": attempt_id,
+                "binding_json": {"promptSha256": "a" * 64},
+                "background": {"userNote": "", "attemptLogs": []},
+            }
+            detail_identity["binding"] = self._canonical_digest(detail_identity["binding_json"])
+            detail_identity["background_digest"] = self._canonical_digest(detail_identity["background"])
+            self._detail_claim(cursor, detail_identity)
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute("delete from auth.users where id = %s", (self.user_id,))
         tables = (
@@ -1383,6 +1605,7 @@ class PaperProtocolPostgresIntegrationTests(unittest.TestCase):
             "paper_grade_jobs",
             "paper_correction_retry_receipts",
             "paper_correction_grade_jobs",
+            "paper_detail_jobs",
         )
         with self._connection() as connection, connection.cursor() as cursor:
             for table in tables:

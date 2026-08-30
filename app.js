@@ -2,7 +2,10 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0830b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0830c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+// 這是資料庫已核准的模考提交協定，不是瀏覽器快取版號。只有提交 schema／
+// 來源合約一起遷移時才更動，避免一般前端改版讓尚未交卷的考試失效。
+const PAPER_PROTOCOL_APP_VERSION = '0830b';
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -6541,7 +6544,7 @@ async function startPaperSource(sourceId) {
       status: 'paused', remainingMs: source.minutes * 60000, resumeAt: null, wrongNos: [], paperPage: 0,
       freshnessConfirmedAt: freshnessConfirmed ? now : null,
       calibrationEligible: source.questions === 20 && source.calibrationEligible !== false && freshnessConfirmed,
-      paperLayoutVersion: PAPER_LAYOUT_VERSION, runCreatedAppVersion: APP_VER };
+      paperLayoutVersion: PAPER_LAYOUT_VERSION, runCreatedAppVersion: PAPER_PROTOCOL_APP_VERSION };
     S.paperRuns = S.paperRuns || []; S.paperRuns.push(run); save();
   }
   const recovered = paperRecoveryApply(run);
@@ -9584,7 +9587,7 @@ function paperSubmitAttemptNew(run, source, remainingMs, submittedAt, inkSnapsho
     inkSnapshotSha256:String(inkSnapshotSha256 || '').toLowerCase(),
     pageManifest:paperSubmitPageManifest(pageManifest),
     submittedAt:Number(submittedAt) || Date.now(),
-    runCreatedAppVersion:String(run && run.runCreatedAppVersion || APP_VER),
+    runCreatedAppVersion:String(run && run.runCreatedAppVersion || PAPER_PROTOCOL_APP_VERSION),
     runCreatedAt:Number(run && run.createdAt),
     paperLayoutVersion:Number(run && run.paperLayoutVersion),
     sourcePageCount:Number(source && source.scans && source.scans.length),
@@ -10995,37 +10998,184 @@ function paperQuestionScanIndex(source, no) {
   if (source.id === 'paper-mock-2') return no <= 4 ? 0 : no <= 7 ? 1 : no <= 10 ? 2 : no <= 13 ? 3 : no <= 17 ? 4 : 5;
   return no <= 5 ? 0 : no <= 8 ? 1 : no <= 13 ? 2 : 3;
 }
-async function paperAiDetailCall(source, no, logs, userNote) {
+function paperDetailGenerationRequestId() {
+  const uuid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  return `paper-detail-generation-${uuid}`;
+}
+function paperDetailKnownGeneration(state) {
+  const values = [
+    state && state.aiDetailGeneration,
+    state && state.detailJob && state.detailJob.generation,
+    state && state.aiDetail && state.aiDetail.predictionMetadata && state.aiDetail.predictionMetadata.generation,
+  ].map(Number).filter((value) => Number.isInteger(value) && value >= 0 && value <= 2147483647);
+  return values.length ? Math.max(...values) : 0;
+}
+function paperDetailContext(source, no, state, logs, userNote) {
   const run = paperReview && paperReview.run;
-  const q = paperQuestionMeta(run, source, no), answer = String(q && q.answer || '');
-  if (!q || !answer) throw new Error('找不到交卷後保存的正式答案，已停止詳批');
-  const reviewState = run && run.review && run.review[no];
-  const retryReceipt = paperCorrectionRetryReceiptRef(reviewState && reviewState.correctionRetryReceipt);
-  if (!retryReceipt) throw new Error('本題尚未核發可驗證的隔日訂正收據');
+  const retryReceipt = paperCorrectionRetryReceiptRef(state && state.correctionRetryReceipt);
   const attempts = (logs || []).map((log, index) => ({
     attempt: index + 1,
     direction: String(log.direction || '').slice(0, 300),
     topic: String(TOPICS[log.topic] || log.topic || '').slice(0, 80),
     concept: String(log.concept || '').slice(0, 200),
   }));
-  const payload = await openAiInvoke({
-    responseType: 'paper_detail',
-    context: {
-      paperRunId: paperReview && paperReview.run && paperReview.run.id,
-      sourceId: paperReview && paperReview.source && paperReview.source.id,
-      questionNo: no,
-      submitAttemptId: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.attemptId,
-      submitAttemptInkSnapshotSha256: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.inkSnapshotSha256,
-      submittedAt: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.submittedAt,
-      runCreatedAppVersion: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.runCreatedAppVersion,
-      correctionRetryReceiptId: retryReceipt.receiptId,
-      correctionRetryReceiptDigest: retryReceipt.canonicalDigest,
-      detailAttempts:attempts.slice(-8),
-      detailUserNote:String(userNote || '').trim().slice(0, 500),
-    },
-  }, 90000);
-  if (!payload.json || typeof payload.json !== 'object') throw new Error('OpenAI 沒有回傳完整詳批資料');
-  return payload;
+  return retryReceipt && run && run.submitAttempt ? {
+    paperRunId:run.id, sourceId:source && source.id, questionNo:Number(no),
+    submitAttemptId:run.submitAttempt.attemptId,
+    submitAttemptInkSnapshotSha256:run.submitAttempt.inkSnapshotSha256,
+    submittedAt:run.submitAttempt.submittedAt,
+    runCreatedAppVersion:run.submitAttempt.runCreatedAppVersion,
+    correctionRetryReceiptId:retryReceipt.receiptId,
+    correctionRetryReceiptDigest:retryReceipt.canonicalDigest,
+    detailAttempts:attempts.slice(-8),
+    detailUserNote:String(userNote || '').trim().slice(0, 500),
+  } : null;
+}
+async function paperDetailPayloadVerified(payload, source, no, retryReceipt, generation) {
+  const run = paperReview && paperReview.run;
+  const accepted = run && run.submitAttempt;
+  const json = payload && payload.json;
+  const receipt = payload && payload.detailReceipt;
+  const job = payload && payload.detailJob;
+  const metadata = payload && payload.metadata;
+  if (!run || !source || !accepted || !retryReceipt || !json || typeof json !== 'object'
+    || !receipt || !job || !metadata || typeof metadata !== 'object'
+    || receipt.authority !== 'supabase-immutable-paper-detail-result-v1'
+    || receipt.jobKind !== 'paper_detail'
+    || String(receipt.jobId || '') !== String(job.jobId || '')
+    || Number(receipt.generation) !== Number(generation)
+    || Number(job.generation) !== Number(generation)
+    || String(receipt.runId || '') !== String(run.id || '')
+    || String(receipt.sourceId || '') !== String(source.id || '')
+    || Number(receipt.questionNo) !== Number(no)
+    || String(receipt.acceptedAttemptId || '') !== String(accepted.attemptId || '')
+    || String(receipt.retryReceiptId || '') !== String(retryReceipt.receiptId || '')
+    || String(receipt.retryReceiptDigest || '') !== String(retryReceipt.canonicalDigest || '')
+    || String(receipt.modelInputBindingSha256 || '') !== String(job.modelInputBindingSha256 || '')
+    || String(receipt.inputBackgroundSha256 || '') !== String(job.inputBackgroundSha256 || '')
+    || String(job.status || '') !== 'completed'
+    || Date.parse(String(receipt.completedAt || '')) < Number(run.submittedAt || 0)) return null;
+  const requiredDigests = [
+    receipt.retryReceiptDigest, receipt.modelInputBindingSha256,
+    receipt.inputBackgroundSha256, receipt.normalizedResultSha256,
+    receipt.modelMetadataSha256, receipt.canonicalDigest,
+  ];
+  if (requiredDigests.some((value) => !/^[a-f0-9]{64}$/.test(String(value || '').toLowerCase()))) return null;
+  const modelMetadata = {
+    model:String(payload.model || ''), requestId:String(payload.requestId || ''),
+    usage:payload.usage || null, budget:payload.budget || null,
+  };
+  const receiptCore = {
+    authority:receipt.authority, jobId:receipt.jobId, jobKind:receipt.jobKind,
+    generation:Number(receipt.generation), runId:receipt.runId,
+    sourceId:receipt.sourceId, questionNo:Number(receipt.questionNo),
+    acceptedAttemptId:receipt.acceptedAttemptId,
+    retryReceiptId:receipt.retryReceiptId,
+    retryReceiptDigest:receipt.retryReceiptDigest,
+    modelInputBindingSha256:receipt.modelInputBindingSha256,
+    inputBackgroundSha256:receipt.inputBackgroundSha256,
+    normalizedResultSha256:receipt.normalizedResultSha256,
+    modelMetadataSha256:receipt.modelMetadataSha256,
+    completedAt:receipt.completedAt,
+  };
+  if (await capabilityCanonicalDigest(json) !== receipt.normalizedResultSha256
+    || await capabilityCanonicalDigest(modelMetadata) !== receipt.modelMetadataSha256
+    || await capabilityCanonicalDigest(receiptCore) !== receipt.canonicalDigest) return null;
+  const predictionCore = { ...metadata };
+  delete predictionCore.canonicalDigest; delete predictionCore.predictionId;
+  const predictionDigest = await capabilityCanonicalDigest(predictionCore);
+  if (metadata.authority !== 'supabase-paper-detail-prediction-v2'
+    || String(metadata.jobId || '') !== String(job.jobId || '')
+    || Number(metadata.generation) !== Number(generation)
+    || String(metadata.runId || '') !== String(run.id || '')
+    || String(metadata.sourceId || '') !== String(source.id || '')
+    || Number(metadata.questionNo) !== Number(no)
+    || String(metadata.acceptedAttemptId || '') !== String(accepted.attemptId || '')
+    || String(metadata.retryReceiptId || '') !== String(retryReceipt.receiptId || '')
+    || String(metadata.retryReceiptDigest || '') !== String(retryReceipt.canonicalDigest || '')
+    || String(metadata.modelInputBindingSha256 || '') !== String(receipt.modelInputBindingSha256 || '')
+    || String(metadata.runStateSha256 || '') !== String(receipt.inputBackgroundSha256 || '')
+    || String(metadata.detailResultReceiptSha256 || '') !== String(receipt.canonicalDigest || '')
+    || String(metadata.normalizedResultSha256 || '') !== String(receipt.normalizedResultSha256 || '')
+    || !/^[a-f0-9]{64}$/.test(String(metadata.promptSha256 || ''))
+    || !/^[a-f0-9]{64}$/.test(String(metadata.fullImageSha256 || ''))
+    || !/^[a-f0-9]{64}$/.test(String(metadata.focusImageSha256 || ''))
+    || predictionDigest !== String(metadata.canonicalDigest || '')
+    || String(metadata.predictionId || '') !== `detail-pred-${predictionDigest.slice(0, 24)}`) return null;
+  return { ...payload, metadata:{ ...metadata }, detailReceipt:{ ...receipt }, detailJob:{ ...job } };
+}
+async function paperAiDetailCall(source, no, logs, userNote, force = false) {
+  const run = paperReview && paperReview.run;
+  const q = paperQuestionMeta(run, source, no), answer = String(q && q.answer || '');
+  if (!q || !answer) throw new Error('找不到交卷後保存的正式答案，已停止詳批');
+  const state = run && run.review && run.review[no];
+  const retryReceipt = paperCorrectionRetryReceiptRef(state && state.correctionRetryReceipt);
+  if (!retryReceipt) throw new Error('本題尚未核發可驗證的隔日訂正收據');
+  const context = paperDetailContext(source, no, state, logs, userNote);
+  if (!context) throw new Error('本題詳批缺少 accepted 交卷或隔日訂正上下文');
+  let generation = paperDetailKnownGeneration(state);
+  if (force) {
+    if (/^paper-detail-generation-[A-Za-z0-9._:-]{16,127}$/.test(String(state.aiDetailGenerationRequestId || ''))
+      && state.detailJob && state.detailJob.status === 'dispatched'
+      && Number(state.detailJob.generation) === generation) {
+      // 上一代已確定進入「不可自動重送」但仍無完成收據。再次由本人按下
+      // 重新分析才放棄等待並核發 N+1；第一次斷線重試仍只查同一代。
+      delete state.aiDetailGenerationRequestId;
+      state.aiDetailPreviousGeneration = generation;
+    }
+    const previousGeneration = generation;
+    if (!/^paper-detail-generation-[A-Za-z0-9._:-]{16,127}$/.test(String(state.aiDetailGenerationRequestId || ''))) {
+      state.aiDetailGenerationRequestId = paperDetailGenerationRequestId();
+      state.aiDetailPreviousGeneration = previousGeneration;
+      state.mt = Date.now(); run.mt = state.mt; save();
+    }
+    const issued = await openAiInvoke({
+      responseType:'paper_detail_generation',
+      context:{ ...context,
+        detailGenerationRequestId:state.aiDetailGenerationRequestId,
+        detailPreviousGeneration:Number(state.aiDetailPreviousGeneration),
+      },
+    }, 120000);
+    const job = issued && issued.detailJob;
+    generation = Number(job && job.generation);
+    if (!job || !Number.isInteger(generation) || generation <= previousGeneration
+      || !/^[a-f0-9]{64}$/.test(String(job.modelInputBindingSha256 || ''))
+      || !/^[a-f0-9]{64}$/.test(String(job.inputBackgroundSha256 || ''))) {
+      throw new Error('重新分析沒有取得有效的伺服器世代；原詳解仍保留，模型尚未重送。');
+    }
+    state.aiDetailGeneration = generation;
+    state.detailJob = { ...job };
+    state.mt = Date.now(); run.mt = state.mt; save();
+  }
+  const invokeContext = { ...context, detailGeneration:generation };
+  let payload = await openAiInvoke({ responseType:'paper_detail', context:invokeContext }, 120000);
+  let verified = await paperDetailPayloadVerified(payload, source, no, retryReceipt, generation);
+  for (let attempt = 0; !verified && attempt < 4
+    && payload && payload.detailJob && !['completed', 'missing'].includes(payload.detailJob.status); attempt++) {
+    state.aiDetailGeneration = generation;
+    state.detailJob = { ...payload.detailJob };
+    state.mt = Date.now(); run.mt = state.mt; save();
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    payload = await openAiInvoke({ responseType:'paper_detail_status', context:invokeContext }, 30000);
+    verified = await paperDetailPayloadVerified(payload, source, no, retryReceipt, generation);
+  }
+  if (!verified) {
+    const job = payload && payload.detailJob;
+    if (job && job.status && job.status !== 'missing') {
+      state.aiDetailGeneration = generation;
+      state.detailJob = { ...job };
+      state.mt = Date.now(); run.mt = state.mt; save();
+    }
+    throw new Error(payload && payload.message || '逐題詳批尚未完成安全封存；稍後只會查詢同一份工作，不會重複送出。');
+  }
+  state.aiDetailGeneration = generation;
+  state.detailJob = { ...verified.detailJob };
+  state.detailReceipt = { ...verified.detailReceipt };
+  delete state.aiDetailGenerationRequestId;
+  delete state.aiDetailPreviousGeneration;
+  return verified;
 }
 async function paperOfficialSolutionCall(source, no) {
   const run = paperReview && paperReview.run;
@@ -11455,13 +11605,14 @@ function paperReviewDetailLogs(state) {
   return (state && Array.isArray(state.logs) ? state.logs : [])
     .filter((log) => String(log && log.kind || '') !== 'detail-gate');
 }
-async function paperReviewDetailCallCompat(review, no, state) {
+async function paperReviewDetailCallCompat(review, no, state, force = false) {
   // 後端與前端都只接受真實 retry log；絕不再製造空白 detail-gate 來繞過老師流程。
   return paperAiDetailCall(
     review.source,
     no,
     paperReviewDetailLogs(state),
     state && state.aiDetailUserNote,
+    force,
   );
 }
 function paperInkLiveStrokeIdsForQuestion(data, qno) {
@@ -11755,7 +11906,7 @@ async function paperReviewDetailed(force = false) {
     }
     if (paperReview !== review) return;
     const [response] = await Promise.all([
-      paperReviewDetailCallCompat(review, no, state),
+      paperReviewDetailCallCompat(review, no, state, force),
       paperOfficialSolutionLoad(review, no),
     ]);
     if (paperReview !== review) return;

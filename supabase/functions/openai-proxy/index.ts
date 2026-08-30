@@ -214,6 +214,160 @@ function paperCorrectionGradeCompletedPayload(rawJob: unknown) {
   };
 }
 
+function paperDetailJobPublicState(raw: unknown) {
+  const job = paperGradeJobRecord(raw);
+  if (!job) return null;
+  const jobId = String(job.job_id || "");
+  const questionNo = Number(job.question_no);
+  const generation = Number(job.generation);
+  const acceptedAttemptId = String(job.accepted_attempt_id || "");
+  const retryReceiptDigest = String(job.retry_receipt_digest || "")
+    .toLowerCase();
+  const binding = String(job.model_input_binding_sha256 || "").toLowerCase();
+  const background = String(job.input_background_sha256 || "").toLowerCase();
+  const issuanceRequestId = job.issuance_request_id == null
+    ? null
+    : String(job.issuance_request_id || "");
+  if (
+    !/^[0-9a-f-]{36}$/.test(jobId) ||
+    !Number.isInteger(questionNo) || questionNo < 1 || questionNo > 20 ||
+    !Number.isInteger(generation) || generation < 0 ||
+    generation > 2147483647 ||
+    !/^paper-submit-[A-Za-z0-9._:-]{16,127}$/.test(acceptedAttemptId) ||
+    !/^[a-f0-9]{64}$/.test(retryReceiptDigest) ||
+    !/^[a-f0-9]{64}$/.test(binding) ||
+    !/^[a-f0-9]{64}$/.test(background) ||
+    (issuanceRequestId != null &&
+      !/^paper-detail-generation-[A-Za-z0-9._:-]{16,127}$/.test(
+        issuanceRequestId,
+      ))
+  ) return null;
+  return {
+    jobId,
+    status: String(job.status || ""),
+    runId: String(job.run_id || ""),
+    sourceId: String(job.source_id || ""),
+    questionNo,
+    acceptedAttemptId,
+    retryReceiptId: String(job.retry_receipt_id || ""),
+    retryReceiptDigest,
+    generation,
+    issuanceRequestId,
+    modelInputBindingSha256: binding,
+    inputBackgroundSha256: background,
+    dispatchedAt: job.dispatched_at || null,
+    completedAt: job.completed_at || null,
+  };
+}
+
+function paperDetailPendingResponse(
+  origin: string,
+  rawJob: unknown,
+  message =
+    "本題詳解已由唯一工作接手；系統只會查詢同一份結果，不會重複呼叫模型。",
+) {
+  return reply(origin, 202, {
+    message,
+    detailJob: paperDetailJobPublicState(rawJob) || { status: "pending" },
+    retryAfterMs: 3000,
+  });
+}
+
+async function paperDetailCompletedPayload(rawJob: unknown) {
+  const job = paperGradeJobRecord(rawJob);
+  const publicJob = paperDetailJobPublicState(job);
+  const binding = paperGradeJobRecord(job?.model_input_binding);
+  const acceptedInk = paperGradeJobRecord(binding?.acceptedInitialInk);
+  const correction = paperGradeJobRecord(binding?.correction);
+  const result = paperGradeJobRecord(job?.result);
+  const json = paperGradeJobRecord(result?.json);
+  const metadata = paperGradeJobRecord(result?.model_metadata);
+  const receipt = paperGradeJobRecord(result?.receipt);
+  const digests = paperGradeJobRecord(result?.content_digests);
+  if (
+    !job || job.action !== "completed" || job.status !== "completed" ||
+    !publicJob || !binding || !acceptedInk || !correction || !result ||
+    !json || !metadata || !receipt || !digests ||
+    receipt.authority !== "supabase-immutable-paper-detail-result-v1" ||
+    receipt.jobKind !== "paper_detail" ||
+    String(receipt.jobId || "") !== publicJob.jobId ||
+    Number(receipt.generation) !== publicJob.generation ||
+    String(receipt.runId || "") !== publicJob.runId ||
+    String(receipt.sourceId || "") !== publicJob.sourceId ||
+    Number(receipt.questionNo) !== publicJob.questionNo ||
+    String(receipt.acceptedAttemptId || "") !== publicJob.acceptedAttemptId ||
+    String(receipt.retryReceiptId || "") !== publicJob.retryReceiptId ||
+    String(receipt.retryReceiptDigest || "").toLowerCase() !==
+      publicJob.retryReceiptDigest ||
+    String(receipt.modelInputBindingSha256 || "").toLowerCase() !==
+      publicJob.modelInputBindingSha256 ||
+    String(receipt.inputBackgroundSha256 || "").toLowerCase() !==
+      publicJob.inputBackgroundSha256
+  ) return null;
+  const normalizedResultSha256 = await canonicalSha256(json);
+  const modelMetadataSha256 = await canonicalSha256(metadata);
+  const receiptCore = { ...receipt };
+  delete receiptCore.canonicalDigest;
+  const detailResultReceiptSha256 = await canonicalSha256(receiptCore);
+  if (
+    normalizedResultSha256 !==
+      String(digests.normalized_result_sha256 || "").toLowerCase() ||
+    modelMetadataSha256 !==
+      String(digests.model_metadata_sha256 || "").toLowerCase() ||
+    detailResultReceiptSha256 !==
+      String(digests.result_receipt_sha256 || "").toLowerCase() ||
+    normalizedResultSha256 !==
+      String(receipt.normalizedResultSha256 || "").toLowerCase() ||
+    modelMetadataSha256 !==
+      String(receipt.modelMetadataSha256 || "").toLowerCase() ||
+    detailResultReceiptSha256 !==
+      String(receipt.canonicalDigest || "").toLowerCase()
+  ) return null;
+  const promptSha256 = String(binding.promptSha256 || "").toLowerCase();
+  const fullImageSha256 = String(acceptedInk.fullInkSha256 || "")
+    .toLowerCase();
+  const focusImageSha256 = String(correction.fullInkSha256 || "")
+    .toLowerCase();
+  if (
+    !/^[a-f0-9]{64}$/.test(promptSha256) ||
+    !/^[a-f0-9]{64}$/.test(fullImageSha256) ||
+    !/^[a-f0-9]{64}$/.test(focusImageSha256)
+  ) return null;
+  const predictionCore = {
+    authority: "supabase-paper-detail-prediction-v2",
+    jobId: publicJob.jobId,
+    generation: publicJob.generation,
+    runId: publicJob.runId,
+    sourceId: publicJob.sourceId,
+    questionNo: publicJob.questionNo,
+    acceptedAttemptId: publicJob.acceptedAttemptId,
+    retryReceiptId: publicJob.retryReceiptId,
+    retryReceiptDigest: publicJob.retryReceiptDigest,
+    promptSha256,
+    fullImageSha256,
+    focusImageSha256,
+    runStateSha256: publicJob.inputBackgroundSha256,
+    modelInputBindingSha256: publicJob.modelInputBindingSha256,
+    detailResultReceiptSha256,
+    normalizedResultSha256,
+  };
+  const canonicalDigest = await canonicalSha256(predictionCore);
+  return {
+    json,
+    model: String(metadata.model || ""),
+    requestId: String(metadata.requestId || ""),
+    usage: metadata.usage || null,
+    budget: metadata.budget || null,
+    detailReceipt: receipt,
+    detailJob: publicJob,
+    metadata: {
+      ...predictionCore,
+      canonicalDigest,
+      predictionId: `detail-pred-${canonicalDigest.slice(0, 24)}`,
+    },
+  };
+}
+
 function paperGradeLostResponse(origin: string, rawJob: unknown) {
   const gradeJob = paperGradeJobPublicState(rawJob);
   return reply(origin, 200, {
@@ -952,14 +1106,15 @@ async function archivePaperGradeReceipt(
         (receipt.modelInputBinding as Record<string, unknown> | undefined)
           ?.imageOrder,
       )
-      ? ((receipt.modelInputBinding as Record<string, unknown>).imageOrder as Array<
-        Record<string, unknown>
-      >).map((image) => ({
-        page: Number(image.page),
-        kind: String(image.kind || ""),
-        mediaType: String(image.mediaType || ""),
-        sha256: String(image.sha256 || ""),
-      }))
+      ? ((receipt.modelInputBinding as Record<string, unknown>)
+        .imageOrder as Array<
+          Record<string, unknown>
+        >).map((image) => ({
+          page: Number(image.page),
+          kind: String(image.kind || ""),
+          mediaType: String(image.mediaType || ""),
+          sha256: String(image.sha256 || ""),
+        }))
       : [],
     gradeSummary: receipt.gradeSummary,
   };
@@ -1380,6 +1535,7 @@ async function preparePaperDetailAuthority(
       answerKeyItem,
       acceptedInkPage,
       input: prepared.input,
+      inputBackground: prepared.inputBackground,
       modelInputBinding: prepared.modelInputBinding,
     }
     : null;
@@ -1677,6 +1833,8 @@ Deno.serve(async (req: Request) => {
         "paper_grade",
         "paper_correction_grade",
         "paper_detail",
+        "paper_detail_status",
+        "paper_detail_generation",
         "text",
         "test",
       ].includes(
@@ -1684,12 +1842,14 @@ Deno.serve(async (req: Request) => {
       )
     ) return reply(origin, 400, { message: "responseType 不合法" });
     if (
-      responseType === "paper_detail" &&
+      ["paper_detail", "paper_detail_status", "paper_detail_generation"]
+        .includes(
+          responseType,
+        ) &&
       (body.messages !== undefined || body.instructions !== undefined)
     ) {
       return reply(origin, 400, {
-        message:
-          "逐題詳批只接受伺服器重建的原卷、交卷筆跡與隔日訂正收據。",
+        message: "逐題詳批只接受伺服器重建的原卷、交卷筆跡與隔日訂正收據。",
       });
     }
 
@@ -1831,6 +1991,69 @@ Deno.serve(async (req: Request) => {
       return paperGradePendingResponse(origin, rawJob);
     }
 
+    if (responseType === "paper_detail_status") {
+      const context = body.context && typeof body.context === "object" &&
+          !Array.isArray(body.context)
+        ? body.context as Record<string, unknown>
+        : {};
+      const runId = String(context.paperRunId || "");
+      const sourceId = String(context.sourceId || "");
+      const questionNo = Number(context.questionNo);
+      const attemptId = String(context.submitAttemptId || "");
+      const retryReceiptId = String(context.correctionRetryReceiptId || "");
+      const retryReceiptDigest = String(
+        context.correctionRetryReceiptDigest || "",
+      ).toLowerCase();
+      const generation = Number(context.detailGeneration ?? 0);
+      if (
+        !/^paper-run-\d{10,20}$/.test(runId) || !sourceId ||
+        sourceId.length > 160 ||
+        !Number.isInteger(questionNo) || questionNo < 1 || questionNo > 20 ||
+        !/^paper-submit-[A-Za-z0-9._:-]{16,127}$/.test(attemptId) ||
+        !/^paper-correction-retry-[A-Za-z0-9._:-]{16,127}$/.test(
+          retryReceiptId,
+        ) || !/^[a-f0-9]{64}$/.test(retryReceiptDigest) ||
+        !Number.isInteger(generation) || generation < 0 ||
+        generation > 2147483647
+      ) {
+        return reply(origin, 400, { message: "逐題詳批工作查詢格式不完整" });
+      }
+      let rawJob;
+      try {
+        rawJob = await serviceRpc("matha_paper_detail_job_status", {
+          p_user_id: userId,
+          p_run_id: runId,
+          p_source_id: sourceId,
+          p_question_no: questionNo,
+          p_accepted_attempt_id: attemptId,
+          p_retry_receipt_id: retryReceiptId,
+          p_retry_receipt_digest: retryReceiptDigest,
+          p_generation: generation,
+        });
+      } catch (_) {
+        return reply(origin, 500, {
+          message: "逐題詳批工作暫時無法安全回讀",
+        });
+      }
+      const record = paperGradeJobRecord(rawJob);
+      if (record?.action === "missing") {
+        return reply(origin, 200, {
+          detailJob: { status: "missing", generation },
+        });
+      }
+      if (record?.action === "completed") {
+        const completed = await paperDetailCompletedPayload(rawJob);
+        return completed
+          ? reply(origin, 200, completed)
+          : reply(origin, 500, { message: "逐題詳批完成收據不完整" });
+      }
+      return paperDetailPendingResponse(
+        origin,
+        rawJob,
+        "已找到同一份逐題詳批工作；查詢沒有再次呼叫模型。",
+      );
+    }
+
     let paperGradeAuthority: Awaited<
       ReturnType<typeof preparePaperGradeAuthority>
     > = null;
@@ -1858,10 +2081,11 @@ Deno.serve(async (req: Request) => {
     > = null;
     if (responseType === "paper_correction_grade") {
       try {
-        paperCorrectionGradeAuthority = await preparePaperCorrectionGradeAuthority(
-          userId,
-          body.context,
-        );
+        paperCorrectionGradeAuthority =
+          await preparePaperCorrectionGradeAuthority(
+            userId,
+            body.context,
+          );
       } catch (_) {
         return reply(origin, 500, {
           message: "訂正批改前的私人筆跡回讀暫時失敗",
@@ -1878,7 +2102,7 @@ Deno.serve(async (req: Request) => {
     let paperDetailAuthority: Awaited<
       ReturnType<typeof preparePaperDetailAuthority>
     > = null;
-    if (responseType === "paper_detail") {
+    if (["paper_detail", "paper_detail_generation"].includes(responseType)) {
       try {
         paperDetailAuthority = await preparePaperDetailAuthority(
           userId,
@@ -1940,6 +2164,69 @@ Deno.serve(async (req: Request) => {
         });
       }
       return reply(origin, 200, { gradeJob });
+    }
+
+    if (responseType === "paper_detail_generation") {
+      const context = body.context && typeof body.context === "object" &&
+          !Array.isArray(body.context)
+        ? body.context as Record<string, unknown>
+        : {};
+      const issuanceRequestId = String(
+        context.detailGenerationRequestId || "",
+      );
+      const previousGeneration = Number(context.detailPreviousGeneration);
+      if (
+        !paperDetailAuthority ||
+        !Number.isInteger(previousGeneration) || previousGeneration < 0 ||
+        previousGeneration > 2147483646 ||
+        !/^paper-detail-generation-[A-Za-z0-9._:-]{16,127}$/.test(
+          issuanceRequestId,
+        )
+      ) {
+        return reply(origin, 400, {
+          message: "重新分析缺少有效的伺服器世代申請編號",
+        });
+      }
+      const binding = String(
+        paperDetailAuthority.modelInputBinding.canonicalDigest || "",
+      ).toLowerCase();
+      const backgroundSha256 = await canonicalSha256(
+        paperDetailAuthority.inputBackground,
+      );
+      let issued;
+      try {
+        issued = await serviceRpc("matha_paper_detail_issue_generation", {
+          p_user_id: userId,
+          p_run_id: paperDetailAuthority.accepted.runId,
+          p_source_id: paperDetailAuthority.accepted.sourceId,
+          p_question_no: Number(paperDetailAuthority.retryReceipt.questionNo),
+          p_accepted_attempt_id: paperDetailAuthority.accepted.attemptId,
+          p_retry_receipt_id: paperDetailAuthority.retryReceipt.receiptId,
+          p_retry_receipt_digest:
+            paperDetailAuthority.retryReceipt.canonicalDigest,
+          p_model_input_binding: paperDetailAuthority.modelInputBinding,
+          p_model_input_binding_sha256: binding,
+          p_input_background: paperDetailAuthority.inputBackground,
+          p_input_background_sha256: backgroundSha256,
+          p_previous_generation: previousGeneration,
+          p_issuance_request_id: issuanceRequestId,
+        });
+      } catch (_) {
+        return reply(origin, 409, {
+          message: "重新分析世代無法由伺服器唯一鎖定",
+        });
+      }
+      const detailJob = paperDetailJobPublicState(issued);
+      if (
+        !detailJob || detailJob.generation <= 0 ||
+        detailJob.modelInputBindingSha256 !== binding ||
+        detailJob.inputBackgroundSha256 !== backgroundSha256
+      ) {
+        return reply(origin, 500, {
+          message: "重新分析世代收據與本題輸入不一致",
+        });
+      }
+      return reply(origin, 200, { detailJob });
     }
 
     if (responseType === "paper_key") {
@@ -2174,7 +2461,8 @@ Deno.serve(async (req: Request) => {
       if (
         !paperCorrectionGradeJob || !publicJob ||
         publicJob.runId !== paperCorrectionGradeAuthority.accepted.runId ||
-        publicJob.sourceId !== paperCorrectionGradeAuthority.accepted.sourceId ||
+        publicJob.sourceId !==
+          paperCorrectionGradeAuthority.accepted.sourceId ||
         publicJob.questionNo !== Number(retry.questionNo) ||
         publicJob.retryReceiptId !== retry.receiptId ||
         publicJob.retryReceiptDigest !== retry.canonicalDigest ||
@@ -2209,6 +2497,95 @@ Deno.serve(async (req: Request) => {
       ) {
         return reply(origin, 500, {
           message: "訂正批改工作沒有取得唯一執行權",
+        });
+      }
+    }
+    let paperDetailJob: Record<string, unknown> | null = null;
+    let paperDetailLeaseToken = "";
+    if (responseType === "paper_detail") {
+      if (!paperDetailAuthority) {
+        return reply(origin, 500, {
+          message: "逐題詳批缺少伺服器驗證上下文",
+        });
+      }
+      const context = body.context && typeof body.context === "object" &&
+          !Array.isArray(body.context)
+        ? body.context as Record<string, unknown>
+        : {};
+      const generation = Number(context.detailGeneration ?? 0);
+      if (
+        !Number.isInteger(generation) || generation < 0 ||
+        generation > 2147483647
+      ) {
+        return reply(origin, 400, { message: "逐題詳批世代編號不合法" });
+      }
+      const binding = String(
+        paperDetailAuthority.modelInputBinding.canonicalDigest || "",
+      ).toLowerCase();
+      const backgroundSha256 = await canonicalSha256(
+        paperDetailAuthority.inputBackground,
+      );
+      const retry = paperDetailAuthority.retryReceipt;
+      try {
+        paperDetailJob = paperGradeJobRecord(
+          await serviceRpc("matha_paper_detail_job_claim", {
+            p_user_id: userId,
+            p_run_id: paperDetailAuthority.accepted.runId,
+            p_source_id: paperDetailAuthority.accepted.sourceId,
+            p_question_no: Number(retry.questionNo),
+            p_accepted_attempt_id: paperDetailAuthority.accepted.attemptId,
+            p_retry_receipt_id: retry.receiptId,
+            p_retry_receipt_digest: retry.canonicalDigest,
+            p_generation: generation,
+            p_model_input_binding: paperDetailAuthority.modelInputBinding,
+            p_model_input_binding_sha256: binding,
+            p_input_background: paperDetailAuthority.inputBackground,
+            p_input_background_sha256: backgroundSha256,
+            p_lease_seconds: 120,
+          }),
+        );
+      } catch (_) {
+        return reply(origin, 409, {
+          message:
+            "逐題詳批與 accepted 交卷、隔日訂正收據、世代或模型輸入不一致；系統已停止，沒有再次呼叫模型。",
+        });
+      }
+      const publicJob = paperDetailJobPublicState(paperDetailJob);
+      if (
+        !paperDetailJob || !publicJob ||
+        publicJob.runId !== paperDetailAuthority.accepted.runId ||
+        publicJob.sourceId !== paperDetailAuthority.accepted.sourceId ||
+        publicJob.questionNo !== Number(retry.questionNo) ||
+        publicJob.acceptedAttemptId !==
+          paperDetailAuthority.accepted.attemptId ||
+        publicJob.retryReceiptId !== retry.receiptId ||
+        publicJob.retryReceiptDigest !== retry.canonicalDigest ||
+        publicJob.generation !== generation ||
+        publicJob.modelInputBindingSha256 !== binding ||
+        publicJob.inputBackgroundSha256 !== backgroundSha256
+      ) {
+        return reply(origin, 500, {
+          message: "逐題詳批工作收據格式不完整",
+        });
+      }
+      if (paperDetailJob.action === "completed") {
+        const completed = await paperDetailCompletedPayload(paperDetailJob);
+        return completed
+          ? reply(origin, 200, completed)
+          : reply(origin, 500, { message: "既有逐題詳批結果收據不完整" });
+      }
+      if (paperDetailJob.action === "pending") {
+        return paperDetailPendingResponse(origin, paperDetailJob);
+      }
+      paperDetailLeaseToken = String(paperDetailJob.lease_token || "");
+      if (
+        paperDetailJob.action !== "invoke" ||
+        !/^paper-detail-lease-[A-Za-z0-9._:-]{16,127}$/.test(
+          paperDetailLeaseToken,
+        )
+      ) {
+        return reply(origin, 500, {
+          message: "逐題詳批沒有取得唯一執行權",
         });
       }
     }
@@ -2383,6 +2760,44 @@ Deno.serve(async (req: Request) => {
       paperCorrectionGradeJob = dispatchedJob;
     }
 
+    if (responseType === "paper_detail") {
+      if (!paperDetailAuthority || !paperDetailJob || !paperDetailLeaseToken) {
+        await refundAiBudget(userId, responseType, budgetDate);
+        return reply(origin, 500, {
+          message: "逐題詳批在送出前失去唯一執行權",
+        });
+      }
+      let dispatched;
+      try {
+        dispatched = await serviceRpc(
+          "matha_paper_detail_job_mark_dispatched",
+          {
+            p_user_id: userId,
+            p_job_id: String(paperDetailJob.job_id || ""),
+            p_lease_token: paperDetailLeaseToken,
+          },
+        );
+      } catch (_) {
+        await refundAiBudget(userId, responseType, budgetDate);
+        return reply(origin, 500, {
+          message: "逐題詳批無法在模型呼叫前完成不可重送標記",
+        });
+      }
+      const dispatchedJob = paperGradeJobRecord(dispatched);
+      if (dispatchedJob?.action === "completed") {
+        await refundAiBudget(userId, responseType, budgetDate);
+        const completed = await paperDetailCompletedPayload(dispatchedJob);
+        return completed
+          ? reply(origin, 200, completed)
+          : reply(origin, 500, { message: "既有逐題詳批結果收據不完整" });
+      }
+      if (!dispatchedJob || dispatchedJob.action !== "dispatched") {
+        await refundAiBudget(userId, responseType, budgetDate);
+        return paperDetailPendingResponse(origin, dispatchedJob);
+      }
+      paperDetailJob = dispatchedJob;
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -2414,6 +2829,13 @@ Deno.serve(async (req: Request) => {
           "訂正批改已進入不可重送階段，但回應尚未安全寫入；系統不會再次呼叫模型。",
         );
       }
+      if (responseType === "paper_detail") {
+        return paperDetailPendingResponse(
+          origin,
+          paperDetailJob,
+          "逐題詳批已進入不可重送階段，但回應尚未安全寫入；系統只會查詢同一份工作。",
+        );
+      }
       await refundAiBudget(userId, responseType, budgetDate);
       throw error;
     } finally {
@@ -2439,6 +2861,13 @@ Deno.serve(async (req: Request) => {
           "模型端沒有產生可封存的訂正結果；同一份訂正收據不會自動重送。",
         );
       }
+      if (responseType === "paper_detail") {
+        return paperDetailPendingResponse(
+          origin,
+          paperDetailJob,
+          "模型端沒有產生可封存的詳解；同一世代不會自動重送。",
+        );
+      }
       await refundAiBudget(userId, responseType, budgetDate);
       const apiError = response.error as Record<string, unknown> | undefined;
       return reply(origin, openAiResponse.status, {
@@ -2460,6 +2889,13 @@ Deno.serve(async (req: Request) => {
           origin,
           paperCorrectionGradeJob,
           "模型訂正輸出未完成；同一份訂正收據維持不可重送。",
+        );
+      }
+      if (responseType === "paper_detail") {
+        return paperDetailPendingResponse(
+          origin,
+          paperDetailJob,
+          "模型詳解輸出未完成；同一世代維持不可重送。",
         );
       }
       await refundAiBudget(userId, responseType, budgetDate);
@@ -2489,6 +2925,13 @@ Deno.serve(async (req: Request) => {
           "模型回應無法形成可用訂正判定；同一份訂正收據不會自動重送。",
         );
       }
+      if (responseType === "paper_detail") {
+        return paperDetailPendingResponse(
+          origin,
+          paperDetailJob,
+          "模型回應無法形成可驗證詳解；同一世代不會自動重送。",
+        );
+      }
       await refundAiBudget(userId, responseType, budgetDate);
       throw error;
     }
@@ -2505,6 +2948,13 @@ Deno.serve(async (req: Request) => {
           origin,
           paperCorrectionGradeJob,
           "模型沒有可封存的訂正文字；同一份訂正收據不會自動重送。",
+        );
+      }
+      if (responseType === "paper_detail") {
+        return paperDetailPendingResponse(
+          origin,
+          paperDetailJob,
+          "模型沒有可封存的詳解文字；同一世代不會自動重送。",
         );
       }
       await refundAiBudget(userId, responseType, budgetDate);
@@ -2679,6 +3129,45 @@ Deno.serve(async (req: Request) => {
               "訂正結果已回來，但伺服器收據尚未完成原子寫入；同一份訂正收據不會自動重送。",
             );
         }
+        if (responseType === "paper_detail") {
+          if (
+            !paperDetailAuthority || !paperDetailJob || !paperDetailLeaseToken
+          ) {
+            return paperDetailPendingResponse(
+              origin,
+              paperDetailJob,
+              "逐題詳批結果缺少可驗證工作身分；同一世代不會自動重送。",
+            );
+          }
+          const completionBody = {
+            p_user_id: userId,
+            p_job_id: String(paperDetailJob.job_id || ""),
+            p_lease_token: paperDetailLeaseToken,
+            p_normalized_result: json,
+            p_model_metadata: common,
+          };
+          let completedJob = null;
+          for (let attempt = 0; attempt < 2 && !completedJob; attempt++) {
+            try {
+              completedJob = paperGradeJobRecord(
+                await serviceRpc(
+                  "matha_paper_detail_job_complete",
+                  completionBody,
+                ),
+              );
+            } catch (_) {
+              completedJob = null;
+            }
+          }
+          const completed = await paperDetailCompletedPayload(completedJob);
+          return completed
+            ? reply(origin, 200, completed)
+            : paperDetailPendingResponse(
+              origin,
+              paperDetailJob,
+              "逐題詳批結果已回來，但不可竄改收據尚未完成原子寫入；狀態查詢不會再次呼叫模型。",
+            );
+        }
         return reply(origin, 200, { ...common, json });
       } catch (_) {
         if (responseType === "paper_grade") {
@@ -2693,6 +3182,13 @@ Deno.serve(async (req: Request) => {
             origin,
             paperCorrectionGradeJob,
             "模型訂正結果無法解析；同一份訂正收據不會自動重送。",
+          );
+        }
+        if (responseType === "paper_detail") {
+          return paperDetailPendingResponse(
+            origin,
+            paperDetailJob,
+            "模型詳解無法解析成受控格式；同一世代不會自動重送。",
           );
         }
         await refundAiBudget(userId, responseType, budgetDate); // 拿不到可用結果就退，與其他 5xx 路徑一致

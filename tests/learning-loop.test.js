@@ -2,7 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadApp, plain } = require('./helpers/load-app');
+const fs = require('node:fs');
+const path = require('node:path');
+const { ROOT, loadApp, plain } = require('./helpers/load-app');
 
 test('人工覆核保存時依狀態正規化題分與整卷總分', () => {
   const saveAudit = (status, points) => {
@@ -1042,7 +1044,7 @@ test('第三回只有在交卷狀態成立時才向後端取正式答案', async
       attemptId:'paper-submit-answer-key-1234567890abcdef', runId, sourceId:source.id,
       status:'accepted', remainingMs:500000, inkSnapshotSha256:'a'.repeat(64),
       submittedAt, acceptedAt:submittedAt + 1, canceledAt:null,
-      runCreatedAppVersion:APP_VER, decisionReason:'accepted-first-for-run', winnerAttemptId:'',
+      runCreatedAppVersion:PAPER_PROTOCOL_APP_VERSION, decisionReason:'accepted-first-for-run', winnerAttemptId:'',
       runCreatedAt:1700000000000, paperLayoutVersion:PAPER_LAYOUT_VERSION,
       sourcePageCount:source.scans.length,
       pageManifest:source.scans.map((_, page) => ({ page,
@@ -1060,6 +1062,8 @@ test('第三回只有在交卷狀態成立時才向後端取正式答案', async
     sourceId:'paper-mock-3', submitAttemptId:'paper-submit-answer-key-1234567890abcdef',
     submitAttemptInkSnapshotSha256:'a'.repeat(64), submittedAt:1700000001000,
     runCreatedAppVersion:'0830b'});
+  assert.notEqual(result.calls[0].context.runCreatedAppVersion, plain(run('APP_VER')),
+    '瀏覽器快取版更新不得讓已驗證的模考提交協定漂移');
   assert.equal(result.length, 20);
 });
 
@@ -1435,7 +1439,7 @@ test('後端拒絕詳解時不再製造假的 detail-gate 繞過老師流程', a
       receiptId, canonicalDigest:'a'.repeat(64), correctionNewStrokes:[],
     });
     const receivedLogs = []; let calls = 0;
-    paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
+    paperAiDetailCall = async (givenSource, givenNo, logs) => {
       calls++; receivedLogs.push(logs.length);
       throw new Error('本題詳解尚未開放：必須先保存一次重想。');
     };
@@ -1501,27 +1505,66 @@ test('原版隔日訂正使用全頁可寫工作台，每題保留詳解入口�
   assert.doesNotMatch(result.detailed, /paper-review-direction/);
 });
 
-test('逐題詳批同時送整頁與本題焦點，並強制列出正確前綴與可驗證第一錯步', async () => {
+test('逐題詳批前端只送綁定上下文，不再信任瀏覽器合成圖或自訂提示詞', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = PAPER_SOURCES[0], no = 3;
+    const state = { correctionRetryReceipt:{
+      receiptId:'paper-correction-retry-quality-1234567890abcdef', canonicalDigest:'a'.repeat(64) } };
+    paperReview = { source, run:{ id:'paper-run-1700000000000', sourceId:source.id,
+      submitAttempt:{ attemptId:'paper-submit-quality-1234567890abcdef', inkSnapshotSha256:'b'.repeat(64),
+        submittedAt:1700000001000, runCreatedAppVersion:'0830b' }, review:{ [no]:state } } };
+    return paperDetailContext(source, no, state, [{ direction:'先分組', topic:'comb' }], '分母其實寫 3!');
+  })()`));
+  assert.equal(result.paperRunId, 'paper-run-1700000000000');
+  assert.equal(result.questionNo, 3);
+  assert.equal(result.detailAttempts[0].direction, '先分組');
+  assert.equal(result.detailUserNote, '分母其實寫 3!');
+  assert.equal(Object.hasOwn(result, 'messages'), false);
+  assert.equal(Object.hasOwn(result, 'image'), false);
+});
+
+test('逐題詳批只接受與工作、輸入、結果完全一致的不可變完成收據', async () => {
   const { run } = loadApp();
   const result = plain(await run(`(async () => {
-    const source = PAPER_SOURCES[0], no = 3;
-    paperReview = { source, run:{ id:'quality', aiGrade:{ questions:[{ no, topic:'comb', answer:'(2)', answerType:'single', maxPoints:5 }] },
-      review:{ [no]:{ topic:'comb', correctionRetryReceipt:{
-        receiptId:'paper-correction-retry-quality-1234567890abcdef', canonicalDigest:'a'.repeat(64) } } } } };
-    let request = null;
-    openAiInvoke = async (payload) => { request = payload; return { json:{}, model:'gpt-5.5' }; };
-    await paperAiDetailCall(source, no, 'full-page', [{ direction:'先分組' }], 'focus-crop', '分母其實寫 3!');
-    const parts = request.messages[0].content;
-    return {
-      images:parts.filter((part) => part.type === 'image').map((part) => part.source.data),
-      text:parts.filter((part) => part.type === 'text').map((part) => part.text).join('\\n'),
-    };
+    const source = PAPER_SOURCES[0], no = 3, generation = 0;
+    const accepted = { attemptId:'paper-submit-detail-1234567890abcdef', submittedAt:1700000001000 };
+    const retry = { receiptId:'paper-correction-retry-detail-1234567890abcdef', canonicalDigest:'a'.repeat(64) };
+    paperReview = { source, run:{ id:'paper-run-1700000000000', sourceId:source.id,
+      submittedAt:accepted.submittedAt, submitAttempt:accepted, review:{} } };
+    const json = { readable:true, confidence:'high', read:'2x+3=7', goodWork:['正確代入'],
+      firstErrorEvidence:'2x=10', firstError:'移項符號錯誤', errorKind:'符號', whyWrong:'符號改錯',
+      repair:'先修正移項', explanation:'移項要變號', solution:['2x=4','x=2'], answer:'2', nextTime:'逐行檢查', marks:[] };
+    const modelMetadata = { model:'gpt-5.5', requestId:'req-detail-1', usage:null, budget:null };
+    const normalizedResultSha256 = await capabilityCanonicalDigest(json);
+    const modelMetadataSha256 = await capabilityCanonicalDigest(modelMetadata);
+    const job = { jobId:'11111111-1111-4111-8111-111111111111', status:'completed', generation,
+      modelInputBindingSha256:'b'.repeat(64), inputBackgroundSha256:'c'.repeat(64) };
+    const receiptCore = { authority:'supabase-immutable-paper-detail-result-v1', jobId:job.jobId,
+      jobKind:'paper_detail', generation, runId:paperReview.run.id, sourceId:source.id, questionNo:no,
+      acceptedAttemptId:accepted.attemptId, retryReceiptId:retry.receiptId,
+      retryReceiptDigest:retry.canonicalDigest, modelInputBindingSha256:job.modelInputBindingSha256,
+      inputBackgroundSha256:job.inputBackgroundSha256, normalizedResultSha256, modelMetadataSha256,
+      completedAt:'2024-01-01T00:00:00.000Z' };
+    const receipt = { ...receiptCore, canonicalDigest:await capabilityCanonicalDigest(receiptCore) };
+    const predictionCore = { authority:'supabase-paper-detail-prediction-v2', jobId:job.jobId, generation,
+      runId:paperReview.run.id, sourceId:source.id, questionNo:no, acceptedAttemptId:accepted.attemptId,
+      retryReceiptId:retry.receiptId, retryReceiptDigest:retry.canonicalDigest,
+      promptSha256:'d'.repeat(64), fullImageSha256:'e'.repeat(64), focusImageSha256:'f'.repeat(64),
+      runStateSha256:job.inputBackgroundSha256, modelInputBindingSha256:job.modelInputBindingSha256,
+      detailResultReceiptSha256:receipt.canonicalDigest, normalizedResultSha256 };
+    const predictionDigest = await capabilityCanonicalDigest(predictionCore);
+    const payload = { json, ...modelMetadata, detailReceipt:receipt, detailJob:job,
+      metadata:{ ...predictionCore, canonicalDigest:predictionDigest,
+        predictionId:'detail-pred-' + predictionDigest.slice(0, 24) } };
+    const valid = await paperDetailPayloadVerified(payload, source, no, retry, generation);
+    const tamperedResult = await paperDetailPayloadVerified(
+      { ...payload, json:{ ...json, answer:'999' } }, source, no, retry, generation);
+    const tamperedJob = await paperDetailPayloadVerified(
+      { ...payload, detailJob:{ ...job, generation:1 } }, source, no, retry, generation);
+    return { valid:!!valid, tamperedResult:!!tamperedResult, tamperedJob:!!tamperedJob };
   })()`));
-  assert.deepEqual(result.images, ['full-page', 'focus-crop']);
-  assert.match(result.text, /最長的正確前綴/);
-  assert.match(result.text, /firstErrorEvidence/);
-  assert.match(result.text, /不可編造/);
-  assert.match(result.text, /分母其實寫 3!/);
+  assert.deepEqual(result, { valid:true, tamperedResult:false, tamperedJob:false });
 });
 
 test('低信心詳批可顯示不確定說明，但不得寫入錯因或在卷面猜位置', () => {
@@ -1647,31 +1690,14 @@ test('同頁另一題與舊版無題號筆跡不能算成本題 effort，checkpo
   });
 });
 
-test('訂正模型合成只繪製不可變收據證明的本題完整幾何', async () => {
-  const { run } = loadApp();
-  const result = plain(await run(`(async () => {
-    const source = { id:'paper-mock-1', scans:[{label:'1'}], questions:20 };
-    paperReview = { source, urls:['scan'], baseInkPages:{},
-      inkPages:{ 0:{ s:[
-        { id:'mutable-other-question', qno:2, t0:1, t1:2, c:'black', w:1, pts:[[.1,.1,.5],[.2,.2,.5]] },
-        { id:'mutable-after-receipt', qno:1, t0:3, t1:4, c:'green', w:1, pts:[[.3,.3,.5],[.4,.4,.5]] },
-      ], deleted:new Set() } } };
-    let rendered = null;
-    paperCompositeImage = async (_source, _urls, _base, page, _marks, correction) => {
-      rendered = correction[page].s;
-      return 'receipt-only-image';
-    };
-    const receipt = { correctionLiveStrokes:[{
-      id:'immutable-receipt-stroke', qno:1, t0:10, t1:20, c:'blue', w:1.25,
-      pts:[[.1234567,.2,.5],[.3,.4,.6]], geometryDigest:'a'.repeat(64),
-    }] };
-    const image = await paperReviewPageComposite(0, receipt);
-    return { image, ids:rendered.map((stroke) => stroke.id), qnos:rendered.map((stroke) => stroke.qno),
-      firstX:rendered[0].pts[0][0] };
-  })()`));
-  assert.deepEqual(result, {
-    image:'receipt-only-image', ids:['immutable-receipt-stroke'], qnos:[1], firstX:.123457,
-  });
+test('訂正模型合成已移到後端，且只接受不可變收據證明的本題完整幾何', () => {
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const modelInput = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'paper-detail-model-input.ts'), 'utf8');
+  assert.doesNotMatch(app, /function paperReviewPageComposite/);
+  assert.match(modelInput, /\{ s: receipt\.correctionLiveStrokes, deleted: \[\] \},[\s\S]*questionNo/);
+  assert.match(modelInput, /receiptLiveIds\.length !== correctionLiveIds\.length/);
+  assert.match(modelInput, /receiptLiveIds\.join\("\\u0000"\) !== correctionLiveIds\.join\("\\u0000"\)/);
+  assert.match(modelInput, /scope: "receipt-full-live-strokes-required-question"/);
 });
 
 test('隔日訂正筆跡使用獨立 namespace，不會覆蓋考試原稿', () => {

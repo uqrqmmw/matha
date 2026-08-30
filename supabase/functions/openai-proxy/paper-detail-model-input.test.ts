@@ -206,6 +206,15 @@ Deno.test("detail input is server-owned A-E and binds both ink layers", async ()
     PAPER_DETAIL_PROMPT_CONTRACT_VERSION,
   );
   assertEquals(result.modelInputBinding.questionNo, 3);
+  assertEquals(result.inputBackground, {
+    userNote: "我原本把負號看錯。",
+    attemptLogs: [{
+      attempt: 1,
+      direction: "重新代入",
+      topic: "代數",
+      concept: "符號",
+    }],
+  });
   assertEquals(
     result.modelInputBinding.acceptedAttempt.canonicalDigest,
     accepted.canonicalDigest,

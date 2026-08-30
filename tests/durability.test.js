@@ -153,7 +153,8 @@ test('下一份未作答模考的正式答案不進公開前端，只能由交�
   assert.match(app, /await syncPush\(\);[\s\S]*paperAnswerKeyAfterSubmit\(source, run\)/);
   assert.match(proxy, /Deno\.env\.get\("PAPER_ANSWER_KEYS_JSON"\)/);
   assert.match(proxy, /verifiedAcceptedPaperContext\(userId, context\)/);
-  assert.match(proxy, /paperKeyGateAllows\(data, runId, sourceId, accepted\)/);
+  assert.match(proxy, /async function paperAnswerKeyAfterSubmit\(userId: string, rawContext: unknown\)/);
+  assert.match(proxy, /return paperGradeAnswerKey\([\s\S]*sourceId/);
   assert.match(proxy, /loadAcceptedPaperSubmitAttempt/);
   assert.match(proxy, /paperGradeAcceptedSubmitAttempt\(rawAttempt\)/);
   const thirdInventory = inventory.papers.find((paper) => paper.id === 'paper-mock-3');
@@ -180,12 +181,13 @@ test('逐題詳解由後端驗證已到隔日且題目屬於該次訂正，不�
   const proxy = fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'index.ts'), 'utf8')
     + fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'lib.ts'), 'utf8');
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
-  assert.match(proxy, /verifyPaperDetailGate\(userId, body\.context\)/);
+  assert.match(proxy, /preparePaperDetailAuthority\([\s\S]*userId,[\s\S]*body\.context/);
   assert.match(proxy, /verifiedAcceptedPaperContext\(userId, context\)/);
-  assert.match(proxy, /loadPaperCorrectionRetryReceipt/);
-  assert.match(proxy, /paperCorrectionRetryReceipt\(raw\)/);
+  assert.match(proxy, /verifiedCorrectionRetryContext\([\s\S]*userId,[\s\S]*context,[\s\S]*accepted/);
+  assert.match(proxy, /loadPaperRuntimeInkRows\(userId/);
+  assert.match(proxy, /preparePaperDetailModelInput\(/);
   assert.match(proxy, /correctionRetryReceiptDigest/);
-  assert.match(app, /context:\s*\{[\s\S]*paperRunId:[\s\S]*questionNo: no/);
+  assert.match(app, /function paperDetailContext[\s\S]*paperRunId:run\.id[\s\S]*questionNo:Number\(no\)/);
   assert.match(app, /correctionRetryReceiptId:\s*retryReceipt\.receiptId/);
   assert.match(app, /correctionRetryReceiptDigest:\s*retryReceipt\.canonicalDigest/);
   const detailed = app.match(/async function paperReviewDetailed[\s\S]*?\n\}/)?.[0] || '';

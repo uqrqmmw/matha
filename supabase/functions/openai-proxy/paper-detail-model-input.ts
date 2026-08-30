@@ -386,6 +386,7 @@ export async function preparePaperDetailModelInputForCatalogAssets(
     };
     return {
       input: [{ role: "user", content }],
+      inputBackground: background,
       modelInputBinding: {
         ...core,
         canonicalDigest: await canonicalSha256(core),
