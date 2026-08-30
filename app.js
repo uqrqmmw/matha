@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0830a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0830b'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3529,7 +3529,7 @@ function capabilityQuestionGradeSummary(grade) {
     if (!Number.isInteger(no) || no < 1 || no > 20 || seen.has(no) || !allowed.has(status)
       || !Number.isFinite(points) || !Number.isFinite(maxPoints) || maxPoints <= 0
       || points < 0 || points > maxPoints
-      || (status === 'unanswered' && points !== 0)
+      || ((status === 'unanswered' || status === 'uncertain') && points !== 0)
       || (status === 'correct' && points !== maxPoints)) return null;
     seen.add(no);
     questions.push({ no, status, points, maxPoints });
@@ -8689,10 +8689,23 @@ function paperGradeAuditOpen(pageIndex = null) {
     const options = [
       ['correct', '正確'], ['incorrect', '錯誤'], ['unanswered', '未答'], ['uncertain', '看不清楚'],
     ].map(([value, label]) => `<option value="${value}"${item.status === value ? ' selected' : ''}>${label}</option>`).join('');
-    return `<tr data-no="${item.no}"><th>${item.no}</th><td><input class="paper-audit-read" type="text" value="${escH(item.read || '')}" placeholder="AI 讀到的答案" aria-label="第 ${item.no} 題 AI 辨識"></td><td>${escH(key && key.answer || item.answer || '')}</td><td><select class="paper-audit-status" aria-label="第 ${item.no} 題狀態">${options}</select></td><td><input class="paper-audit-points" type="number" min="0" max="${Number(key && key.points) || 0}" step="1" value="${Number(item.points) || 0}" aria-label="第 ${item.no} 題得分"> / ${Number(key && key.points) || 0}</td></tr>`;
+    return `<tr data-no="${item.no}"><th>${item.no}</th><td><input class="paper-audit-read" type="text" value="${escH(item.read || '')}" placeholder="AI 讀到的答案" aria-label="第 ${item.no} 題 AI 辨識"></td><td>${escH(key && key.answer || item.answer || '')}</td><td><select class="paper-audit-status" aria-label="第 ${item.no} 題狀態" onchange="paperGradeAuditStatusChange(this)">${options}</select></td><td><input class="paper-audit-points" type="number" min="0" max="${Number(key && key.points) || 0}" step="1" value="${Number(item.points) || 0}" aria-label="第 ${item.no} 題得分"> / ${Number(key && key.points) || 0}</td></tr>`;
   }).join('');
   const history = Array.isArray(run.gradeAudit) ? run.gradeAudit.length : 0;
   modal(`<div class="paper-grade-audit"><span class="eyebrow">人工覆核${pageIndex == null ? '' : `｜第 ${Number(pageIndex) + 1} 頁`}</span><h2>AI 看錯時，直接改它讀到的答案</h2><p>只列目前這一頁的題目。修正辨識、對錯或配分即可；不必重新付費批改整份。每次修改前的版本都會保留。</p><div class="paper-audit-scroll"><table><thead><tr><th>題</th><th>AI 讀到</th><th>正解</th><th>判定</th><th>得分</th></tr></thead><tbody>${rows}</tbody></table></div><p class="dim">目前已有 ${history} 份歷史批改快照。</p><button class="btn primary" onclick="paperGradeAuditSave()">保存這頁修正</button></div>`, [['取消']]);
+}
+function paperGradeAuditNormalizedPoints(status, value, maxPoints) {
+  const max = Math.max(0, Number(maxPoints) || 0);
+  if (status === 'correct') return max;
+  if (status === 'unanswered' || status === 'uncertain') return 0;
+  const points = Math.max(0, Math.min(max, Number(value) || 0));
+  return Math.round(points * 100) / 100;
+}
+function paperGradeAuditStatusChange(select) {
+  const row = select && select.closest && select.closest('tr');
+  const input = row && row.querySelector('.paper-audit-points');
+  if (!input) return;
+  input.value = paperGradeAuditNormalizedPoints(select.value, input.value, input.max);
 }
 function paperGradeAuditSave() {
   if (!paperSourceSession || !paperSourceSession.run || !paperSourceSession.run.aiGrade) return;
@@ -8707,10 +8720,10 @@ function paperGradeAuditSave() {
     const key = paperQuestionMeta(run, source, no);
     if (!item || !key) continue;
     const status = row.querySelector('.paper-audit-status').value;
-    const points = Math.max(0, Math.min(Number(key.points) || 0, Number(row.querySelector('.paper-audit-points').value) || 0));
+    const points = row.querySelector('.paper-audit-points').value;
     const read = String(row.querySelector('.paper-audit-read').value || '').trim().slice(0, 240);
     const nextStatus = ['correct', 'incorrect', 'unanswered', 'uncertain'].includes(status) ? status : 'uncertain';
-    const nextPoints = Math.round(points * 100) / 100;
+    const nextPoints = paperGradeAuditNormalizedPoints(nextStatus, points, key.points);
     const changed = item.status !== nextStatus || Number(item.points) !== nextPoints || String(item.read || '') !== read;
     item.read = read;
     item.status = nextStatus;

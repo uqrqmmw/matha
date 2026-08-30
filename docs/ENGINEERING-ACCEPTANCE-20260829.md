@@ -30,6 +30,7 @@
 ## 批改與學習閉環
 
 - 首輪核分使用官方答案；AI 只讀卷與定位，不能改總分真值。
+- 人工覆核保存時依狀態正規化題分：正確必為滿分，未答／看不清楚必為 0；總分與能力證據共用同一防線，不會保留 AI 舊分。
 - 首輪只顯示對錯、配分與正解；隔日留下重想後才解鎖官方詳解與 GPT-5.5 詳批。
 - 詳批 schema 保存做對部分、第一錯步、流程斷點、證據與信心；沒有可核對證據時必須 abstain。
 - 複選逐項標示漏選／錯選，紅筆吸附學生作答區，不覆蓋印刷題面。
@@ -37,11 +38,11 @@
 
 ## 自動測試
 
-- 2026-08-30 本地收尾版：Web／PWA 270 項（268 通過、2 項私人 gold 因尚無真實證據按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 291 項全部通過；Supabase Edge／GPT-5.5 閘門 14 項全部通過。
+- 2026-08-30 本地收尾版：Web／PWA 271 項（269 通過、2 項私人 gold 因尚無真實證據按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 291 項全部通過；Supabase Edge／GPT-5.5 閘門 14 項全部通過。
 - 最終提交若再修改程式，仍須重跑 `npm test`、`npm run test:figures`、`npm run test:edge` 與 `python scripts/audit-blueprint-readiness.py`；不得把上述施工 checkpoint 冒充不同 HEAD 的最終結果。
 - GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
 - 所有證據留在 repo 外；不得把 service-role key、使用者 token、私人教材、答案或部署記錄提交到公開 Git。
 
-`matha-system-blueprint-readiness-v2` 將證據分成兩層。6 道工程關卡中，完整卷接線與 Starter 安全審核已有可驗證證據；D1→回滾→D2、Storage 全量回讀、登入使用者 App loader、乾淨 HEAD 的 CI＋Pages 尚未完成。GitHub 關卡也會重新比對公開 tracked tree 安全稽核。5 道交付後能力關卡目前均待真實使用，不會被工程測試代替。
+`matha-system-blueprint-readiness-v2` 將證據分成兩層。6 道工程關卡中，完整卷接線、Starter 安全審核，以及乾淨 HEAD 的公開 Git 安全／CI／Pages／逐 bytes 交付已有可驗證證據；D1→回滾→D2、Storage 全量回讀與登入使用者 App loader 尚未完成。任何 repo 修改都會使舊 GitHub 證據失效，必須由 verifier 對新 HEAD 重做。5 道交付後能力關卡目前均待真實使用，不會被工程測試代替。
 
 仍不能由工程測試代替的只有：至少 6 回本人未看過的正式卷、最近 3 回不同來源且 freshness-confirmed 的 20 題／100 分鐘正式卷各 ≥72 分、Galaxy Tab S10 Ultra 真實 100 分鐘與翻頁 P95、7 題第一錯步 precision／coverage、30 題個人詳批 gold。它們只影響 `capabilityValidated`，不倒灌成施工前假證據。

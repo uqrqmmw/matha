@@ -4,6 +4,33 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp, plain } = require('./helpers/load-app');
 
+test('人工覆核保存時依狀態正規化題分與整卷總分', () => {
+  const saveAudit = (status, points) => {
+    const { context, run } = loadApp();
+    context.document.querySelectorAll = () => [{
+      dataset: { no:'1' },
+      querySelector(selector) {
+        return { value:selector.includes('status') ? status : selector.includes('points') ? String(points) : '' };
+      },
+    }];
+    return plain(run(`(() => {
+      save = () => {}; modalClose = () => {}; renderPaperGradeResult = () => {};
+      const source = PAPER_SOURCES.find((item) => Array.isArray(item.key) && item.key[0]);
+      const maxPoints = Number(source.key[0].points);
+      const question = { no:1, status:'correct', points:maxPoints, maxPoints, marks:[] };
+      const run = { id:'manual-audit', sourceId:source.id, submittedAt:1,
+        aiGrade:{ gradedAt:2, score:maxPoints, questions:[question] } };
+      paperSourceSession = { source, run };
+      paperGradeAuditSave();
+      return { status:question.status, points:question.points, score:run.score, maxPoints };
+    })()`));
+  };
+
+  assert.deepEqual(saveAudit('unanswered', 5), { status:'unanswered', points:0, score:0, maxPoints:5 });
+  assert.deepEqual(saveAudit('uncertain', 5), { status:'uncertain', points:0, score:0, maxPoints:5 });
+  assert.deepEqual(saveAudit('correct', 0), { status:'correct', points:5, score:5, maxPoints:5 });
+});
+
 test('級分校準只採完整模擬，三場皆過 72% 才標穩定', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
