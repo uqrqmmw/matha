@@ -54,7 +54,7 @@
 - GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
 - 正式驗收證據與私有素材留在 repo 外；checkout 內被忽略的暫存檔也不得追蹤或提交。service-role key、使用者 token、私人教材、答案與部署記錄一律不得進公開 Git。
 
-`matha-system-blueprint-readiness-v3` 把「核心可交付」、「藍圖工程全數完成」與「能力驗證」分開。M4 最低門檻已以 1,294 題通過；Starter 審核、部署、實際回滾、Storage 全讀回與 App 實載都有可驗證證據。本文件提交後仍須以 `verify-github-delivery.py` 對同一 HEAD 重驗 CI／Pages；通過後 `coreDeliveryReady` 與 `engineeringComplete` 才可轉為真。5 道真實使用證據仍只影響 `capabilityValidated` 與整體 `complete`。
+`matha-system-blueprint-readiness-v3` 把「核心可交付」、「藍圖工程全數完成」與「能力驗證」分開。M4 最低門檻已以 1,294 題通過；Starter 審核、部署、實際回滾、Storage 全讀回、App 實載、Supabase runtime 與同一 HEAD 的 CI／Pages 均有可驗證證據。最終稽核為 `coreDeliveryReady:true`、`engineeringComplete:true`、`capabilityValidated:false`、`complete:false`；後兩項只等待 5 道日後真實使用證據。
 
 完整卷 Storage 驗收也已改成每次建立空目錄、使用 authenticated download 即時抓回：正式題本 73 頁、官方詳解 8 頁、地區詳解 32 頁，合計 113 個遠端物件逐檔驗 bytes／SHA-256。只重新列出遠端檔名、再雜湊 8/29 本機快取的舊方法不再能通過發布閘門。
 
