@@ -39,7 +39,7 @@ class PrivateReleaseDeployTests(unittest.TestCase):
             "releaseApprovedBy": "uqrqmmw",
             "reviewPolicy": deploy.EXPECTED_REVIEW_POLICY,
             **deploy.EXPECTED_CORPUS,
-            "questions": [{"id": f"q-{index:03d}"} for index in range(217)],
+            "questions": [{"id": f"q-{index:03d}"} for index in range(1, 218)],
         }), encoding="utf-8")
         content_rows = []
         figure_rows = []
@@ -204,6 +204,37 @@ class PrivateReleaseDeployTests(unittest.TestCase):
                         digest(b"old-manifest"), no_download, no_upload,
                     )
                 self.assertEqual(calls, [])
+
+    def test_formal_plan_contract_supports_a_larger_hash_bound_release(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plan = self.fixture(root)
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            source = Path(value["source"])
+            source_value = json.loads(source.read_text(encoding="utf-8"))
+
+            next_id = "q-218"
+            source_value["questions"].append({"id": next_id})
+            source.write_text(json.dumps(source_value), encoding="utf-8")
+            value["sourceSha256"] = digest(source.read_bytes())
+
+            figure_root = Path(value["buckets"]["matha-figures"]["root"])
+            figure = figure_root / "releases" / value["releaseId"] / "stems" / f"{next_id}.png"
+            figure.parent.mkdir(parents=True, exist_ok=True)
+            figure.write_bytes(b"new-pixels")
+            value["buckets"]["matha-figures"]["files"].append({
+                "path": figure.relative_to(figure_root).as_posix(),
+                "sha256": digest(figure.read_bytes()),
+                "bytes": figure.stat().st_size,
+                "questionId": next_id,
+            })
+            value["summary"]["questions"] = 218
+            value["summary"]["stemAssets"] = 218
+            plan.write_text(json.dumps(value), encoding="utf-8")
+
+            parsed, versioned, _alias = deploy.validate_plan(plan)
+            self.assertEqual(parsed["summary"]["questions"], 218)
+            self.assertEqual(len(versioned), 411)
 
     def test_expected_previous_hash_is_required_before_network(self):
         with tempfile.TemporaryDirectory() as temp:

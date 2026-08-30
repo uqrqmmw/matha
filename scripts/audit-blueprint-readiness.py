@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -1785,10 +1786,15 @@ def release_object_rows(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
         raise ReadinessError("上傳計畫不是 App 使用的固定 alias")
     if plan.get("versionedManifest") != versioned_manifest:
         raise ReadinessError("上傳計畫的版本化 manifest 路徑不符")
-    if plan.get("summary") != {
-        "questions": 217, "contentFiles": 194, "stemAssets": 217,
-    }:
-        raise ReadinessError("上傳計畫摘要不符 217 題正式 bundle")
+    summary = plan.get("summary")
+    question_count = summary.get("questions") if isinstance(summary, dict) else None
+    content_file_count = summary.get("contentFiles") if isinstance(summary, dict) else None
+    if (not isinstance(question_count, int) or isinstance(question_count, bool)
+            or question_count < 1
+            or not isinstance(content_file_count, int) or isinstance(content_file_count, bool)
+            or content_file_count < 4
+            or summary.get("stemAssets") != question_count):
+        raise ReadinessError("上傳計畫摘要不是有效的正式 bundle")
     if not re.fullmatch(r"[a-f0-9]{64}", str(plan.get("sourceSha256") or "")):
         raise ReadinessError("上傳計畫缺少簽核題源雜湊")
     buckets = plan.get("buckets")
@@ -1828,8 +1834,10 @@ def release_object_rows(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
         raise ReadinessError("上傳計畫找不到 alias 物件")
     content_count = sum(row["bucket"] == "matha-content" for row in versioned)
     figure_count = sum(row["bucket"] == "matha-figures" for row in versioned)
-    if content_count != 193 or figure_count != 217 or len(versioned) != 410:
-        raise ReadinessError("上傳計畫不是 193 個內容物件加 217 個題圖")
+    if (content_count != content_file_count - 1
+            or figure_count != question_count
+            or len(versioned) != (content_file_count - 1) + question_count):
+        raise ReadinessError("上傳計畫物件分布與宣告題數不一致")
     if not any(row["bucket"] == "matha-content"
                and row["path"] == versioned_manifest for row in versioned):
         raise ReadinessError("上傳計畫缺少版本化 manifest")
@@ -1889,7 +1897,7 @@ def validate_deployment_record(plan_path: Path, record_path: Path) \
         actual_uploaded.append({key: raw.get(key) for key in ("bucket", "path", "sha256", "bytes")})
     actual_uploaded.sort(key=lambda row: (str(row["bucket"]), str(row["path"])))
     if actual_uploaded != expected_uploaded:
-        raise ReadinessError("部署記錄未精確涵蓋 410 個版本化物件")
+        raise ReadinessError("部署記錄未精確涵蓋本 release 的版本化物件")
     return record, deployed_at
 
 
@@ -1938,8 +1946,8 @@ def validate_signed_starter(path: Path) -> tuple[dict[str, Any], list[str]]:
             or approval_hashes != direct_hashes
             or any(not re.fullmatch(r"[a-f0-9]{64}", str(value))
                    for value in direct_hashes)
-            or not isinstance(questions, list) or len(questions) != 217):
-        raise ReadinessError("217 題簽核來源的世代、授權或逐批雜湊不完整")
+            or not isinstance(questions, list) or not questions):
+        raise ReadinessError("簽核題源的世代、授權、題目或逐批雜湊不完整")
     question_ids: set[str] = set()
     for row in questions:
         if not isinstance(row, dict):
@@ -1966,7 +1974,7 @@ def validate_signed_starter(path: Path) -> tuple[dict[str, Any], list[str]]:
     samples = approval.get("sampleQuestionIds")
     if (not isinstance(samples, list) or not samples
             or any(item not in question_ids for item in samples)):
-        raise ReadinessError("簽核題源抽查題號未綁定 217 題集合")
+        raise ReadinessError("簽核題源抽查題號未綁定完整題目集合")
     return signed, [
         f"signed:{sha256(path)}",
         *[f"direct:{value}" for value in direct_hashes],
@@ -2092,18 +2100,28 @@ def validate_runtime_verification(path: Path, plan_path: Path,
     content = runtime.get("content") or {}
     topics = content.get("topics") or {}
     topic_values = list(topics.values()) if isinstance(topics, dict) else []
-    if (content.get("questions") != 217 or content.get("packs") != 191
+    question_count = len(signed["questions"])
+    summary = plan.get("summary") or {}
+    pack_count = summary.get("contentFiles", 0) - 3 \
+        if isinstance(summary.get("contentFiles"), int) else -1
+    expected_topic_counts = Counter(
+        question["topic"] for question in signed["questions"]
+    )
+    expected_role_counts = Counter(
+        question["role"] for question in signed["questions"]
+    )
+    if (content.get("questions") != question_count or content.get("packs") != pack_count
             or not isinstance(topics, dict) or set(topics) != EXPECTED_TOPICS
             or any(not isinstance(value, int) or isinstance(value, bool)
-                   or value < 13 or value > 18 for value in topic_values)
-            or sum(topic_values) != 217
-            or content.get("roles") != EXPECTED_ROLES
-            or signed_answer_modes != {"multi": 21, "single": 35, "text": 161}
+                   or value < 1 for value in topic_values)
+            or Counter(topics) != expected_topic_counts
+            or Counter(content.get("roles") or {}) != expected_role_counts
             or content.get("answerModes") != signed_answer_modes
-            or content.get("answersVerifiedAgainstSignedSource") != 217
+            or content.get("answersVerifiedAgainstSignedSource") != question_count
             or content.get("pendingVisuals") != 0
-            or content_objects != 193 or stem_assets != 217):
-        raise ReadinessError("runtime 題數、題包、單元、角色或答案分布不符 217 題版本")
+            or content_objects != summary.get("contentFiles", 0) - 1
+            or stem_assets != question_count):
+        raise ReadinessError("runtime 題數、題包、單元、角色或答案分布不符簽核版本")
     trust = runtime.get("trust") or {}
     authorization = trust.get("authorizationChain")
     if authorization != authoritative_chain:
@@ -2127,7 +2145,8 @@ def validate_runtime_verification(path: Path, plan_path: Path,
         f"runtime:{sha256(path)}", f"release:{binding['releaseId']}",
         f"alias:{binding['aliasSha256']}", f"app:{binding['appVersion']}:{binding['appJsSha256']}",
         f"signedSource:{binding['signedSourceSha256']}",
-        "readback:alias=1,versioned=410,questions=217,packs=191,topics=14,answers=217",
+        f"readback:alias=1,versioned={content_objects + stem_assets},"
+        f"questions={question_count},packs={pack_count},topics=14,answers={question_count}",
     ]
 
 
@@ -2199,19 +2218,23 @@ def validate_app_loader_verification(path: Path, plan_path: Path,
         raise ReadinessError("登入 App loader 未使用啟用中的真實使用者與 RLS")
     loader = value.get("loader") or {}
     topics = loader.get("topics") or {}
+    runtime_content = runtime.get("content") or {}
+    question_count = runtime_content.get("questions")
+    pack_count = runtime_content.get("packs")
+    expected_roles = runtime_content.get("roles")
     if (loader.get("alias") != EXPECTED_MANIFEST_ALIAS
             or loader.get("aliasRoute") != "authenticated-jwt-signed-url"
-            or loader.get("packs") != 191
+            or loader.get("packs") != pack_count
             or loader.get("packRoute") != "authenticated-jwt-storage-rls"
             or loader.get("packHashMismatches") != 0
-            or loader.get("questions") != 217
+            or loader.get("questions") != question_count
             or loader.get("questionSchemaFailures") != 0
             or loader.get("quarantinedQuestions") != 0
             or not isinstance(topics, dict) or set(topics) != EXPECTED_TOPICS
             or any(not isinstance(count, int) or isinstance(count, bool)
-                   or count < 13 or count > 18 for count in topics.values())
-            or sum(topics.values()) != 217
-            or loader.get("roles") != EXPECTED_ROLES):
+                   or count < 1 for count in topics.values())
+            or sum(topics.values()) != question_count
+            or loader.get("roles") != expected_roles):
         raise ReadinessError("登入 App loader 題包、題數、隔離或分布證據不完整")
     sample = value.get("stemAssetSample") or {}
     count = sample.get("count")
@@ -2219,22 +2242,23 @@ def validate_app_loader_verification(path: Path, plan_path: Path,
     if (not isinstance(count, int) or isinstance(count, bool) or count < 14
             or not isinstance(ids, list) or len(ids) != count or len(set(ids)) != count
             or sample.get("coveredTopics") != sorted(EXPECTED_TOPICS)
-            or sample.get("coveredRoles") != sorted(EXPECTED_ROLES)
+            or sample.get("coveredRoles") != sorted(expected_roles)
             or sample.get("authenticatedRlsDownloads") != count
             or sample.get("signedUrlCrossChecks") != count
             or sample.get("hashMismatches") != 0):
         raise ReadinessError("登入 App loader 題圖 RLS／signed URL 覆蓋不足")
     readback = value.get("stemAssetReadback") or {}
-    if (readback.get("count") != 217
-            or readback.get("authenticatedRlsDownloads") != 217
+    if (readback.get("count") != question_count
+            or readback.get("authenticatedRlsDownloads") != question_count
             or readback.get("missingObjects") != 0
             or readback.get("hashMismatches") != 0):
-        raise ReadinessError("登入 App loader 未以一般使用者 RLS 完整讀回 217 張題圖")
+        raise ReadinessError("登入 App loader 未以一般使用者 RLS 完整讀回全部題圖")
     return [
         f"appLoader:{sha256(path)}",
         f"storageRuntime:{binding['storageRuntimeRecordSha256']}",
         f"auth:{authentication['mode']}:serviceRoleStorage=false",
-        f"loader:packs=191,questions=217,quarantined=0,stemRls=217,stemSamples={count}",
+        f"loader:packs={pack_count},questions={question_count},quarantined=0,"
+        f"stemRls={question_count},stemSamples={count}",
     ]
 
 
@@ -2257,7 +2281,7 @@ def _ordered_evidence_files(candidates: list[Path], expected_hashes: list[str],
 
 def validate_starter_review_files(signed_path: Path, plan_path: Path,
                                   search_root: Path) -> list[str]:
-    """Re-run the authoritative 217-question review against real private files."""
+    """Re-run the authoritative signed review against real private files."""
     signed = load_json(signed_path, "Starter 簽核題源")
     audit = signed.get("reviewAudit") or {}
     direct_hashes = audit.get("directReviewSha256")
@@ -2299,13 +2323,15 @@ def validate_starter_review_files(signed_path: Path, plan_path: Path,
     except (verifier.RuntimeVerificationError, OSError, ValueError) as error:
         raise ReadinessError(f"Starter 審核實檔未通過正式驗證器：{error}") from error
     binding_rows = chain["evidenceFiles"]["answerBindings"]
-    if len(questions) != 217 or sum(row["answerAssetCount"] for row in binding_rows) != 217:
-        raise ReadinessError("Starter 審核實檔未完整涵蓋 217 題與 217 張官方答案裁圖")
+    question_count = len(signed.get("questions") or [])
+    if (len(questions) != question_count
+            or sum(row["answerAssetCount"] for row in binding_rows) != question_count):
+        raise ReadinessError("Starter 審核實檔未完整涵蓋全部題目與官方答案裁圖")
     return [
         *[f"directFile:{sha256(path)}" for path in direct_paths],
         *[f"dualFile:{sha256(path)}" for path in dual_paths],
         *[f"answerBinding:{sha256(path)}" for path in binding_paths],
-        "answerCrops:217:hashVerified=217",
+        f"answerCrops:{question_count}:hashVerified={question_count}",
     ]
 
 
@@ -2439,25 +2465,29 @@ def audit_starter(work_root: Path) -> tuple[
         review = gate(
             "starter-safe-review", "Starter 題庫逐題安全審核與發布授權",
             "fail" if signed_paths else "blocked",
-            signed_errors[0] if signed_errors else "尚無 217 題可驗證簽核題源",
+            signed_errors[0] if signed_errors else "尚無可驗證簽核題源",
             blockers=[] if signed_paths else ["完成逐題像素、官方答案、數學正確性與發布授權鏈"],
         )
         signed_path = None
         signed = None
-    elif len(valid_signed) > 1:
-        review = gate(
-            "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "fail",
-            "找到多份不同的 217 題簽核真值，拒絕猜測正式來源",
-        )
-        signed_path = None
-        signed = None
     else:
-        signed_path, signed, evidence = next(iter(valid_signed.values()))
-        review = gate(
-            "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "pass",
-            "217 題簽核真值格式有效，尚待核對 direct／dual／官方答案裁圖實檔",
-            evidence=evidence,
-        )
+        largest = max(len(row[1].get("questions") or []) for row in valid_signed.values())
+        newest = [row for row in valid_signed.values()
+                  if len(row[1].get("questions") or []) == largest]
+        if len(newest) > 1:
+            review = gate(
+                "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "fail",
+                f"找到多份不同的 {largest} 題簽核真值，拒絕猜測正式來源",
+            )
+            signed_path = None
+            signed = None
+        else:
+            signed_path, signed, evidence = newest[0]
+            review = gate(
+                "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "pass",
+                f"{largest} 題簽核真值格式有效，尚待核對 direct／dual／官方答案裁圖實檔",
+                evidence=evidence,
+            )
 
     plan_paths: list[Path] = []
     if signed_path is not None and signed is not None:
@@ -2490,13 +2520,13 @@ def audit_starter(work_root: Path) -> tuple[
                 review_errors[0] if review_errors
                 else "仍缺 exact-hash bundle 或 direct／dual／官方答案裁圖實檔",
                 blockers=[] if review_errors else [
-                    "補齊 7 組 direct、7 組 dual 與 217 張官方答案裁圖後重驗",
+                    "補齊 signed source 指定的 direct、dual 與全部官方答案裁圖後重驗",
                 ],
             )
         else:
             review = gate(
                 "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "pass",
-                "217 題已由透明代理逐像素核對原題與官方答案；實檔與 217 張答案裁圖均逐雜湊重驗，未冒充真人 QA",
+                f"{len(signed.get('questions') or [])} 題已由透明代理逐像素核對原題與官方答案；實檔與答案裁圖均逐雜湊重驗，未冒充真人 QA",
                 evidence=[*evidence, *verified_review_evidence],
             )
 
@@ -2557,17 +2587,17 @@ def audit_starter(work_root: Path) -> tuple[
     if review["status"] != "pass" or not plan_paths:
         deployment_gate = gate(
             "starter-deployment", "Starter Supabase 私有發布、回滾與最終重部署",
-            "blocked", "須先有唯一 217 題簽核真值與 exact-hash bundle",
-            blockers=["以簽核題源建立 217 題正式上傳計畫"],
+            "blocked", "須先有唯一簽核真值與 exact-hash bundle",
+            blockers=["以簽核題源建立正式上傳計畫"],
         )
     elif chain is None:
         deployment_gate = gate(
             "starter-deployment", "Starter Supabase 私有發布、回滾與最終重部署",
             "fail" if matching_deployment_evidence else "blocked",
             "現有紀錄無法證明初次部署 → 回滾舊 alias → 不同紀錄最終重部署"
-            if matching_deployment_evidence else "尚未執行 217 題正式發布與回滾演練",
+            if matching_deployment_evidence else "尚未執行正式發布與回滾演練",
             blockers=[] if matching_deployment_evidence else [
-                "Supabase 恢復後依序部署 217 題、回滾 153 題、再最終部署 217 題",
+                "依序完成首次部署、回滾前版 alias、再最終部署同一 release",
             ],
         )
     else:
@@ -2588,7 +2618,7 @@ def audit_starter(work_root: Path) -> tuple[
         runtime_gate = gate(
             "starter-storage-readback", "Starter Storage 全量讀回與簽核真值綁定",
             "blocked", "須先完成回滾後最終部署",
-            blockers=["最終部署後讀回固定 alias 與全部 410 個版本物件"],
+            blockers=["最終部署後讀回固定 alias 與全部版本物件"],
         )
     else:
         # Only the canonical current pointer written beside D2 may represent
@@ -2625,7 +2655,7 @@ def audit_starter(work_root: Path) -> tuple[
                 "fail" if runtime_errors else "blocked",
                 runtime_errors[0] if runtime_errors else "尚無綁定最終部署的 Storage 全量讀回證據",
                 blockers=[] if runtime_errors else [
-                    "讀回 alias、410 個版本物件、217 題／191 題包並核對簽核題源",
+                    "讀回 alias、全部版本物件、題目／題包並核對簽核題源",
                 ],
             )
         else:
@@ -2634,7 +2664,7 @@ def audit_starter(work_root: Path) -> tuple[
             )
             runtime_gate = gate(
                 "starter-storage-readback", "Starter Storage 全量讀回與簽核真值綁定", "pass",
-                "遠端 alias 與 410 個版本物件已逐位元讀回，217 題題包已綁定簽核真值",
+                f"遠端 alias 與全部版本物件已逐位元讀回，{chain['plan']['summary']['questions']} 題已綁定簽核真值",
                 evidence=[str(selected_runtime_path), *evidence],
             )
 
@@ -2642,7 +2672,7 @@ def audit_starter(work_root: Path) -> tuple[
         app_loader_gate = gate(
             "starter-authenticated-app-load", "Starter 登入使用者 App loader 實載",
             "blocked", "須先完成回滾後最終部署與 Storage 全量讀回",
-            blockers=["以啟用中的一般使用者 JWT 驗證 RLS、signed URL、191 題包與題圖"],
+            blockers=["以啟用中的一般使用者 JWT 驗證 RLS、signed URL、全部題包與題圖"],
         )
     else:
         canonical_loader = chain["finalPath"].with_name(
@@ -2673,14 +2703,14 @@ def audit_starter(work_root: Path) -> tuple[
                 "fail" if loader_errors else "blocked",
                 loader_errors[0] if loader_errors else "尚無綁定最終 Storage 證據的登入載入紀錄",
                 blockers=[] if loader_errors else [
-                    "用一般登入者執行 alias signed URL、191 題包 RLS 與題圖雙路徑 smoke test",
+                    "用一般登入者執行 alias signed URL、全部題包 RLS 與題圖雙路徑 smoke test",
                 ],
             )
         else:
             _, loader_path, evidence = max(valid_loader, key=lambda row: row[0])
             app_loader_gate = gate(
                 "starter-authenticated-app-load", "Starter 登入使用者 App loader 實載", "pass",
-                "一般啟用使用者已經由 App 同路徑載入 191 題包、217 題與跨單元題圖抽樣",
+                f"一般啟用使用者已經由 App 同路徑載入 {chain['plan']['summary']['contentFiles'] - 3} 題包、{chain['plan']['summary']['questions']} 題與跨單元題圖抽樣",
                 evidence=[str(loader_path), *evidence],
             )
     return review, deployment_gate, runtime_gate, app_loader_gate
@@ -2705,13 +2735,32 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         args.release_work_root,
     )
     gates.extend([review, deployment_gate, runtime_gate, app_loader_gate])
-    starter_capacity = gate(
-        "starter-capacity", "Starter 題庫容量與難度平衡", "blocked",
-        "目前正式庫 217 題，尚未達藍圖 M3 的 350–500 題",
-        evidence=["current:217", "targetMinimum:350", "remainingMinimum:133"],
-        blockers=["從既有未審批次繼續逐題像素與官方答案 QA，不重跑付費 OCR"],
-        required_for_delivery=False,
-    )
+    starter_count = 0
+    for item in review.get("evidence") or []:
+        match = re.fullmatch(r"questions:(\d+):unique=\1", str(item))
+        if match:
+            starter_count = int(match.group(1))
+            break
+    if starter_count >= 350 and all(
+        row["status"] == "pass"
+        for row in (review, deployment_gate, runtime_gate, app_loader_gate)
+    ):
+        starter_capacity = gate(
+            "starter-capacity", "Starter 題庫容量與難度平衡", "pass",
+            f"正式庫 {starter_count} 題，已達藍圖 M3 的 350 題安全門檻",
+            evidence=[f"current:{starter_count}", "targetMinimum:350", "remainingMinimum:0"],
+            required_for_delivery=False,
+        )
+    else:
+        remaining = max(0, 350 - starter_count)
+        starter_capacity = gate(
+            "starter-capacity", "Starter 題庫容量與難度平衡", "blocked",
+            f"目前可驗證正式庫 {starter_count} 題，尚未達藍圖 M3 的 350 題",
+            evidence=[f"current:{starter_count}", "targetMinimum:350",
+                      f"remainingMinimum:{remaining}"],
+            blockers=["從既有候選繼續逐題像素與官方答案 QA，不重跑付費 OCR"],
+            required_for_delivery=False,
+        )
     gates.append(starter_capacity)
     gates.append(audit_github_delivery(
         [args.private_root, args.downloads], args.github_delivery,

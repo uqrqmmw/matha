@@ -31,9 +31,11 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_SUPABASE_URL = "https://rrihysbxhsbxjteqmtdu.supabase.co"
 EXPECTED_ALIAS = "manifest-mistral-ocr4-verified-v1.json"
-EXPECTED_QUESTIONS = 217
-EXPECTED_PACKS = 191
-EXPECTED_VERSIONED_OBJECTS = 410
+# Release size is intentionally derived from the signed source and upload
+# plan.  The first production release happened to contain 217 questions, but
+# pinning the deployer to that one historical size makes every safe expansion
+# impossible to publish.  Exact counts are still checked below; they are just
+# bound to the current immutable release instead of a stale global constant.
 EXPECTED_REVIEW_POLICY = "owner-delegated-agent-direct-pixel-v1"
 EXPECTED_CORPUS = {
     "corpusGeneration": "mistral-ocr4-verified-v1",
@@ -246,12 +248,18 @@ def validate_plan(plan_file: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
     expected_manifest = f"releases/{release_id}/manifest.json"
     if plan.get("versionedManifest") != expected_manifest:
         raise DeploymentError("upload plan versioned manifest path is invalid")
-    if plan.get("summary") != {
-        "questions": EXPECTED_QUESTIONS,
-        "contentFiles": EXPECTED_PACKS + 3,
-        "stemAssets": EXPECTED_QUESTIONS,
-    }:
-        raise DeploymentError("upload plan summary is not the formal 217-question bundle")
+    summary = plan.get("summary")
+    question_count = summary.get("questions") if isinstance(summary, dict) else None
+    content_file_count = summary.get("contentFiles") if isinstance(summary, dict) else None
+    stem_asset_count = summary.get("stemAssets") if isinstance(summary, dict) else None
+    if (not isinstance(question_count, int) or isinstance(question_count, bool)
+            or question_count < 1
+            or not isinstance(content_file_count, int) or isinstance(content_file_count, bool)
+            or content_file_count < 4
+            or stem_asset_count != question_count):
+        raise DeploymentError("upload plan summary is not a valid formal question bundle")
+    pack_count = content_file_count - 3
+    versioned_object_count = (content_file_count - 1) + question_count
     source_value = plan.get("source")
     source_hash = plan.get("sourceSha256")
     approved_by = plan.get("releaseApprovedBy")
@@ -273,8 +281,16 @@ def validate_plan(plan_file: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
             or signed_source.get("reviewPolicy") != EXPECTED_REVIEW_POLICY
             or any(signed_source.get(key) != value for key, value in EXPECTED_CORPUS.items())
             or not isinstance(signed_source.get("questions"), list)
-            or len(signed_source["questions"]) != EXPECTED_QUESTIONS):
-        raise DeploymentError("signed question source is not the formal reviewed 217-question source")
+            or len(signed_source["questions"]) != question_count):
+        raise DeploymentError("signed question source is not the formal reviewed question source")
+    signed_question_ids = [
+        item.get("id") if isinstance(item, dict) else None
+        for item in signed_source["questions"]
+    ]
+    if (any(not isinstance(question_id, str) or not question_id
+            for question_id in signed_question_ids)
+            or len(set(signed_question_ids)) != question_count):
+        raise DeploymentError("signed question source contains invalid or duplicate question IDs")
 
     buckets = plan.get("buckets")
     if not isinstance(buckets, dict) or set(buckets) != {"matha-content", "matha-figures"}:
@@ -337,18 +353,21 @@ def validate_plan(plan_file: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
         if row["path"].startswith(f"{prefix}content/") and row["path"] != pending_path
     ]
     question_ids = [row.get("questionId") for row in figure_rows]
-    if (len(all_files) != EXPECTED_VERSIONED_OBJECTS
-            or len(content_rows) != EXPECTED_PACKS + 2
-            or len(pack_rows) != EXPECTED_PACKS
+    if (len(all_files) != versioned_object_count
+            or len(content_rows) != content_file_count - 1
+            or len(pack_rows) != pack_count
             or any(not row["path"].endswith(".json") for row in pack_rows)
             or expected_manifest not in content_paths or pending_path not in content_paths
-            or len(figure_rows) != EXPECTED_QUESTIONS
+            or len(figure_rows) != question_count
             or any(not row["path"].startswith(f"{prefix}stems/")
                    or not row["path"].endswith(".png")
                    or not isinstance(row.get("questionId"), str)
                    or not row["questionId"] for row in figure_rows)
-            or len(set(question_ids)) != EXPECTED_QUESTIONS):
-        raise DeploymentError("upload plan is not the exact 191-pack/217-stem/410-object release")
+            or len(set(question_ids)) != question_count
+            or set(question_ids) != set(signed_question_ids)):
+        raise DeploymentError(
+            "upload plan does not exactly match its signed question source and declared counts"
+        )
     manifest_row = next(row for row in content_rows if row["path"] == expected_manifest)
     if (alias_row["sha256"], alias_row["bytes"]) != (
             manifest_row["sha256"], manifest_row["bytes"]):
@@ -484,7 +503,7 @@ def rollback(record_file: Path, output_file: Path, base_url: str, service_key: s
         raise DeploymentError("deployed record has no completion timestamp")
     uploaded = record.get("uploaded")
     prefix = f"releases/{record['releaseId']}/"
-    if (not isinstance(uploaded, list) or len(uploaded) != EXPECTED_VERSIONED_OBJECTS
+    if (not isinstance(uploaded, list) or len(uploaded) < 3
             or any(not isinstance(row, dict)
                    or row.get("bucket") not in {"matha-content", "matha-figures"}
                    or not isinstance(row.get("path"), str)
@@ -495,7 +514,7 @@ def rollback(record_file: Path, output_file: Path, base_url: str, service_key: s
                    or isinstance(row.get("bytes"), bool) or row["bytes"] < 0
                    for row in uploaded)
             or len({(row["bucket"], row["path"]) for row in uploaded})
-            != EXPECTED_VERSIONED_OBJECTS):
+            != len(uploaded)):
         raise DeploymentError("deployment record does not contain the exact versioned object set")
     content_uploaded = [row for row in uploaded if row["bucket"] == "matha-content"]
     figure_uploaded = [row for row in uploaded if row["bucket"] == "matha-figures"]
@@ -506,9 +525,10 @@ def rollback(record_file: Path, output_file: Path, base_url: str, service_key: s
         if row["path"].startswith(f"{prefix}content/") and row["path"] != pending_path
     ]
     manifest_rows = [row for row in content_uploaded if row["path"] == versioned_manifest]
-    if (len(content_uploaded) != EXPECTED_PACKS + 2
-            or len(figure_uploaded) != EXPECTED_QUESTIONS
-            or len(pack_uploaded) != EXPECTED_PACKS
+    question_count = len(figure_uploaded)
+    pack_count = len(pack_uploaded)
+    if (question_count < 1 or pack_count < 1
+            or len(content_uploaded) != pack_count + 2
             or any(not row["path"].endswith(".json") for row in pack_uploaded)
             or not any(row["path"] == pending_path for row in content_uploaded)
             or len(manifest_rows) != 1

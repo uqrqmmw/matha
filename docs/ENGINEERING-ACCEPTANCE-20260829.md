@@ -12,19 +12,19 @@
 - Supabase migration 001–011 已由只讀交付驗證器重新比對為 local／remote 完全一致；舊的「remote 必須為空」部署前檢查不再代表現在狀態。
 - App 快取版本為 `0830c`，正式卷協定版本另固定為 `0830b`；一般前端快取更新不會使既有或進行中的正式卷失效。
 
-## 私有教材先遣庫
+## 私有教材正式庫
 
-- 已直接檢視 Batch 01–06、10，共 245 題的原題、去筆跡題面、移除像素與官方答案。
-- 217 題通過，28 題因必要圖線／灰階受損、殘留筆跡、混題裁切或官方答案無法明確綁定而隔離。
-- 14 單元各 13–18 題；例題 114、章末簡單 56、中等 34、困難 13。
-- 平衡版 release ID：`starter-ae19e7c7061200e7`。
-- 簽核題源 SHA-256：`6e014d34223e865c10eb783058282eec362595b8d4966dccf340dc2be53f8b45`。
+- 已直接檢視原 11 批與擴充 2 批，共 434 題的原題、去筆跡題面、移除像素與官方答案。
+- 374 題通過，60 題因必要圖線／灰階受損、殘留筆跡、混題裁切、尺寸不足或官方答案無法明確綁定而隔離。
+- 14 單元各 23–29 題；例題 181、章末簡單 63、中等 105、困難 25。
+- 正式 release ID：`starter-55de4d4d46a6b781`。
+- 簽核題源 SHA-256：`17693507fd7b82a985b749f9683c48c131349025b431c8f6d153fa54aa3a29a3`。
 - 此版採擁有者明確委託的代理直接像素／答案審核；授權、執行者、完整批次與每份審核雜湊都寫入簽核鏈，並明列 `humanPixelReviewClaimed:false`。這是被允許的透明 owner-delegated 流程，不要求把代理冒充具名真人。
-- manifest、內容包與 217 張題圖皆使用版本化路徑；固定 alias 只允許在全部上傳並回讀雜湊後最後切換。
+- manifest、內容包與 374 張題圖皆使用版本化路徑；固定 alias 只允許在全部上傳並回讀雜湊後最後切換。
 - 部署器會在固定 alias 切換前，先以原子寫檔保存上一版 alias bytes、新舊雜湊與完整上傳清冊；即使網路回應遺失或程序在切換途中終止，prepared record 仍可直接驅動安全回滾。
-- 2026-08-30 Supabase 專案安全重啟後 Storage 恢復；同一 upload plan 已實際完成 D1 → 綁定 D1 的回滾 → 時間較晚且記錄不同的 D2。回滾成功恢復 153 題舊 alias，D2 再切到 217 題正式 alias，未重跑或重付任何 OCR／去筆跡服務。
-- D2 後 Storage verifier 已全量回讀固定 alias 與 410 個版本化物件，核對 217 題、191 題包、14 單元、角色分布、全部題圖引用及簽核題源，並透過簽核鏈重驗 217 張答案裁圖；結果 `status: verified`、雜湊錯配 0。
-- 啟用中的真實登入使用者已用 JWT／RLS 讀回 191 題包與 217/217 題圖；17 張 signed URL 樣本覆蓋 14 單元與例題／簡單／中等／困難 4 種角色。此 App loader 證據與 Storage 證據均綁 D2、`APP_VER 0830b`、`app.js` SHA 與正式 alias SHA。
+- 2026-08-31 同一 upload plan 已實際完成 D1 → 綁定 D1 的回滾 → 時間較晚且記錄不同的 D2。回滾成功恢復 217 題前版 alias，D2 再切到 374 題正式 alias，未重跑或重付任何 OCR／去筆跡服務。
+- D2 後 Storage verifier 已全量回讀固定 alias 與 683 個版本化物件，核對 374 題、307 題包、14 單元、角色分布、全部題圖引用及簽核題源，並透過簽核鏈重驗 374 張答案裁圖；結果 `status: verified`、雜湊錯配 0。
+- 啟用中的真實登入使用者已用 JWT／RLS 讀回 307 題包與 374/374 題圖；17 張 signed URL 樣本覆蓋 14 單元與例題／簡單／中等／困難 4 種角色。此 App loader 證據與 Storage 證據均綁 D2、`APP_VER 0830c`、`app.js` SHA 與正式 alias SHA。
 
 ## 平板資料安全壓測
 
@@ -48,14 +48,14 @@
 
 ## 自動測試
 
-- 2026-08-31 本地收尾版：Web／PWA 319 項（317 通過、2 項按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 378 項全部通過；真實 PostgreSQL 17 協定 23 項（22 通過、1 項 legacy 情境按設計跳過）；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
+- 2026-08-31 本地 374 題封存版：Web／PWA 319 項（317 通過、2 項按設計跳過、0 失敗）；Python 全套 409 項（408 通過、1 項 legacy PostgreSQL 情境按設計跳過、0 失敗）；其中教材／圖形發布管線 381/381 通過；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
 - CI 與 Pages 現在都明確執行 `npm test`、`npm run test:figures`、`npm run test:edge`；不再由 CI 只跑部分 Edge 檔。
-- 核心交付使用 `python scripts/audit-blueprint-readiness.py --require-delivery-ready`。`--require-complete` 是整份藍圖關卡，會在 M3 題庫容量和 5 道真實使用證據尚未完成時刻意失敗。
+- 核心交付使用 `python scripts/audit-blueprint-readiness.py --require-delivery-ready`。`--require-complete` 是整份藍圖關卡，會在 5 道真實使用證據尚未完成時刻意失敗。
 - GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
 - 正式驗收證據與私有素材留在 repo 外；checkout 內被忽略的暫存檔也不得追蹤或提交。service-role key、使用者 token、私人教材、答案與部署記錄一律不得進公開 Git。
 
-`matha-system-blueprint-readiness-v3` 把「核心可交付」、「藍圖工程全數完成」與「能力驗證」分開。11 道核心交付關卡都有可驗證證據；M3 題庫容量仍少 133 題，另有 5 道只能由真實使用累積的成效證據。因此正確狀態是 `coreDeliveryReady:true`、`engineeringComplete:false`、`complete:false`，不是舊版的 `complete:true`。任何 repo 修改都會使舊 GitHub／Supabase HEAD 證據失效，須由 verifier 對新 HEAD 重做。
+`matha-system-blueprint-readiness-v3` 把「核心可交付」、「藍圖工程全數完成」與「能力驗證」分開。M3 已以 374 題通過；Starter 審核、部署、回滾、Storage 全讀回與 App 實載都有可驗證證據。目前這次程式修改尚待提交與同一 HEAD 的 CI／Pages 重驗，因此暫時是 `coreDeliveryReady:false`、`engineeringComplete:false`、`complete:false`；GitHub 交付完成後，前兩者可轉為真，5 道真實使用證據仍只影響 `capabilityValidated` 與整體 `complete`。任何 repo 修改都會使舊 GitHub／Supabase HEAD 證據失效，須由 verifier 對新 HEAD 重做。
 
 完整卷 Storage 驗收也已改成每次建立空目錄、使用 authenticated download 即時抓回：正式題本 73 頁、官方詳解 8 頁、地區詳解 32 頁，合計 113 個遠端物件逐檔驗 bytes／SHA-256。只重新列出遠端檔名、再雜湊 8/29 本機快取的舊方法不再能通過發布閘門。
 
-仍不能由工程測試代替的是：至少 6 回本人未看過的正式卷、最近 3 回不同來源且 freshness-confirmed 的 20 題／100 分鐘正式卷各 ≥72 分、Galaxy Tab S10 Ultra 真實 100 分鐘與翻頁 P95、7 題第一錯步 precision／coverage、30 題個人詳批 gold。它們只影響 `capabilityValidated`，不倒灌成施工前假證據。另有 M3 的 133 題是 Codex 尚需完成的施工，不推給使用者。
+仍不能由工程測試代替的是：至少 6 回本人未看過的正式卷、最近 3 回不同來源且 freshness-confirmed 的 20 題／100 分鐘正式卷各 ≥72 分、Galaxy Tab S10 Ultra 真實 100 分鐘與翻頁 P95、7 題第一錯步 precision／coverage、30 題個人詳批 gold。它們只影響 `capabilityValidated`，不倒灌成施工前假證據。M4 題庫會由 Codex 繼續從 374 題擴到至少 1,200 題，不推給使用者現在作答或人工 QA。

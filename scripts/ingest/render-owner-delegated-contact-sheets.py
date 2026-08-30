@@ -9,6 +9,7 @@ the hash-bound manifests remain authoritative.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -17,6 +18,14 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 class ContactSheetError(RuntimeError):
     pass
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def load_items(path: Path) -> list[dict]:
@@ -39,6 +48,7 @@ def render(manifest: Path, pixel_root: Path, answer_root: Path,
     panel_width, panel_height, label_height = 760, 560, 42
     columns = ("SOURCE", "CLEANED", "REMOVED", "ANSWER")
     paths: list[Path] = []
+    sheets: list[dict] = []
     for sheet_index in range(0, len(items), rows_per_sheet):
         group = items[sheet_index:sheet_index + rows_per_sheet]
         canvas = Image.new("RGB", (panel_width * 4, label_height + len(group) * (panel_height + label_height)), "white")
@@ -74,6 +84,29 @@ def render(manifest: Path, pixel_root: Path, answer_root: Path,
         path = output / f"contact-{number:02d}.png"
         canvas.save(path, optimize=True)
         paths.append(path)
+        sheets.append({
+            "index": number,
+            "file": path.name,
+            "sha256": sha256(path),
+            "questionIds": [str(item["id"]) for item in group],
+        })
+    bound_inputs = {
+        "candidateManifestSha256": sha256(manifest),
+        "pixelTemplateSha256": sha256(pixel_root / "cleaned-handwriting-human-review.template.json"),
+        "answerBindingSha256": sha256(answer_root / "answer-binding-candidates.json"),
+        "answerTemplateSha256": sha256(answer_root / "cleaned-answer-human-review.template.json"),
+    }
+    document = {
+        "kind": "matha-owner-delegated-contact-sheets-v1",
+        "version": 1,
+        "releaseAuthority": False,
+        "rowsPerSheet": rows_per_sheet,
+        "questions": len(items),
+        "inputs": bound_inputs,
+        "sheets": sheets,
+    }
+    (output / "manifest.json").write_text(
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return paths
 
 

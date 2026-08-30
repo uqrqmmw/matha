@@ -307,9 +307,34 @@ def load_exclusions(path: Path | None) -> tuple[set[str], str | None]:
     return set(rows), sha256(path)
 
 
+def load_prior_selections(paths: list[Path], candidate_hash: str) -> tuple[set[str], list[dict[str, Any]]]:
+    """Load immutable prior queues so an expansion queue cannot repeat a question."""
+    excluded: set[str] = set()
+    provenance: list[dict[str, Any]] = []
+    for path in paths:
+        document = read_json(path)
+        if (document.get("schema") != 1
+                or document.get("kind") != "matha-cleaned-starter-review-selection"
+                or document.get("candidateManifestSha256") != candidate_hash):
+            raise StarterQueueError(f"Invalid or mismatched prior starter selection: {path}")
+        rows = unique_rows(document.get("items"), f"prior starter selection {path}")
+        overlap = excluded & set(rows)
+        if overlap:
+            raise StarterQueueError(
+                "Prior starter selections overlap: " + ", ".join(sorted(overlap)))
+        excluded.update(rows)
+        provenance.append({
+            "path": str(path.resolve()),
+            "sha256": sha256(path),
+            "questions": len(rows),
+        })
+    return excluded, provenance
+
+
 def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
           output: Path, per_topic: int, batch_size: int,
-          exclusions_path: Path | None = None) -> dict[str, Any]:
+          exclusions_path: Path | None = None,
+          prior_selection_paths: list[Path] | None = None) -> dict[str, Any]:
     output = outside_repo(output)
     if per_topic < 1 or batch_size < 1 or batch_size > 50:
         raise StarterQueueError("per-topic must be positive and batch-size must be 1..50")
@@ -327,9 +352,14 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
             or binding.get("releaseAuthority") is not False
             or binding.get("candidateManifestSha256") != candidate_hash):
         raise StarterQueueError("Answer binding does not match candidate manifest")
+    prior_ids, prior_selections = load_prior_selections(
+        prior_selection_paths or [], candidate_hash)
+    if excluded_ids & prior_ids:
+        raise StarterQueueError("Explicit exclusions overlap a prior starter selection")
+    all_excluded_ids = excluded_ids | prior_ids
     candidates = unique_rows(candidate.get("items"), "candidate")
     answers = unique_rows(binding.get("items"), "answer binding")
-    unknown_exclusions = excluded_ids - set(candidates)
+    unknown_exclusions = all_excluded_ids - set(candidates)
     if unknown_exclusions:
         raise StarterQueueError(
             "Exclusions reference missing candidates: " + ", ".join(sorted(unknown_exclusions)))
@@ -347,6 +377,9 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
             raise StarterQueueError(f"Question/answer identity mismatch: {qid}")
         if qid in excluded_ids:
             excluded["explicit-pixel-or-content-quarantine"] += 1
+            continue
+        if qid in prior_ids:
+            excluded["previously-selected"] += 1
             continue
         role = str(answer.get("role") or "")
         if role not in ROLES:
@@ -402,6 +435,8 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "topicMapSha256": sha256(topic_map_path),
         "exclusionsSha256": exclusions_hash,
         "explicitExclusions": len(excluded_ids),
+        "priorSelections": prior_selections,
+        "previouslySelectedExclusions": len(prior_ids),
         "reviewableWithOfficialAnswer": len(answers),
         "mappedStarterRoles": len(joined),
         "excluded": dict(sorted(excluded.items())),
@@ -421,6 +456,8 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "topicMapSha256": sha256(topic_map_path),
         "exclusionsSha256": exclusions_hash,
         "explicitExclusions": len(excluded_ids),
+        "priorSelections": prior_selections,
+        "previouslySelectedExclusions": len(prior_ids),
         "perTopic": per_topic, "selected": len(selected),
         "topicSummary": selected_topics,
         "items": selected,
@@ -494,6 +531,8 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "sourceDiversityBlockedTopics": [row["topic"] for row in source_blockers],
         "explicitExclusions": len(excluded_ids),
         "exclusionsSha256": exclusions_hash,
+        "priorSelections": prior_selections,
+        "previouslySelectedExclusions": len(prior_ids),
         "batches": batches,
         "output": str(output),
     }
@@ -509,12 +548,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--topic-map", type=Path, default=DEFAULT_TOPIC_MAP)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--exclusions", type=Path)
+    parser.add_argument(
+        "--exclude-selection", type=Path, action="append", default=[],
+        help="immutable prior starter-review-selection.json to exclude; repeatable",
+    )
     parser.add_argument("--per-topic", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=35)
     args = parser.parse_args(argv)
     try:
         result = build(args.candidates, args.answer_binding, args.topic_map,
-                       args.out, args.per_topic, args.batch_size, args.exclusions)
+                       args.out, args.per_topic, args.batch_size, args.exclusions,
+                       args.exclude_selection)
     except (StarterQueueError, OSError, ValueError, KeyError) as error:
         print(f"build-cleaned-starter-queue: {error}", file=sys.stderr)
         return 2

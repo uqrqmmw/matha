@@ -9,7 +9,7 @@
 - 已回看原始 PDF 的印刷章節頁，將「平面線性變換與空間概念」及「克拉瑪公式與圓線幾何」五個跨主題區段由 provisional 升為高信心映射；OCR 仍不作真值。
 - `matrix-equation-p102-ex19` 在實際 source-cleaned 對照中發現 `n=0` 附近像素漂移，已由版本化隔離清單排除；替補題 `matrix-equation-p206-q2` 的原題、清理題與官方答案已逐像素抽查通過。
 
-364 題 selection 與原始工作包仍是 review-only 原料，維持 `releaseAuthority:false`、`studentReady:false`。其後由擁有者明確委託 Codex 直接對 Batch 01–06、10 共 245 題做逐像素、官方答案與數學核對；217 題通過、28 題隔離。發布鏈透明標記 `humanPixelReviewClaimed:false`，不把代理審核冒充真人 QA。
+364 題初始 selection 與原始工作包仍是 review-only 原料，維持 `releaseAuthority:false`、`studentReady:false`。其後由擁有者明確委託 Codex 直接完成原 11 批與擴充 2 批共 434 題的逐像素、官方答案與數學核對；374 題通過、60 題隔離。發布鏈透明標記 `humanPixelReviewClaimed:false`，不把代理審核冒充真人 QA。
 
 ## 權威產物
 
@@ -23,7 +23,9 @@
 - 工作包全量驗證器：`scripts/ingest/validate-starter-review-packets.py`
 - 發布準備與固定十題抽查：`scripts/ingest/prepare-starter-private-release.py`
 - 版本化 bundle、原子 alias 切換與回滾：`scripts/ingest/assemble-private-release.py`、`scripts/ingest/deploy-private-release.py`
-- 217 題平衡 bundle：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v4-balanced-batches-01-06-10-owner-delegated-bundle-20260829`
+- 374 題正式 release：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v5-374-owner-delegated-release-20260831`
+- 374 題不可變 bundle：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v5-374-owner-delegated-bundle-20260831`
+- 部署／回滾／讀回／App 實載證據：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v5-374-final-delivery-20260831`
 - Storage 全量真值回讀：`scripts/ingest/verify-private-release-runtime.py`
 - 真實登入使用者 App 載入：`scripts/ingest/verify-private-app-loader.py`
 - 乾淨 HEAD／CI／Pages byte-exact 交付：`scripts/verify-github-delivery.py`
@@ -46,8 +48,10 @@
 
 題材庫本身無法滿足所有理想比例：10 個單元缺少部分章末角色，12 個單元不足 3 個高信心來源區段。這些限制已逐單元寫入 `starter-review-selection.json`；選題器只在實際有第二來源時強制單一書籍不超過 50%，不會為滿足表格而虛構來源或難度。
 
-## 下一道關卡
+## 目前正式狀態與下一道關卡
 
-217 題平衡 bundle `starter-ae19e7c7061200e7` 已在 repo 外完成：14 單元各 13–18 題，角色為例題 114、簡單 56、中等 34、困難 13；它尚未部署。Supabase 固定 alias 沒有切換，最後一次成功驗證內容為 153 題，但 Storage alias 直讀與 DB login role 現均回 `DatabaseTimeout (544)`，所以目前可用性未知，不能寫成「153 題仍安全在線」。Storage 恢復後只能使用既有 bundle 依序完成 D1、綁定 D1 的回滾、不同記錄 D2、Storage 全量回讀與真實登入使用者 App 實載；任何 544、缺檔、alias 競態或雜湊漂移都停止，不重傳、不改 alias、不重付費。其餘 Batch 07–09、11 留作 M3 擴充，不阻塞本次工程交付。
+374 題 release `starter-55de4d4d46a6b781` 已安全部署：14 單元各 23–29 題，角色為例題 181、簡單 63、中等 105、困難 25。相同 bundle 已實際完成 D1、回滾至 217 題前版與較晚的 D2；D2 後逐位元回讀 683 個版本化物件、307 題包與 374 題，啟用中的 App 使用者亦已用 JWT／RLS 實載 374/374 題圖。正式 alias 現指向 374 題版，沒有重跑或重付任何 OCR／去筆跡服務。
+
+M3 的 350 題安全門檻已完成；下一道關卡不是反覆重驗 374 題，而是從既有 1,919 題官方答案綁定候選中繼續 M4。每批沿用相同的 hash-bound、直接像素 QA、答案 QA、fail-closed 隔離與不可變 bundle 流程，先擴到至少 1,200 題；以目前 374 題計仍差 826 題。有圖題只在必要圖線、灰階或題面資訊受損時隔離，不因「有圖」本身排除。
 
 `advance-starter-release.py` 已把「找出正確下載檔 → 雙審核交集 → 十題簽核包 → 驗簽 → bundle」串成可續作狀態機；每階段採 partial 後原子換名，拒絕錯批、歧義檔與既有雜湊漂移。狀態機刻意停在部署前，不會因檔案剛下載就自動改正式 Supabase alias。

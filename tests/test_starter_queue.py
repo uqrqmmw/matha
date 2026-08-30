@@ -194,6 +194,52 @@ class StarterQueueTests(unittest.TestCase):
         self.assertEqual(result["explicitExclusions"], 1)
         self.assertEqual(selection["exclusionsSha256"], exclusions_hash)
 
+    def test_prior_selection_is_excluded_and_hash_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, topic_map, candidates, binding = self.make_fixture(root)
+            prior = root / "prior-selection.json"
+            write_json(prior, {
+                "schema": 1,
+                "kind": "matha-cleaned-starter-review-selection",
+                "candidateManifestSha256": sha(candidates),
+                "items": [{"id": "q-00-1"}],
+            })
+            prior_path = str(prior.resolve())
+            prior_hash = sha(prior)
+            output = root / "output"
+            result = starter.build(
+                candidates, binding, topic_map, output, 1, 7,
+                prior_selection_paths=[prior],
+            )
+            selection = json.loads((output / "starter-review-selection.json").read_text("utf-8"))
+        ids = {row["id"] for row in selection["items"]}
+        self.assertNotIn("q-00-1", ids)
+        self.assertIn("q-00-2", ids)
+        self.assertEqual(result["previouslySelectedExclusions"], 1)
+        self.assertEqual(selection["priorSelections"], [{
+            "path": prior_path,
+            "sha256": prior_hash,
+            "questions": 1,
+        }])
+
+    def test_prior_selection_must_bind_same_candidate_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, topic_map, candidates, binding = self.make_fixture(root)
+            prior = root / "prior-selection.json"
+            write_json(prior, {
+                "schema": 1,
+                "kind": "matha-cleaned-starter-review-selection",
+                "candidateManifestSha256": "0" * 64,
+                "items": [{"id": "q-00-1"}],
+            })
+            with self.assertRaisesRegex(starter.StarterQueueError, "mismatched prior"):
+                starter.build(
+                    candidates, binding, topic_map, root / "output", 1, 7,
+                    prior_selection_paths=[prior],
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

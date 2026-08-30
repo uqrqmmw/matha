@@ -30,12 +30,18 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RECORD_NAME = "private-release-runtime-verification.json"
 EXPECTED_ALIAS = "manifest-mistral-ocr4-verified-v1.json"
+# Compatibility fixtures for the historical 217-question release.  Runtime
+# validation no longer uses these counts; every deployed release is bound to
+# its signed source and upload-plan summary instead.
 EXPECTED_QUESTIONS = 217
 EXPECTED_PACKS = 191
 EXPECTED_VERSIONED_OBJECTS = 410
 EXPECTED_TOPICS = {
     "comb", "data", "exp", "line", "mat", "num", "poly", "prob",
     "seq", "splane", "svec", "trig1", "trig2", "vec",
+}
+EXPECTED_ROLE_NAMES = {
+    "example", "chapter-end-easy", "chapter-end-medium", "chapter-end-hard",
 }
 EXPECTED_ROLES = {
     "example": 114,
@@ -312,12 +318,16 @@ def _plan_rows(plan: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], di
     expected_manifest = f"releases/{release_id}/manifest.json"
     if plan.get("versionedManifest") != expected_manifest:
         raise RuntimeVerificationError("upload plan versioned manifest path is invalid")
-    if plan.get("summary") != {
-        "questions": EXPECTED_QUESTIONS,
-        "contentFiles": EXPECTED_PACKS + 3,
-        "stemAssets": EXPECTED_QUESTIONS,
-    }:
+    summary = plan.get("summary")
+    question_count = summary.get("questions") if isinstance(summary, dict) else None
+    content_file_count = summary.get("contentFiles") if isinstance(summary, dict) else None
+    stem_asset_count = summary.get("stemAssets") if isinstance(summary, dict) else None
+    if (not _is_int(question_count) or question_count < 1
+            or not _is_int(content_file_count) or content_file_count < 4
+            or stem_asset_count != question_count):
         raise RuntimeVerificationError("upload plan summary is inconsistent")
+    pack_count = content_file_count - 3
+    versioned_object_count = (content_file_count - 1) + question_count
     _require_sha(plan.get("sourceSha256"), "upload plan signed source")
     _require_nonempty_text(plan.get("source"), "upload plan signed source path")
     _require_nonempty_text(plan.get("releaseApprovedBy"), "upload plan release approver")
@@ -371,7 +381,7 @@ def _plan_rows(plan: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], di
                 rows.append(row)
     if alias_row is None:
         raise RuntimeVerificationError("manifest alias is missing from upload plan")
-    if len(rows) != EXPECTED_VERSIONED_OBJECTS:
+    if len(rows) != versioned_object_count:
         raise RuntimeVerificationError("upload plan versioned object count is invalid")
     content_paths = {
         row["path"] for row in rows if row["bucket"] == "matha-content"
@@ -384,16 +394,16 @@ def _plan_rows(plan: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], di
         and path != expected_pending
     }
     if (
-        len(content_paths) != EXPECTED_PACKS + 2
+        len(content_paths) != content_file_count - 1
         or expected_manifest not in content_paths
         or expected_pending not in content_paths
-        or len(pack_paths) != EXPECTED_PACKS
+        or len(pack_paths) != pack_count
         or any(not path.endswith(".json") for path in pack_paths)
-        or len(figure_rows) != EXPECTED_QUESTIONS
+        or len(figure_rows) != question_count
         or any(not row["path"].startswith(f"releases/{release_id}/stems/")
                or not row["path"].endswith(".png")
                or "questionId" not in row for row in figure_rows)
-        or len({row["questionId"] for row in figure_rows}) != EXPECTED_QUESTIONS
+        or len({row["questionId"] for row in figure_rows}) != question_count
     ):
         raise RuntimeVerificationError("upload plan versioned object counts are invalid")
     manifest_row = next(
@@ -935,7 +945,7 @@ def _validate_source_question(question: Any, reviewer: str) -> str:
         raise RuntimeVerificationError("signed source question ID is invalid")
     if (
         question.get("topic") not in EXPECTED_TOPICS
-        or question.get("role") not in EXPECTED_ROLES
+        or question.get("role") not in EXPECTED_ROLE_NAMES
         or question.get("type") not in {"single", "multi", "fill"}
         or not _is_int(question.get("diff")) or not 1 <= question["diff"] <= 3
         or not _is_int(question.get("page")) or question["page"] < 1
@@ -955,6 +965,10 @@ def _validate_signed_source(
     answer_binding_files: list[Path] | None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, int], dict[str, Any]]:
     source = load_json(source_file, "signed private question source")
+    summary = plan.get("summary")
+    expected_questions = summary.get("questions") if isinstance(summary, dict) else None
+    if not _is_int(expected_questions) or expected_questions < 1:
+        raise RuntimeVerificationError("upload plan question count is invalid")
     source_sha = sha256(source_file)
     if plan.get("sourceSha256") != source_sha:
         raise RuntimeVerificationError("upload plan is not bound to the provided signed source")
@@ -1039,7 +1053,7 @@ def _validate_signed_source(
         raise RuntimeVerificationError("signed source is not an exact approved unsigned source")
 
     questions = source.get("questions")
-    if not isinstance(questions, list) or len(questions) != EXPECTED_QUESTIONS:
+    if not isinstance(questions, list) or len(questions) != expected_questions:
         raise RuntimeVerificationError("signed source question count is invalid")
     question_map: dict[str, dict[str, Any]] = {}
     answer_modes: Counter[str] = Counter()
@@ -1065,8 +1079,8 @@ def _validate_signed_source(
     ):
         raise RuntimeVerificationError("delegated release sample binding is invalid")
     if (
-        audit.get("sourceQuestionCount") != EXPECTED_QUESTIONS
-        or audit.get("approvedQuestionCount") != EXPECTED_QUESTIONS
+        audit.get("sourceQuestionCount") != expected_questions
+        or audit.get("approvedQuestionCount") != expected_questions
     ):
         raise RuntimeVerificationError("delegated review inventory count is invalid")
 
@@ -1078,7 +1092,7 @@ def _validate_signed_source(
         or assets.get("releaseAuthority") is not False
         or assets.get("releaseId") != release_id
         or not isinstance(asset_rows, list)
-        or len(asset_rows) != EXPECTED_QUESTIONS
+        or len(asset_rows) != expected_questions
     ):
         raise RuntimeVerificationError("signed source asset manifest is invalid")
     asset_map: dict[str, dict[str, Any]] = {}
@@ -1135,6 +1149,18 @@ def _validate_manifest(
     values: dict[tuple[str, str], bytes], versioned: list[dict[str, Any]],
     source: dict[str, Any], source_file: Path, source_questions: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    question_count = len(source_questions)
+    summary = plan.get("summary")
+    content_file_count = summary.get("contentFiles") if isinstance(summary, dict) else None
+    if not _is_int(content_file_count) or content_file_count < 4:
+        raise RuntimeVerificationError("upload plan content-file count is invalid")
+    pack_count = content_file_count - 3
+    expected_topic_counts = Counter(
+        question["topic"] for question in source_questions.values()
+    )
+    expected_role_counts = Counter(
+        question["role"] for question in source_questions.values()
+    )
     if (
         manifest.get("schema") != 3
         or manifest.get("releaseId") != release_id
@@ -1168,8 +1194,8 @@ def _validate_manifest(
     visual = report.get("visual") if isinstance(report, dict) else None
     if (
         not isinstance(report, dict)
-        or report.get("sourceTotal") != EXPECTED_QUESTIONS
-        or report.get("accepted") != EXPECTED_QUESTIONS
+        or report.get("sourceTotal") != question_count
+        or report.get("accepted") != question_count
         or not isinstance(skipped, dict) or not skipped
         or any(not _is_int(value) or value != 0 for value in skipped.values())
         or not isinstance(visual, dict) or visual.get("pending") != 0
@@ -1194,9 +1220,9 @@ def _validate_manifest(
 
     row_map = {(row["bucket"], row["path"]): row for row in versioned}
     packs = manifest.get("packs")
-    if not isinstance(packs, list) or len(packs) != EXPECTED_PACKS:
-        raise RuntimeVerificationError(f"manifest must contain exactly {EXPECTED_PACKS} packs")
-    if len({pack.get("id") for pack in packs if isinstance(pack, dict)}) != EXPECTED_PACKS:
+    if not isinstance(packs, list) or len(packs) != pack_count:
+        raise RuntimeVerificationError(f"manifest must contain exactly {pack_count} packs")
+    if len({pack.get("id") for pack in packs if isinstance(pack, dict)}) != pack_count:
         raise RuntimeVerificationError("manifest pack IDs must be unique")
 
     question_ids: set[str] = set()
@@ -1241,7 +1267,7 @@ def _validate_manifest(
             role = item.get("role")
             if not isinstance(question_id, str) or not question_id or question_id in question_ids:
                 raise RuntimeVerificationError("question IDs must be non-empty and unique")
-            if topic not in EXPECTED_TOPICS or role not in EXPECTED_ROLES:
+            if topic not in EXPECTED_TOPICS or role not in EXPECTED_ROLE_NAMES:
                 raise RuntimeVerificationError(f"question classification is invalid: {question_id}")
             source_question = source_questions.get(question_id)
             if source_question is None or any(
@@ -1277,16 +1303,14 @@ def _validate_manifest(
                 )
             referenced_figures.add(asset_path)
 
-    if len(question_ids) != EXPECTED_QUESTIONS:
+    if len(question_ids) != question_count:
         raise RuntimeVerificationError(
-            f"release must contain exactly {EXPECTED_QUESTIONS} unique questions"
+            f"release must contain exactly {question_count} unique questions"
         )
-    if set(topic_counts) != EXPECTED_TOPICS or any(
-        count < 13 or count > 18 for count in topic_counts.values()
-    ):
-        raise RuntimeVerificationError("14-unit distribution must stay within 13-18 questions")
-    if dict(role_counts) != EXPECTED_ROLES:
-        raise RuntimeVerificationError("question role distribution does not match 114/56/34/13")
+    if set(topic_counts) != EXPECTED_TOPICS or topic_counts != expected_topic_counts:
+        raise RuntimeVerificationError("14-unit distribution differs from the signed source")
+    if set(role_counts) != EXPECTED_ROLE_NAMES or role_counts != expected_role_counts:
+        raise RuntimeVerificationError("question role distribution differs from the signed source")
     if question_ids != set(source_questions):
         raise RuntimeVerificationError("remote and signed-source question sets differ")
 
@@ -1402,6 +1426,8 @@ def verify_runtime(
             dual_review_files, answer_binding_files,
         )
     )
+    question_count = len(source_questions)
+    pack_count = plan["summary"]["contentFiles"] - 3
     _validate_deployment(
         deployment, plan_file, release_id, base_url, versioned, alias_row
     )
@@ -1470,12 +1496,12 @@ def verify_runtime(
             "missingObjects": 0,
         },
         "content": {
-            "questions": EXPECTED_QUESTIONS,
-            "packs": EXPECTED_PACKS,
+            "questions": question_count,
+            "packs": pack_count,
             "topics": topics,
             "roles": roles,
             "answerModes": remote_answer_modes,
-            "answersVerifiedAgainstSignedSource": EXPECTED_QUESTIONS,
+            "answersVerifiedAgainstSignedSource": question_count,
             "pendingVisuals": 0,
         },
         "trust": {

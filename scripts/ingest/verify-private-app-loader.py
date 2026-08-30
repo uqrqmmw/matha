@@ -34,6 +34,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RECORD_NAME = "private-app-loader-verification.json"
 EXPECTED_ALIAS = "manifest-mistral-ocr4-verified-v1.json"
+# Historical 217-question fixtures retained for test compatibility only.
+# Production validation derives exact counts from the signed upload plan.
 EXPECTED_QUESTIONS = 217
 EXPECTED_PACKS = 191
 EXPECTED_TOPICS = {
@@ -157,6 +159,20 @@ def require_sha(value: Any, label: str) -> str:
     return value
 
 
+def _plan_counts(plan: dict[str, Any]) -> tuple[int, int, int]:
+    summary = plan.get("summary")
+    questions = summary.get("questions") if isinstance(summary, dict) else None
+    content_files = summary.get("contentFiles") if isinstance(summary, dict) else None
+    stems = summary.get("stemAssets") if isinstance(summary, dict) else None
+    if (
+        not isinstance(questions, int) or isinstance(questions, bool) or questions < 1
+        or not isinstance(content_files, int) or isinstance(content_files, bool)
+        or content_files < 4 or stems != questions
+    ):
+        raise AppLoaderVerificationError("upload plan summary is invalid")
+    return questions, content_files - 3, (content_files - 1) + questions
+
+
 def _app_identity() -> dict[str, str]:
     source = (REPO_ROOT / "app.js").read_bytes()
     text = source.decode("utf-8")
@@ -234,14 +250,32 @@ class HttpAppBackend:
         if body is not None:
             data = json.dumps(body, separators=(",", ":")).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                return response.read()
-        except urllib.error.HTTPError as error:
-            raise AppLoaderVerificationError(f"{label} rejected: HTTP {error.code}") from error
-        except (TimeoutError, urllib.error.URLError) as error:
-            raise AppLoaderVerificationError(f"{label} failed without a safe response") from error
+        attempts = 4 if method == "GET" and body is None else 1
+        last_error: BaseException | None = None
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                url, data=data, headers=request_headers, method=method,
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    return response.read()
+            except urllib.error.HTTPError as error:
+                if not (method == "GET" and STORAGE_RUNTIME.transient_http_status(error.code)):
+                    raise AppLoaderVerificationError(
+                        f"{label} rejected: HTTP {error.code}"
+                    ) from error
+                last_error = error
+            except (TimeoutError, urllib.error.URLError) as error:
+                if method != "GET":
+                    raise AppLoaderVerificationError(
+                        f"{label} failed without a safe response"
+                    ) from error
+                last_error = error
+            if attempt + 1 < attempts:
+                time.sleep(1 << attempt)
+        raise AppLoaderVerificationError(
+            f"{label} failed after {attempts} safe read retries"
+        ) from last_error
 
     @classmethod
     def _json(
@@ -501,6 +535,7 @@ def _validate_question(question: Any, books: dict[str, str]) -> dict[str, Any]:
 
 def _validate_release_manifest(
     manifest: dict[str, Any], trusted: dict[str, Any], release_id: str,
+    expected_packs: int,
 ) -> list[dict[str, Any]]:
     if manifest.get("schema") != 3 or manifest.get("visibility") != "authenticated":
         raise AppLoaderVerificationError("manifest schema or visibility is invalid")
@@ -544,8 +579,8 @@ def _validate_release_manifest(
         ):
             raise AppLoaderVerificationError("delegated approval chain is invalid")
     packs = manifest.get("packs")
-    if not isinstance(packs, list) or len(packs) != EXPECTED_PACKS:
-        raise AppLoaderVerificationError(f"manifest must contain exactly {EXPECTED_PACKS} packs")
+    if not isinstance(packs, list) or len(packs) != expected_packs:
+        raise AppLoaderVerificationError(f"manifest must contain exactly {expected_packs} packs")
     pack_ids = set()
     for pack in packs:
         if not isinstance(pack, dict):
@@ -622,6 +657,7 @@ def _validate_runtime_binding(
         raise AppLoaderVerificationError("signed source bound by the runtime evidence is missing")
     signed_source_sha = sha256(source_path)
     plan = load_json(plan_file, "upload plan")
+    question_count, pack_count, versioned_count = _plan_counts(plan)
     if plan.get("sourceSha256") != signed_source_sha:
         raise AppLoaderVerificationError("upload plan signed-source hash drift")
     expected = {
@@ -648,14 +684,23 @@ def _validate_runtime_binding(
         raise AppLoaderVerificationError(str(error)) from error
     content = record.get("content")
     readback = record.get("readback")
-    if not isinstance(content, dict) or (
-        content.get("questions"), content.get("packs"), content.get("roles")
-    ) != (EXPECTED_QUESTIONS, EXPECTED_PACKS, EXPECTED_ROLES):
+    roles = content.get("roles") if isinstance(content, dict) else None
+    if (not isinstance(content, dict)
+            or content.get("questions") != question_count
+            or content.get("packs") != pack_count
+            or not isinstance(roles, dict) or set(roles) != set(EXPECTED_ROLES)
+            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+                   for value in roles.values())
+            or sum(roles.values()) != question_count):
         raise AppLoaderVerificationError("storage runtime content summary is invalid")
-    if not isinstance(content.get("topics"), dict) or set(content.get("topics")) != EXPECTED_TOPICS:
+    topics = content.get("topics")
+    if (not isinstance(topics, dict) or set(topics) != EXPECTED_TOPICS
+            or any(not isinstance(value, int) or isinstance(value, bool) or value < 1
+                   for value in topics.values())
+            or sum(topics.values()) != question_count):
         raise AppLoaderVerificationError("storage runtime topic summary is invalid")
     if not isinstance(readback, dict) or (
-        readback.get("versionedObjects") != 410
+        readback.get("versionedObjects") != versioned_count
         or readback.get("hashMismatches") != 0
         or readback.get("missingObjects") != 0
     ):
@@ -666,8 +711,8 @@ def _validate_runtime_binding(
         or not set(answer_modes).issubset({"text", "single", "multi"})
         or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
                for value in answer_modes.values())
-        or sum(answer_modes.values()) != EXPECTED_QUESTIONS
-        or content.get("answersVerifiedAgainstSignedSource") != EXPECTED_QUESTIONS
+        or sum(answer_modes.values()) != question_count
+        or content.get("answersVerifiedAgainstSignedSource") != question_count
         or content.get("pendingVisuals") != 0
     ):
         raise AppLoaderVerificationError("storage runtime answer evidence summary is invalid")
@@ -773,8 +818,10 @@ def _validate_runtime_binding(
             raise AppLoaderVerificationError("storage runtime answer-asset count is invalid")
         require_sha(row.get("answerAssetSetSha256"), "answer-asset set")
         answer_count += count
-    if answer_count != EXPECTED_QUESTIONS:
-        raise AppLoaderVerificationError("storage runtime answer bindings do not cover 217 questions")
+    if answer_count != question_count:
+        raise AppLoaderVerificationError(
+            "storage runtime answer bindings do not cover every signed question"
+        )
     for key in ("selectionSha256", "unsignedSourceSha256", "assetManifestSha256"):
         require_sha(chain.get(key), f"storage runtime authorization {key}")
     if trust["authorizationChainSha256"] != digest(json.dumps(
@@ -799,6 +846,7 @@ def _signed_source_question_set(
     plan_file: Path, plan: dict[str, Any], release_id: str,
     runtime_record: dict[str, Any],
 ) -> dict[str, Any]:
+    question_count, _pack_count, _versioned_count = _plan_counts(plan)
     source_path = Path(str(plan.get("source") or ""))
     if not source_path.is_absolute():
         source_path = plan_file.resolve().parent / source_path
@@ -810,9 +858,9 @@ def _signed_source_question_set(
     ):
         raise AppLoaderVerificationError("signed question source binding is invalid")
     questions = source.get("questions")
-    if not isinstance(questions, list) or len(questions) != EXPECTED_QUESTIONS:
+    if not isinstance(questions, list) or len(questions) != question_count:
         raise AppLoaderVerificationError(
-            f"signed question source must contain exactly {EXPECTED_QUESTIONS} questions"
+            f"signed question source must contain exactly {question_count} questions"
         )
     ids: list[str] = []
     for question in questions:
@@ -838,7 +886,7 @@ def _signed_source_question_set(
         )
     ordered_ids = sorted(ids)
     return {
-        "questions": EXPECTED_QUESTIONS,
+        "questions": question_count,
         "questionIds": ordered_ids,
         "questionIdsSha256": canonical_sha(ordered_ids),
         "sourceQuestionsSha256": question_set_sha,
@@ -917,12 +965,15 @@ def validate_app_loader_evidence(record: dict[str, Any]) -> None:
         "sourceQuestionsSha256", "loaderQuestionIdsMatched",
     }:
         raise AppLoaderVerificationError("signed-source question-set evidence is invalid")
+    question_count = source.get("questions")
+    if (not isinstance(question_count, int) or isinstance(question_count, bool)
+            or question_count < 1):
+        raise AppLoaderVerificationError("signed-source question count is invalid")
     source_ids = _validated_evidence_ids(
-        source.get("questionIds"), "signed-source", EXPECTED_QUESTIONS,
+        source.get("questionIds"), "signed-source", question_count,
     )
     if (
-        source.get("questions") != EXPECTED_QUESTIONS
-        or source.get("questionIdsSha256") != canonical_sha(source_ids)
+        source.get("questionIdsSha256") != canonical_sha(source_ids)
         or require_sha(source.get("sourceQuestionsSha256"), "signed-source questions")
         != source.get("sourceQuestionsSha256")
         or source.get("loaderQuestionIdsMatched") is not True
@@ -932,11 +983,15 @@ def validate_app_loader_evidence(record: dict[str, Any]) -> None:
     loader = record.get("loader")
     if not isinstance(loader, dict):
         raise AppLoaderVerificationError("App-loader result is missing")
+    pack_count = loader.get("packs")
+    if (not isinstance(pack_count, int) or isinstance(pack_count, bool)
+            or pack_count < 1):
+        raise AppLoaderVerificationError("App-loader pack count is invalid")
     loaded_ids = _validated_evidence_ids(
-        loader.get("questionIds"), "App-loaded", EXPECTED_QUESTIONS,
+        loader.get("questionIds"), "App-loaded", question_count,
     )
     packs = loader.get("packObjects")
-    if not isinstance(packs, list) or len(packs) != EXPECTED_PACKS:
+    if not isinstance(packs, list) or len(packs) != pack_count:
         raise AppLoaderVerificationError("App-loader pack readback evidence is invalid")
     pack_ids: set[str] = set()
     pack_paths: set[str] = set()
@@ -967,22 +1022,25 @@ def validate_app_loader_evidence(record: dict[str, Any]) -> None:
     if (
         loader.get("alias") != EXPECTED_ALIAS
         or loader.get("aliasRoute") != "authenticated-jwt-signed-url"
-        or loader.get("packs") != EXPECTED_PACKS
         or loader.get("packRoute") != "authenticated-jwt-storage-rls"
         or loader.get("packHashMismatches") != 0
-        or loader.get("questions") != EXPECTED_QUESTIONS
+        or loader.get("questions") != question_count
         or loader.get("questionSchemaFailures") != 0
         or loader.get("quarantinedQuestions") != 0
         or loader.get("questionIdsSha256") != canonical_sha(loaded_ids)
         or loader.get("signedSourceQuestionIdsMatched") is not True
         or loaded_ids != source_ids
-        or loaded_count != EXPECTED_QUESTIONS
+        or loaded_count != question_count
         or loader.get("packObjectSetSha256") != canonical_sha(packs)
         or not isinstance(topics, dict) or set(topics) != EXPECTED_TOPICS
-        or any(not isinstance(value, int) or isinstance(value, bool)
-               or value < 13 or value > 18 for value in topics.values())
-        or sum(topics.values()) != EXPECTED_QUESTIONS
-        or loader.get("roles") != EXPECTED_ROLES
+        or any(not isinstance(value, int) or isinstance(value, bool) or value < 1
+               for value in topics.values())
+        or sum(topics.values()) != question_count
+        or not isinstance(loader.get("roles"), dict)
+        or set(loader["roles"]) != set(EXPECTED_ROLES)
+        or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+               for value in loader["roles"].values())
+        or sum(loader["roles"].values()) != question_count
     ):
         raise AppLoaderVerificationError("App-loader result is invalid")
 
@@ -990,10 +1048,10 @@ def validate_app_loader_evidence(record: dict[str, Any]) -> None:
     if not isinstance(readback, dict):
         raise AppLoaderVerificationError("full stem-asset RLS evidence is missing")
     readback_ids = _validated_evidence_ids(
-        readback.get("questionIds"), "full stem-asset RLS", EXPECTED_QUESTIONS,
+        readback.get("questionIds"), "full stem-asset RLS", question_count,
     )
     objects = readback.get("objects")
-    if not isinstance(objects, list) or len(objects) != EXPECTED_QUESTIONS:
+    if not isinstance(objects, list) or len(objects) != question_count:
         raise AppLoaderVerificationError("full stem-asset RLS evidence is invalid")
     object_ids: list[str] = []
     object_paths: set[str] = set()
@@ -1018,8 +1076,8 @@ def validate_app_loader_evidence(record: dict[str, Any]) -> None:
         object_paths.add(path)
     if (
         readback.get("route") != "authenticated-jwt-storage-rls"
-        or readback.get("count") != EXPECTED_QUESTIONS
-        or readback.get("authenticatedRlsDownloads") != EXPECTED_QUESTIONS
+        or readback.get("count") != question_count
+        or readback.get("authenticatedRlsDownloads") != question_count
         or readback.get("missingObjects") != 0
         or readback.get("hashMismatches") != 0
         or readback.get("questionIdsSha256") != canonical_sha(readback_ids)
@@ -1057,7 +1115,7 @@ def validate_app_loader_evidence(record: dict[str, Any]) -> None:
         or sample.get("questionIdsSha256") != canonical_sha(sample_ids)
         or sample.get("questionIdsBoundToSignedSource") is not True
         or sample.get("coveredTopics") != sorted(EXPECTED_TOPICS)
-        or sample.get("coveredRoles") != sorted(EXPECTED_ROLES)
+        or sample.get("coveredRoles") != sorted(loader["roles"])
         or sample.get("authenticatedRlsDownloads") != count
         or sample.get("signedUrlRoute") != "authenticated-jwt-signed-url"
         or sample.get("signedUrlCrossChecks") != count
@@ -1098,6 +1156,7 @@ def verify_app_loader(
     if not publishable_key:
         raise AppLoaderVerificationError("Supabase publishable key is missing")
     plan = load_json(plan_file, "upload plan")
+    question_count, pack_count, _versioned_count = _plan_counts(plan)
     deployment = load_json(deployment_file, "deployment record")
     runtime_pointer = load_json(runtime_file, "storage runtime record")
     runtime_record, runtime_artifact = _resolve_runtime_evidence(
@@ -1134,7 +1193,7 @@ def verify_app_loader(
     if len(alias_bytes) != alias_row["bytes"] or digest(alias_bytes) != alias_row["sha256"]:
         raise AppLoaderVerificationError("signed manifest alias drift")
     manifest = parse_json_bytes(alias_bytes, "signed manifest alias")
-    packs = _validate_release_manifest(manifest, trusted, release_id)
+    packs = _validate_release_manifest(manifest, trusted, release_id, pack_count)
 
     row_map = {(row["bucket"], row["path"]): row for row in versioned}
     expected_pack_paths = {
@@ -1195,20 +1254,21 @@ def verify_app_loader(
             figure_paths.add(figure_path)
             questions.append(validated)
 
-    if len(questions) != EXPECTED_QUESTIONS or sum(pack["count"] for pack in packs) != EXPECTED_QUESTIONS:
-        raise AppLoaderVerificationError(f"release must contain exactly {EXPECTED_QUESTIONS} questions")
+    if (len(questions) != question_count
+            or sum(pack["count"] for pack in packs) != question_count):
+        raise AppLoaderVerificationError(
+            f"release must contain exactly {question_count} questions"
+        )
     if question_ids != signed_source_ids:
         raise AppLoaderVerificationError(
             "App-loaded question ids do not match the signed question source"
         )
-    if set(topic_counts) != EXPECTED_TOPICS or any(
-        count < 13 or count > 18 for count in topic_counts.values()
-    ):
+    if set(topic_counts) != EXPECTED_TOPICS:
         raise AppLoaderVerificationError("14-topic distribution is invalid")
-    if dict(role_counts) != EXPECTED_ROLES:
-        raise AppLoaderVerificationError("question-role distribution is invalid")
     if dict(sorted(topic_counts.items())) != runtime_record["content"]["topics"]:
         raise AppLoaderVerificationError("App-loaded topics differ from storage runtime evidence")
+    if dict(role_counts) != runtime_record["content"]["roles"]:
+        raise AppLoaderVerificationError("App-loaded roles differ from storage runtime evidence")
     expected_figures = {
         row["path"] for row in versioned if row["bucket"] == "matha-figures"
     }
@@ -1288,12 +1348,12 @@ def verify_app_loader(
         "loader": {
             "alias": alias_path,
             "aliasRoute": "authenticated-jwt-signed-url",
-            "packs": EXPECTED_PACKS,
+            "packs": pack_count,
             "packRoute": "authenticated-jwt-storage-rls",
             "packHashMismatches": 0,
             "packObjects": pack_readbacks,
             "packObjectSetSha256": canonical_sha(pack_readbacks),
-            "questions": EXPECTED_QUESTIONS,
+            "questions": question_count,
             "questionIds": sorted(question_ids),
             "questionIdsSha256": canonical_sha(sorted(question_ids)),
             "signedSourceQuestionIdsMatched": True,
@@ -1304,11 +1364,11 @@ def verify_app_loader(
         },
         "stemAssetReadback": {
             "route": "authenticated-jwt-storage-rls",
-            "count": EXPECTED_QUESTIONS,
+            "count": question_count,
             "questionIds": sorted(question_ids),
             "questionIdsSha256": canonical_sha(sorted(question_ids)),
             "questionIdsBoundToSignedSource": True,
-            "authenticatedRlsDownloads": EXPECTED_QUESTIONS,
+            "authenticatedRlsDownloads": question_count,
             "missingObjects": 0,
             "hashMismatches": 0,
             "objects": stem_readbacks,

@@ -325,7 +325,7 @@ python scripts/ingest/prepare-starter-private-release.py prepare `
 發布授權有兩條互斥路徑，不能混在同一 release：
 
 - **具名真人路徑：**具名真人在 `release-review.html` 對照題面、官方答案與 App 判分答案，十題都確認後匯出 `starter-private-release-signoff.json`；`finalize` 會拒絕 AI／bot 名稱、未勾抽查或任何 hash drift。
-- **owner-delegated 路徑：**擁有者明確授權代理完成整批直接像素／答案審核；每份授權、執行者、題目決策及審核檔 SHA-256 必須完整綁定，輸出明列 `humanPixelReviewClaimed:false`。`finalize-owner-delegated` 接受這種透明代理審核，不要求冒充具名真人。本次 217 題 release 使用此路徑。
+- **owner-delegated 路徑：**擁有者明確授權代理完成整批直接像素／答案審核；每份授權、執行者、題目決策及審核檔 SHA-256 必須完整綁定，輸出明列 `humanPixelReviewClaimed:false`。`finalize-owner-delegated` 接受這種透明代理審核，不要求冒充具名真人。目前 374 題 release 使用此路徑。
 
 ```powershell
 # 具名真人路徑
@@ -367,7 +367,7 @@ python scripts/ingest/deploy-private-release.py rollback `
   --record "<repo 外>/rollback-record.json"
 ```
 
-第一次部署 D1 後必須用綁定 D1 的 record 實際回滾，再用同一 bundle 產生時間較晚且檔案不同的最終部署 D2。接著執行 Storage 全量真值回讀；驗證器會回讀固定 alias 與 410 個版本化物件，逐檔驗 bytes／SHA-256，並核對 217 題、191 題包、14 單元、角色、答案、題圖引用及 owner-delegated 簽核鏈。成功證據在 repo 外原子寫入，service-role key 不會進輸出：
+第一次部署 D1 後必須用綁定 D1 的 record 實際回滾，再用同一 bundle 產生時間較晚且檔案不同的最終部署 D2。接著執行 Storage 全量真值回讀；驗證器會由 signed source 與 upload plan 推導精確題數、題包數、版本物件數、單元與角色分布，回讀固定 alias 與全部版本化物件並逐檔驗 bytes／SHA-256，同時核對答案、題圖引用及 owner-delegated 簽核鏈。成功證據在 repo 外原子寫入，service-role key 不會進輸出：
 
 ```powershell
 python scripts/ingest/verify-private-release-runtime.py `
@@ -381,7 +381,7 @@ python scripts/ingest/verify-private-release-runtime.py `
 
 簽核鏈若含多份直接審核檔，依 signed source 記錄的順序重複 `--delegated-review`；少一份、順序錯誤或內容漂移都會拒絕。
 
-Storage 證據只證明管理端能讀回資料，**不能**證明學生 App 能登入載入。下一道獨立關卡使用啟用中的真實 App 使用者 JWT，依 `app.js` 的方式以 signed URL 取得 alias、以 Storage RLS 載入全部 191 題包與 217/217 題圖，再讓覆蓋 14 單元／4 種角色的題圖樣本通過 signed URL 交叉核對。service role 若用於簽發短效 session，也不會用來下載學生路徑或寫入證據：
+Storage 證據只證明管理端能讀回資料，**不能**證明學生 App 能登入載入。下一道獨立關卡使用啟用中的真實 App 使用者 JWT，依 `app.js` 的方式以 signed URL 取得 alias、以 Storage RLS 載入 signed source 所列的全部題包與題圖，再讓覆蓋全部單元／角色的題圖樣本通過 signed URL 交叉核對。service role 若用於簽發短效 session，也不會用來下載學生路徑或寫入證據：
 
 ```powershell
 $env:SUPABASE_USER_ACCESS_TOKEN = "<啟用中的真實 App 使用者短效 JWT>"
