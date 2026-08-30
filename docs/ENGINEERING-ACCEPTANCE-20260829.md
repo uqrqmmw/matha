@@ -12,9 +12,9 @@
 - 此版採擁有者明確委託的代理直接像素／答案審核；授權、執行者、完整批次與每份審核雜湊都寫入簽核鏈，並明列 `humanPixelReviewClaimed:false`。這是被允許的透明 owner-delegated 流程，不要求把代理冒充具名真人。
 - manifest、內容包與 217 張題圖皆使用版本化路徑；固定 alias 只允許在全部上傳並回讀雜湊後最後切換。
 - 部署器會在固定 alias 切換前，先以原子寫檔保存上一版 alias bytes、新舊雜湊與完整上傳清冊；即使網路回應遺失或程序在切換途中終止，prepared record 仍可直接驅動安全回滾。
-- 工程發布順序固定為第一次部署 D1 → 綁定 D1 的回滾 → 時間較晚且記錄不同的最終部署 D2；三者須綁同一 upload plan 與 alias 雜湊。
-- D2 後先由 Storage verifier 全量回讀固定 alias 與 410 個版本化物件，核對 217 題、191 題包、14 單元、角色分布、全部題圖引用及簽核題源；再由啟用中的真實登入使用者以 JWT／RLS 讀回 191 題包與 217/217 題圖，signed URL 另做跨 14 單元／4 角色抽查。兩份證據都須綁 D2、`APP_VER` 與 `app.js` SHA，不能互相替代。
-- 目前 Supabase 管理面雖顯示 `ACTIVE_HEALTHY`，Storage alias 直讀與 DB login role 仍皆回 `DatabaseTimeout (544)`。固定 alias 沒有切換；最後一次成功驗證的內容是 153 題，但目前可用性未知，不能宣稱 153 題仍在線。217 題 release 只存在 repo 外本地 bundle，尚未部署。
+- 2026-08-30 Supabase 專案安全重啟後 Storage 恢復；同一 upload plan 已實際完成 D1 → 綁定 D1 的回滾 → 時間較晚且記錄不同的 D2。回滾成功恢復 153 題舊 alias，D2 再切到 217 題正式 alias，未重跑或重付任何 OCR／去筆跡服務。
+- D2 後 Storage verifier 已全量回讀固定 alias 與 410 個版本化物件，核對 217 題、191 題包、14 單元、角色分布、全部題圖引用及簽核題源，並透過簽核鏈重驗 217 張答案裁圖；結果 `status: verified`、雜湊錯配 0。
+- 啟用中的真實登入使用者已用 JWT／RLS 讀回 191 題包與 217/217 題圖；17 張 signed URL 樣本覆蓋 14 單元與例題／簡單／中等／困難 4 種角色。此 App loader 證據與 Storage 證據均綁 D2、`APP_VER 0830b`、`app.js` SHA 與正式 alias SHA。
 
 ## 平板資料安全壓測
 
@@ -39,10 +39,10 @@
 ## 自動測試
 
 - 2026-08-30 本地收尾版：Web／PWA 271 項（269 通過、2 項私人 gold 因尚無真實證據按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 291 項全部通過；Supabase Edge／GPT-5.5 閘門 14 項全部通過。
-- 最終提交若再修改程式，仍須重跑 `npm test`、`npm run test:figures`、`npm run test:edge` 與 `python scripts/audit-blueprint-readiness.py`；不得把上述施工 checkpoint 冒充不同 HEAD 的最終結果。
+- 最終文件提交後仍須重跑 `npm test`、`npm run test:figures`、`npm run test:edge` 與 `python scripts/audit-blueprint-readiness.py --require-complete`；不得把上述施工 checkpoint 冒充不同 HEAD 的最終結果。
 - GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
-- 所有證據留在 repo 外；不得把 service-role key、使用者 token、私人教材、答案或部署記錄提交到公開 Git。
+- 正式驗收證據與私有素材留在 repo 外；checkout 內被忽略的暫存檔也不得追蹤或提交。service-role key、使用者 token、私人教材、答案與部署記錄一律不得進公開 Git。
 
-`matha-system-blueprint-readiness-v2` 將證據分成兩層。6 道工程關卡中，完整卷接線、Starter 安全審核，以及乾淨 HEAD 的公開 Git 安全／CI／Pages／逐 bytes 交付已有可驗證證據；D1→回滾→D2、Storage 全量回讀與登入使用者 App loader 尚未完成。任何 repo 修改都會使舊 GitHub 證據失效，必須由 verifier 對新 HEAD 重做。5 道交付後能力關卡目前均待真實使用，不會被工程測試代替。
+`matha-system-blueprint-readiness-v2` 將證據分成兩層。6 道工程關卡已全部有可驗證證據：完整卷接線、Starter 安全審核、D1→回滾→D2、Storage 全量回讀、登入使用者 App loader，以及公開 Git 安全／CI／Pages／逐 bytes 交付。稽核結果為 `complete:true`、`engineeringComplete:true`、`capabilityValidated:false`、6 pass／5 blocked／0 fail；5 個 blocked 全是交付後真實使用證據，不是未完工程。任何 repo 修改都會使舊 GitHub 證據失效，須由 verifier 對最終新 HEAD 重做。
 
 仍不能由工程測試代替的只有：至少 6 回本人未看過的正式卷、最近 3 回不同來源且 freshness-confirmed 的 20 題／100 分鐘正式卷各 ≥72 分、Galaxy Tab S10 Ultra 真實 100 分鐘與翻頁 P95、7 題第一錯步 precision／coverage、30 題個人詳批 gold。它們只影響 `capabilityValidated`，不倒灌成施工前假證據。
