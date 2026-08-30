@@ -9,6 +9,7 @@
 - `paper_detail_jobs` 以 run／source／question／accepted attempt／retry receipt／generation 唯一綁定；只有本人明確重跑才建立 N+1，已 dispatched 的工作不會因重載自動重送。
 - 詳批完成 receipt 綁定凍結模型輸入、結果與 metadata digest；App 重算全部 digest 後才保存，篡改或不同世代結果一律拒絕。
 - `openai-proxy` 遠端版本 37 已部署；下載回讀的 9 個執行檔與本機逐檔 SHA-256 完全一致。無登入 POST 回 401、CORS 預檢回 204；驗證期間未呼叫 OpenAI API。
+- Supabase migration 001–011 已由只讀交付驗證器重新比對為 local／remote 完全一致；舊的「remote 必須為空」部署前檢查不再代表現在狀態。
 - App 快取版本為 `0830c`，正式卷協定版本另固定為 `0830b`；一般前端快取更新不會使既有或進行中的正式卷失效。
 
 ## 私有教材先遣庫
@@ -47,11 +48,14 @@
 
 ## 自動測試
 
-- 2026-08-31 本地收尾版：Web／PWA 319 項（317 通過、2 項真實使用證據按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 370 項全部通過；真實 PostgreSQL 17 協定 23 項通過、1 項 legacy 情境按設計跳過；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
-- 最終文件提交後仍須重跑 `npm test`、`npm run test:figures`、`npm run test:edge` 與 `python scripts/audit-blueprint-readiness.py --require-complete`；不得把上述施工 checkpoint 冒充不同 HEAD 的最終結果。
+- 2026-08-31 本地收尾版：Web／PWA 319 項（317 通過、2 項按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 378 項全部通過；真實 PostgreSQL 17 協定 23 項（22 通過、1 項 legacy 情境按設計跳過）；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
+- CI 與 Pages 現在都明確執行 `npm test`、`npm run test:figures`、`npm run test:edge`；不再由 CI 只跑部分 Edge 檔。
+- 核心交付使用 `python scripts/audit-blueprint-readiness.py --require-delivery-ready`。`--require-complete` 是整份藍圖關卡，會在 M3 題庫容量和 5 道真實使用證據尚未完成時刻意失敗。
 - GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
 - 正式驗收證據與私有素材留在 repo 外；checkout 內被忽略的暫存檔也不得追蹤或提交。service-role key、使用者 token、私人教材、答案與部署記錄一律不得進公開 Git。
 
-`matha-system-blueprint-readiness-v2` 將證據分成兩層。6 道工程關卡已全部有可驗證證據：完整卷接線、Starter 安全審核、D1→回滾→D2、Storage 全量回讀、登入使用者 App loader，以及公開 Git 安全／CI／Pages／逐 bytes 交付。稽核結果為 `complete:true`、`engineeringComplete:true`、`capabilityValidated:false`、6 pass／5 blocked／0 fail；5 個 blocked 全是交付後真實使用證據，不是未完工程。任何 repo 修改都會使舊 GitHub 證據失效，須由 verifier 對最終新 HEAD 重做。
+`matha-system-blueprint-readiness-v3` 把「核心可交付」、「藍圖工程全數完成」與「能力驗證」分開。11 道核心交付關卡都有可驗證證據；M3 題庫容量仍少 133 題，另有 5 道只能由真實使用累積的成效證據。因此正確狀態是 `coreDeliveryReady:true`、`engineeringComplete:false`、`complete:false`，不是舊版的 `complete:true`。任何 repo 修改都會使舊 GitHub／Supabase HEAD 證據失效，須由 verifier 對新 HEAD 重做。
 
-仍不能由工程測試代替的只有：至少 6 回本人未看過的正式卷、最近 3 回不同來源且 freshness-confirmed 的 20 題／100 分鐘正式卷各 ≥72 分、Galaxy Tab S10 Ultra 真實 100 分鐘與翻頁 P95、7 題第一錯步 precision／coverage、30 題個人詳批 gold。它們只影響 `capabilityValidated`，不倒灌成施工前假證據。
+完整卷 Storage 驗收也已改成每次建立空目錄、使用 authenticated download 即時抓回：正式題本 73 頁、官方詳解 8 頁、地區詳解 32 頁，合計 113 個遠端物件逐檔驗 bytes／SHA-256。只重新列出遠端檔名、再雜湊 8/29 本機快取的舊方法不再能通過發布閘門。
+
+仍不能由工程測試代替的是：至少 6 回本人未看過的正式卷、最近 3 回不同來源且 freshness-confirmed 的 20 題／100 分鐘正式卷各 ≥72 分、Galaxy Tab S10 Ultra 真實 100 分鐘與翻頁 P95、7 題第一錯步 precision／coverage、30 題個人詳批 gold。它們只影響 `capabilityValidated`，不倒灌成施工前假證據。另有 M3 的 133 題是 Codex 尚需完成的施工，不推給使用者。

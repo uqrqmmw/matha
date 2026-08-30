@@ -1,21 +1,28 @@
 # Paper contract deployment preflight
 
-Migration `202608300006` must never be deployed in its former
-`NOT NULL DEFAULT clock_timestamp()` form: that form makes historical ink look
-new. Before any migration push, run:
+## Historical hazard
+
+Migration `202608300006` must never use its former
+`NOT NULL DEFAULT clock_timestamp()` form because that would make historical
+ink look new. The old preflight that required every remote migration column to
+be empty was only valid before the first deployment; it is not a current
+delivery check.
+
+## Current authority
+
+As of 2026-08-31, corrected migrations `202608300001` through
+`202608300011` are deployed. Verify current delivery with:
 
 ```powershell
-python scripts/check_paper_contract_deployment_preflight.py
+python scripts/verify-supabase-runtime-delivery.py --output <repo-external-json>
 ```
 
-The check reads the linked Supabase migration list and fails closed if any
-remote migration exists, especially `202608300006`. A non-empty remote column
-requires explicit investigation; do not infer safety from local files.
+The verifier fails closed unless local and remote migration IDs are exactly
+001–011, `openai-proxy` is active at the expected version, every downloaded
+production TypeScript file matches the checkout by SHA-256, OPTIONS returns
+204, and an unauthenticated POST returns 401. It does not use a browser or call
+OpenAI. Keep the evidence outside the public repository.
 
-Verified locally on 2026-08-30 (Asia/Taipei): Supabase returned local
-`202608300001` through `202608300009` with an empty `remote` value for every
-row. The preflight printed:
-
-`PASS: remote migration column is empty; corrected 006 has not been applied remotely`
-
-This evidence is point-in-time only. Re-run immediately before deployment.
+Before a future migration push, inspect the SQL diff and run the PostgreSQL
+integration suite. Do not run the old empty-remote assertion as though an
+already-deployed project should still have no remote migrations.
