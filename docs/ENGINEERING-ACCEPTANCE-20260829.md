@@ -1,6 +1,15 @@
-# 數A特訓工程驗收摘要（2026-08-29；2026-08-30 收尾更新）
+# 數A特訓工程驗收摘要（2026-08-29；2026-08-31 收尾更新）
 
 本檔只記錄可由程式與雜湊驗證的工程證據，不把尚未發生的本人作答、Galaxy Tab 真機長考或個人詳批 gold 冒充完成。
+
+## 原卷交卷與詳批可靠性協定
+
+- Supabase migration 001–011 已部署至專案 `rrihysbxhsbxjteqmtdu`，部署後由 CLI 回讀確認 local／remote 逐筆一致。
+- 交卷、accepted ink、逐頁 manifest、整卷批改、隔日訂正與逐題詳批各自有伺服器權威狀態；瀏覽器合成影像、messages 與 instructions 不再是批改真值。
+- `paper_detail_jobs` 以 run／source／question／accepted attempt／retry receipt／generation 唯一綁定；只有本人明確重跑才建立 N+1，已 dispatched 的工作不會因重載自動重送。
+- 詳批完成 receipt 綁定凍結模型輸入、結果與 metadata digest；App 重算全部 digest 後才保存，篡改或不同世代結果一律拒絕。
+- `openai-proxy` 遠端版本 37 已部署；下載回讀的 9 個執行檔與本機逐檔 SHA-256 完全一致。無登入 POST 回 401、CORS 預檢回 204；驗證期間未呼叫 OpenAI API。
+- App 快取版本為 `0830c`，正式卷協定版本另固定為 `0830b`；一般前端快取更新不會使既有或進行中的正式卷失效。
 
 ## 私有教材先遣庫
 
@@ -38,7 +47,7 @@
 
 ## 自動測試
 
-- 2026-08-30 本地收尾版：Web／PWA 271 項（269 通過、2 項私人 gold 因尚無真實證據按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 291 項全部通過；Supabase Edge／GPT-5.5 閘門 14 項全部通過。
+- 2026-08-31 本地收尾版：Web／PWA 319 項（317 通過、2 項真實使用證據按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 370 項全部通過；真實 PostgreSQL 17 協定 23 項通過、1 項 legacy 情境按設計跳過；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
 - 最終文件提交後仍須重跑 `npm test`、`npm run test:figures`、`npm run test:edge` 與 `python scripts/audit-blueprint-readiness.py --require-complete`；不得把上述施工 checkpoint 冒充不同 HEAD 的最終結果。
 - GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
 - 正式驗收證據與私有素材留在 repo 外；checkout 內被忽略的暫存檔也不得追蹤或提交。service-role key、使用者 token、私人教材、答案與部署記錄一律不得進公開 Git。

@@ -1,10 +1,10 @@
 # WIP 交接：原卷交卷、批改與隔日詳批可靠性
 
-時間：2026-08-30（Asia/Taipei）
+時間：2026-08-31（Asia/Taipei）
 工作分支：`codex/paper-reliability-checkpoint-20260830`
 可恢復 checkpoint：`2b23a49f1705bfdf8e8f42c61b231e7f346915e0`
 正式 `main` 基準：`863beaf957d9d27dcc04e7002d6f2808b7c2501b`
-狀態：資料庫協定已部署；Edge Function 與正式前端尚未部署，不能宣稱工程或使用目標完成。
+狀態：資料庫協定與 Edge Function v37 已部署；正式前端尚未合併／部署，不能宣稱工程或使用目標完成。
 
 ## 最終成功條件
 
@@ -29,7 +29,7 @@
 - Migration 001–011 已透過固定版 Supabase CLI 部署至專案 `rrihysbxhsbxjteqmtdu`；部署後逐筆核對 local/remote migration，001–011 全部一致。重開後不得重跑或重複付費。
 - Migration 011 新增獨立 `paper_detail_jobs` 狀態機：generation 0、明確重新分析才核發 N+1、CAS/鎖定、claim、dispatched、complete、status，以及 immutable 完成 receipt。
 - 詳批輸入由伺服器從 accepted DB row、正式答案、私有來源 PNG、accepted ink/retry receipt 重建；瀏覽器 messages、instructions、JPEG 不具權威且會被拒絕。
-- Edge 已完成 claim → dispatch → complete、pending、exact replay、不可自動重送 dispatched job，以及 receipt/model metadata 綁定；但新版本 Edge 尚未正式部署。
+- Edge 已完成 claim → dispatch → complete、pending、exact replay、不可自動重送 dispatched job，以及 receipt/model metadata 綁定；遠端版本 37 已正式部署，下載回讀的 9 個執行檔與本機 SHA-256 全數一致。
 - App 已完成 generation/status/receipt 流程及多層 digest 驗證；只有通過 DB receipt、result digest、model metadata 與 prediction metadata 的結果才可保存。
 - `APP_VER`／Service Worker 資產版本為 `0830c`；正式考卷協定另固定 `PAPER_PROTOCOL_APP_VERSION = '0830b'`，一般快取更新不會讓既有／進行中的正式卷失效。
 - 工作分支 checkpoint 已推送遠端，重開機後可從上述 branch/commit 繼續。
@@ -42,14 +42,10 @@
 - Python／資料／部署：370/370 pass。
 - `git diff --check` 通過，未發現新增的明顯 secret pattern。
 
-## 重開機後唯一關鍵路徑
+## 目前唯一關鍵路徑
 
-1. 先確認 branch、HEAD、乾淨工作樹，以及 Supabase migration 001–011 仍為 local/remote 一致；不得重跑 YesScanner、OCR、217 題 bundle 或 migrations。
-2. 使用固定版 CLI 部署現有 `openai-proxy` Edge Function；部署與驗證期間不得呼叫 OpenAI API。
-3. 以無模型呼叫方式核對遠端 Function 版本、JWT/RLS、拒絕 browser authority、job/status/receipt 契約。
-4. 重跑關鍵 Web、Edge、PostgreSQL、Python 測試，提交部署證據。
-5. 將同一已驗證 HEAD 合併／推送 `main`，再做 GitHub Pages byte-exact、Service Worker `0830c` 與正式前端回讀驗證。
-6. 更新 `SYSTEM_COMPLETION_BLUEPRINT.md`、工程驗收文件及 `C:\Users\yenke\Desktop\數學系統藍圖.md`。
-7. 工程關卡全數完成後才進入五項真實使用驗證；未達 5/5 不得結案。
+1. 將同一已驗證 HEAD 合併／推送 `main`，再做 GitHub CI、Pages byte-exact、Service Worker `0830c` 與正式前端回讀驗證。
+2. 更新 `SYSTEM_COMPLETION_BLUEPRINT.md`、工程驗收文件及 `C:\Users\yenke\Desktop\數學系統藍圖.md`。
+3. 工程關卡全數完成後才進入五項真實使用驗證；未達 5/5 不得結案。
 
 本檔是重開機續作的權威位置，不是最終產品驗收證據。
