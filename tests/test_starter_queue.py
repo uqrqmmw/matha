@@ -240,6 +240,38 @@ class StarterQueueTests(unittest.TestCase):
                     prior_selection_paths=[prior],
                 )
 
+    def test_long_term_queue_can_record_sparse_topic_inventory_without_padding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            topics, topic_map, candidates, binding = self.make_fixture(root)
+            prior = root / "prior-selection.json"
+            write_json(prior, {
+                "schema": 1,
+                "kind": "matha-cleaned-starter-review-selection",
+                "candidateManifestSha256": sha(candidates),
+                "items": [{"id": "q-00-1"}],
+            })
+            with self.assertRaisesRegex(starter.StarterQueueError, "only 1/2"):
+                starter.build(
+                    candidates, binding, topic_map, root / "strict-output", 2, 7,
+                    prior_selection_paths=[prior],
+                )
+            output = root / "long-term-output"
+            result = starter.build(
+                candidates, binding, topic_map, output, 2, 7,
+                prior_selection_paths=[prior], allow_topic_shortfall=True,
+            )
+            selection = json.loads((output / "starter-review-selection.json").read_text("utf-8"))
+        first_topic = sorted(topics)[0]
+        first_summary = next(row for row in selection["topicSummary"]
+                             if row["topic"] == first_topic)
+        self.assertEqual(result["selected"], 27)
+        self.assertTrue(selection["allowTopicShortfall"])
+        self.assertEqual(first_summary["selected"], 1)
+        self.assertEqual(first_summary["requested"], 2)
+        self.assertEqual(first_summary["inventoryShortfall"], 1)
+        self.assertEqual(result["topicInventoryShortfalls"], {first_topic: 1})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -240,9 +240,10 @@ def selection_rows(selection_by_topic: dict[str, list[dict[str, Any]]],
                    joined: list[dict[str, Any]], topics: list[str],
                    count: int) -> list[dict[str, Any]]:
     result = []
-    targets = role_targets(count)
     for topic in topics:
         rows = selection_by_topic[topic]
+        actual_count = len(rows)
+        targets = role_targets(actual_count)
         pool = [row for row in joined
                 if row["topic"] == topic and row["topicConfidence"] == "high"]
         roles = Counter(row["role"] for row in rows)
@@ -250,8 +251,8 @@ def selection_rows(selection_by_topic: dict[str, list[dict[str, Any]]],
         pool_books = Counter(row["bookId"] for row in pool)
         dominant, max_book = books.most_common(1)[0]
         outside_capacity = len(pool) - pool_books[dominant]
-        cap = (count + 1) // 2
-        if max_book > cap and outside_capacity >= count - cap:
+        cap = (actual_count + 1) // 2
+        if max_book > cap and outside_capacity >= actual_count - cap:
             raise StarterQueueError(
                 f"Topic {topic} could satisfy the book cap but selection did not")
         shortfalls = {role: targets[role] - roles[role] for role in ROLES
@@ -261,7 +262,9 @@ def selection_rows(selection_by_topic: dict[str, list[dict[str, Any]]],
         })
         result.append({
             "topic": topic,
-            "selected": len(rows),
+            "selected": actual_count,
+            "requested": count,
+            "inventoryShortfall": count - actual_count,
             "withFigure": sum(row["figureCount"] > 0 for row in rows),
             "roles": {role: roles[role] for role in ROLES},
             "roleTargets": dict(targets),
@@ -334,7 +337,8 @@ def load_prior_selections(paths: list[Path], candidate_hash: str) -> tuple[set[s
 def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
           output: Path, per_topic: int, batch_size: int,
           exclusions_path: Path | None = None,
-          prior_selection_paths: list[Path] | None = None) -> dict[str, Any]:
+          prior_selection_paths: list[Path] | None = None,
+          allow_topic_shortfall: bool = False) -> dict[str, Any]:
     output = outside_repo(output)
     if per_topic < 1 or batch_size < 1 or batch_size > 50:
         raise StarterQueueError("per-topic must be positive and batch-size must be 1..50")
@@ -409,8 +413,13 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
     selection_by_topic: dict[str, list[dict[str, Any]]] = {}
     for topic in topic_order:
         pool = [row for row in joined if row["topic"] == topic and row["topicConfidence"] == "high"]
-        selected = select_topic(pool, per_topic)
-        if len(selected) != per_topic:
+        target = min(per_topic, len(pool)) if allow_topic_shortfall else per_topic
+        if target == 0:
+            raise StarterQueueError(f"Topic {topic} has no safe candidates")
+        selected = select_topic(pool, target)
+        if len(selected) != target:
+            raise StarterQueueError(f"Topic {topic} has only {len(selected)}/{per_topic} safe candidates")
+        if not allow_topic_shortfall and len(selected) != per_topic:
             raise StarterQueueError(f"Topic {topic} has only {len(selected)}/{per_topic} safe candidates")
         selection_by_topic[topic] = selected
     selected = interleave(selection_by_topic, topic_order)
@@ -458,7 +467,8 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "explicitExclusions": len(excluded_ids),
         "priorSelections": prior_selections,
         "previouslySelectedExclusions": len(prior_ids),
-        "perTopic": per_topic, "selected": len(selected),
+        "perTopic": per_topic, "allowTopicShortfall": allow_topic_shortfall,
+        "selected": len(selected),
         "topicSummary": selected_topics,
         "items": selected,
     }
@@ -482,7 +492,7 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "# 先遣題庫 coverage matrix", "",
         f"- 可綁官方答案：{len(answers):,}",
         f"- 可映射且角色在範圍：{len(joined):,}",
-        f"- 本輪平衡候選：{len(selected)}（每單元 {per_topic}）",
+        f"- 本輪候選：{len(selected)}（每單元上限 {per_topic}；庫存不足可否縮減：{allow_topic_shortfall}）",
         "- 發布權限：false；目前只是人工 QA 佇列", "",
         "| 單元 | 全部 | 高信心 | 高信心有圖 | 例題 | 簡單 | 中等 | 困難 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -525,6 +535,11 @@ def build(candidate_path: Path, binding_path: Path, topic_map_path: Path,
         "mappedStarterRoles": len(joined),
         "selected": len(selected),
         "perTopic": per_topic,
+        "allowTopicShortfall": allow_topic_shortfall,
+        "topicInventoryShortfalls": {
+            row["topic"]: row["inventoryShortfall"]
+            for row in selected_topics if row["inventoryShortfall"]
+        },
         "withFigure": sum(row["figureCount"] > 0 for row in selected),
         "roles": dict(Counter(row["role"] for row in selected)),
         "roleShortfallTopics": [row["topic"] for row in role_blockers],
@@ -554,11 +569,15 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--per-topic", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=35)
+    parser.add_argument(
+        "--allow-topic-shortfall", action="store_true",
+        help="select every safe remaining item for sparse topics instead of failing; shortfalls stay explicit",
+    )
     args = parser.parse_args(argv)
     try:
         result = build(args.candidates, args.answer_binding, args.topic_map,
                        args.out, args.per_topic, args.batch_size, args.exclusions,
-                       args.exclude_selection)
+                       args.exclude_selection, args.allow_topic_shortfall)
     except (StarterQueueError, OSError, ValueError, KeyError) as error:
         print(f"build-cleaned-starter-queue: {error}", file=sys.stderr)
         return 2
