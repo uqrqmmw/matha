@@ -55,6 +55,8 @@ EXPECTED_CORPUS = {
     "verificationPolicy": "pdf-crop-and-answer-review-v1",
 }
 EXPECTED_REVIEW_POLICY = "owner-delegated-agent-direct-pixel-v1"
+EXPECTED_EDGE_FUNCTION_VERSION = 37
+EXPECTED_MIGRATIONS = [f"2026083000{number:02d}" for number in range(1, 12)]
 _RUNTIME_VERIFIER: Any | None = None
 _APP_LOADER_VERIFIER: Any | None = None
 _GITHUB_DELIVERY_VERIFIER: Any | None = None
@@ -179,7 +181,8 @@ def github_delivery_verifier() -> Any:
 def gate(identifier: str, label: str, status: str, summary: str,
          *, evidence: list[str] | None = None,
          blockers: list[str] | None = None,
-         phase: str = "engineering") -> dict[str, Any]:
+         phase: str = "engineering",
+         required_for_delivery: bool = True) -> dict[str, Any]:
     if status not in {"pass", "blocked", "fail"}:
         raise ValueError(f"invalid gate status: {status}")
     if phase not in {"engineering", "post-delivery"}:
@@ -192,6 +195,7 @@ def gate(identifier: str, label: str, status: str, summary: str,
         "summary": summary,
         "evidence": evidence or [],
         "blockers": blockers or [],
+        "requiredForDelivery": required_for_delivery,
     }
 
 
@@ -297,8 +301,10 @@ def validate_private_app_integration(
         if row.get(key) != expected:
             raise ReadinessError(f"私有 App 整合證據不符：{key}")
     evidence_version = str(row.get("appVersion") or "")
-    if not re.fullmatch(r"\d{4}[a-z]", evidence_version):
-        raise ReadinessError("私有 App 整合證據缺少已部署版本")
+    if evidence_version != expected_version:
+        raise ReadinessError(
+            f"完整卷證據版本過期：evidence={evidence_version or 'missing'}, current={expected_version}"
+        )
     paper_count = int(row.get("integratedPapers") or row.get("officialPapers") or 0)
     page_count = int(row.get("integratedPages") or row.get("officialPages") or 0)
     official_count = int(row.get("officialPapers") or 0)
@@ -308,20 +314,26 @@ def validate_private_app_integration(
             or official_count < 6 or official_count + regional_count != paper_count
             or answer_key_count < paper_count):
         raise ReadinessError("私有 App 題本、頁面或伺服器答案鍵計數不合法")
-    if int(row.get("edgeFunctionVersion") or 0) < 31:
-        raise ReadinessError("私有 App Edge Function 版本尚未包含正式卷安全閘門")
+    if int(row.get("edgeFunctionVersion") or 0) != EXPECTED_EDGE_FUNCTION_VERSION:
+        raise ReadinessError("完整卷清冊未綁定目前正式 Edge Function 版本")
 
     paths = {
         "assets": resolve_private_hint(str(row.get("assetManifestPathHint") or ""), private_root),
         "visual": resolve_private_hint(str(row.get("visualReviewPathHint") or ""), private_root),
         "storage": resolve_private_hint(str(row.get("storageVerificationPathHint") or ""), private_root),
         "solutions": resolve_private_hint(str(row.get("solutionManifestPathHint") or ""), private_root),
+        "officialSolutionStorage": resolve_private_hint(
+            str(row.get("officialSolutionStorageVerificationPathHint") or ""), private_root,
+        ),
     }
     hashes = {
         "assets": str(row.get("assetManifestSha256") or "").lower(),
         "visual": str(row.get("visualReviewSha256") or "").lower(),
         "storage": str(row.get("storageVerificationSha256") or "").lower(),
         "solutions": str(row.get("solutionManifestSha256") or "").lower(),
+        "officialSolutionStorage": str(
+            row.get("officialSolutionStorageVerificationSha256") or ""
+        ).lower(),
     }
     regional_fields = {
         "regionalSolutions": ("regionalSolutionManifestPathHint", "regionalSolutionManifestSha256"),
@@ -351,6 +363,9 @@ def validate_private_app_integration(
     visual = load_json(paths["visual"], "官方卷 App 視覺複核")
     storage = load_json(paths["storage"], "官方卷 Storage 回讀驗證")
     solutions = load_json(paths["solutions"], "官方完整詳解 Storage 回讀驗證")
+    official_solution_storage = load_json(
+        paths["officialSolutionStorage"], "官方完整詳解即時 Storage 回讀驗證",
+    )
     if (assets.get("kind") != "matha-official-paper-assets-v1"
             or assets.get("releaseAuthority") is not False
             or int(assets.get("paperCount") or 0) != paper_count
@@ -370,6 +385,8 @@ def validate_private_app_integration(
     if (storage.get("kind") != "matha-official-paper-storage-verification-v1"
             or storage.get("releaseAuthority") is not False
             or storage.get("readOnlyVerification") is not True
+            or storage.get("readbackMode") != "live-authenticated-download"
+            or storage.get("credentialsSerialized") is not False
             or storage.get("projectRef") != row["supabaseProjectRef"]
             or storage.get("bucket") != row["bucket"]
             or storage.get("sourceManifestSha256") != hashes["assets"]
@@ -391,6 +408,19 @@ def validate_private_app_integration(
             or int(solutions.get("readbackHashMismatches", -1)) != 0
             or len(solution_rows) != 8):
         raise ReadinessError("官方完整詳解 Storage 回讀驗證不合法")
+    if (official_solution_storage.get("kind")
+            != "matha-private-paper-solution-storage-verification-v1"
+            or official_solution_storage.get("releaseAuthority") is not False
+            or official_solution_storage.get("readOnlyVerification") is not True
+            or official_solution_storage.get("readbackMode") != "live-authenticated-download"
+            or official_solution_storage.get("credentialsSerialized") is not False
+            or official_solution_storage.get("projectRef") != row["supabaseProjectRef"]
+            or official_solution_storage.get("bucket") != "matha-solutions"
+            or official_solution_storage.get("sourceManifestSha256") != hashes["solutions"]
+            or int(official_solution_storage.get("paperCount") or 0) != 1
+            or int(official_solution_storage.get("assetCount") or 0) != 8
+            or int(official_solution_storage.get("remoteHashMismatches", -1)) != 0):
+        raise ReadinessError("官方完整詳解未通過本次即時 Storage 全量下載驗證")
     edge_source = "\n".join(
         (REPO_ROOT / path).read_text(encoding="utf-8")
         for path in (
@@ -407,6 +437,17 @@ def validate_private_app_integration(
                 or path.stat().st_size != int(asset.get("bytes") or -1)
                 or relative not in edge_source):
             raise ReadinessError(f"官方完整詳解雜湊或 Edge 引用不符：{relative}")
+    official_remote_rows = {
+        str(asset.get("file") or ""): asset
+        for asset in official_solution_storage.get("assets") or [] if isinstance(asset, dict)
+    }
+    official_local_rows = {
+        str(asset.get("file") or ""): asset for asset in solution_rows if isinstance(asset, dict)
+    }
+    if (set(official_remote_rows) != set(official_local_rows)
+            or any(official_remote_rows[path].get("sha256")
+                   != official_local_rows[path].get("sha256") for path in official_local_rows)):
+        raise ReadinessError("官方完整詳解即時回讀未與來源 manifest 全數綁定")
 
     regional_solution_count = 0
     regional_solution_pages = 0
@@ -439,6 +480,8 @@ def validate_private_app_integration(
         if (regional_storage.get("kind") != "matha-private-paper-solution-storage-verification-v1"
                 or regional_storage.get("releaseAuthority") is not False
                 or regional_storage.get("readOnlyVerification") is not True
+                or regional_storage.get("readbackMode") != "live-authenticated-download"
+                or regional_storage.get("credentialsSerialized") is not False
                 or regional_storage.get("projectRef") != row["supabaseProjectRef"]
                 or regional_storage.get("bucket") != "matha-solutions"
                 or regional_storage.get("sourceManifestSha256") != hashes["regionalSolutions"]
@@ -602,6 +645,7 @@ def validate_private_app_integration(
         f"privatePaperSourceProvenance:{len(source_pdf_ids)}:unique=1",
         f"privatePaperWholeDigests:{len(whole_paper_digests)}:unique=1",
         f"officialDetailedSolutions:{hashes['solutions']}:8:mismatch=0",
+        f"officialSolutionLiveReadback:{hashes['officialSolutionStorage']}:8:mismatch=0",
         *(
             [f"regionalDetailedSolutions:{hashes['regionalSolutions']}:{regional_solution_pages}:mismatch=0"]
             if regional_solution_pages else []
@@ -1177,6 +1221,78 @@ def audit_github_delivery(roots: list[Path], explicit: list[Path] | None = None)
     return gate(
         "github-delivery", "GitHub main、CI 與 Pages 實際交付", "pass",
         "乾淨 main 已等於 origin/main，CI 與 Pages 成功且線上四個信任檔逐位元相符",
+        evidence=[str(path), *evidence],
+    )
+
+
+def validate_supabase_delivery(path: Path) -> list[str]:
+    value = load_json(path, "Supabase runtime 交付證據")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True,
+        text=True, encoding="utf-8", check=True,
+    ).stdout.strip()
+    if (value.get("kind") != "matha-supabase-runtime-delivery-v1"
+            or value.get("version") != 1 or value.get("status") != "verified"
+            or value.get("projectRef") != "rrihysbxhsbxjteqmtdu"
+            or value.get("headSha") != head
+            or value.get("appVersion") != current_app_version()
+            or value.get("appJsSha256") != sha256(REPO_ROOT / "app.js")
+            or value.get("migrations") != EXPECTED_MIGRATIONS
+            or value.get("browserUsed") is not False
+            or value.get("openAiApiCalled") is not False
+            or value.get("credentialsSerialized") is not False):
+        raise ReadinessError("Supabase runtime 證據未綁定目前 HEAD、App 或 001–011 migration")
+    edge = value.get("edge") or {}
+    expected_files = {
+        source.name: {"sha256": sha256(source), "bytes": source.stat().st_size}
+        for source in (REPO_ROOT / "supabase" / "functions" / "openai-proxy").glob("*.ts")
+        if not source.name.endswith(".test.ts")
+    }
+    actual_files = {
+        str(row.get("file") or ""): {
+            "sha256": row.get("sha256"), "bytes": row.get("bytes"),
+        }
+        for row in edge.get("sourceFiles") or [] if isinstance(row, dict)
+    }
+    probe = value.get("contractProbe") or {}
+    if (edge.get("slug") != "openai-proxy"
+            or edge.get("status") != "ACTIVE"
+            or int(edge.get("version") or 0) != EXPECTED_EDGE_FUNCTION_VERSION
+            or actual_files != expected_files
+            or probe != {"optionsStatus": 204, "unauthenticatedPostStatus": 401}):
+        raise ReadinessError("遠端 Edge 版本、production source 或未登入拒絕合約不符")
+    return [
+        f"supabaseDelivery:{sha256(path)}", f"head:{head}",
+        "migrations:001-011:exact", f"edge:v{EXPECTED_EDGE_FUNCTION_VERSION}:sourceExact",
+        "edgeProbe:options=204,unauthenticatedPost=401",
+    ]
+
+
+def audit_supabase_delivery(roots: list[Path],
+                            explicit: list[Path] | None = None) -> dict[str, Any]:
+    candidates = list(explicit or [])
+    candidates.extend(find_json_files(roots, ["*supabase*runtime*delivery*.json"]))
+    unique = list(dict.fromkeys(path.resolve() for path in candidates if path.is_file()))
+    valid: list[tuple[datetime, Path, list[str]]] = []
+    errors: list[str] = []
+    for path in unique:
+        try:
+            evidence = validate_supabase_delivery(path)
+            value = load_json(path, "Supabase runtime 交付證據")
+            valid.append((parse_timestamp(value.get("verifiedAt"), "Supabase runtime 交付"),
+                          path, evidence))
+        except (OSError, subprocess.SubprocessError, ReadinessError) as error:
+            errors.append(str(error))
+    if not valid:
+        return gate(
+            "supabase-runtime-delivery", "Supabase DB 與 Edge 實際交付", "blocked",
+            errors[0] if errors else "目前 HEAD 尚無遠端 migration／Edge exact-source 證據",
+            blockers=["以只讀 verifier 核對 migration 001–011、Edge source 與 401/204 合約"],
+        )
+    _, path, evidence = max(valid, key=lambda row: row[0])
+    return gate(
+        "supabase-runtime-delivery", "Supabase DB 與 Edge 實際交付", "pass",
+        "遠端 migration 001–011、Edge v37 production source 與未登入拒絕合約均和目前 HEAD 一致",
         evidence=[str(path), *evidence],
     )
 
@@ -2193,6 +2309,118 @@ def validate_starter_review_files(signed_path: Path, plan_path: Path,
     ]
 
 
+def _source_contract_gate(identifier: str, label: str, paths: list[Path],
+                          required_text: list[str], summary: str) -> dict[str, Any]:
+    try:
+        missing = [str(path.relative_to(REPO_ROOT)) for path in paths if not path.is_file()]
+        if missing:
+            raise ReadinessError(f"缺少工程檔案：{', '.join(missing)}")
+        source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+        absent = [text for text in required_text if text not in source]
+        if absent:
+            raise ReadinessError(f"驗收案例未覆蓋：{absent[0]}")
+        evidence = canonical_sha({
+            str(path.relative_to(REPO_ROOT)).replace("\\", "/"): sha256(path)
+            for path in paths
+        })
+        return gate(identifier, label, "pass", summary, evidence=[f"sourceSet:{evidence}"])
+    except (OSError, ReadinessError) as error:
+        return gate(identifier, label, "fail", str(error))
+
+
+def audit_core_feature_contracts() -> list[dict[str, Any]]:
+    """Make core App contracts first-class gates instead of hiding them in CI."""
+    package_path = REPO_ROOT / "package.json"
+    ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    pages_path = REPO_ROOT / ".github" / "workflows" / "pages.yml"
+    try:
+        package = load_json(package_path, "package.json")
+        scripts = package.get("scripts") or {}
+        full_command = "npm test && npm run test:figures && npm run test:edge"
+        if (full_command not in ci_path.read_text(encoding="utf-8")
+                or full_command not in pages_path.read_text(encoding="utf-8")
+                or not all(isinstance(scripts.get(name), str) and scripts[name]
+                           for name in ("test", "test:figures", "test:postgres", "test:edge"))):
+            raise ReadinessError("CI 與 Pages 尚未同時執行 Web、Python/PostgreSQL、Edge 全套測試")
+        workflow_sha = canonical_sha({
+            "package": sha256(package_path), "ci": sha256(ci_path),
+            "pages": sha256(pages_path),
+        })
+        pipeline = gate(
+            "core-test-pipeline", "核心測試管線", "pass",
+            "CI 與 Pages 都明確執行 Web、Python/PostgreSQL 與完整 Edge 測試",
+            evidence=[f"workflowSet:{workflow_sha}"],
+        )
+    except (OSError, ReadinessError) as error:
+        pipeline = gate("core-test-pipeline", "核心測試管線", "fail", str(error))
+
+    migration_paths = sorted((REPO_ROOT / "supabase" / "migrations").glob("2026083000*.sql"))
+    expected_migrations = {f"2026083000{number:02d}" for number in range(1, 12)}
+    actual_migrations = {path.stem.split("_")[0] for path in migration_paths}
+    grading_paths = [
+        REPO_ROOT / "tests" / "paper-grade-idempotency.test.js",
+        REPO_ROOT / "tests" / "learning-loop.test.js",
+        REPO_ROOT / "tests" / "paper-detail-gold.test.js",
+        REPO_ROOT / "supabase" / "functions" / "openai-proxy" / "paper-grade-model-input.test.ts",
+        REPO_ROOT / "supabase" / "functions" / "openai-proxy" / "paper-correction-grade-model-input.test.ts",
+        REPO_ROOT / "supabase" / "functions" / "openai-proxy" / "paper-detail-model-input.test.ts",
+        *migration_paths,
+    ]
+    grading = _source_contract_gate(
+        "grading-correction-engineering", "批改與隔日訂正工程合約", grading_paths,
+        [
+            "逐題詳批只接受與工作、輸入、結果完全一致的不可變完成收據",
+            "隔日訂正保存失敗時不呼叫逐題詳解",
+            "first pass generation 0 pending is fail-closed and does not issue/reinvoke another generation",
+            "browser composites and messages are not part of the authority API",
+        ],
+        "首輪批改、隔日訂正、第一錯步詳批、去重與不可變收據都有獨立驗收案例",
+    )
+    if actual_migrations != expected_migrations:
+        grading = gate(
+            "grading-correction-engineering", "批改與隔日訂正工程合約", "fail",
+            f"正式 DB migration 不完整：{len(actual_migrations)} / 11",
+        )
+
+    durability = _source_contract_gate(
+        "tablet-safety-engineering", "長考保存、救援與平板互動工程合約",
+        [
+            REPO_ROOT / "tests" / "paper-stress.test.js",
+            REPO_ROOT / "tests" / "paper-stability.test.js",
+            REPO_ROOT / "tests" / "learning-loop.test.js",
+            REPO_ROOT / "tests" / "ui.test.js",
+        ],
+        [
+            "6 頁、1200 筆 journal 壓力合併不遺失不重複",
+            "虛擬 80 分鐘共 960 次 heartbeat 後當機",
+            "當機恢復必須讓當機前與重載後的整份筆跡 SHA-256 完全相同",
+            "S Pen 側鍵暫時切換橡皮擦",
+            "原版模考支援雙指以手勢中心縮放",
+            "原版模考單指水平滑動翻頁",
+            "內建 PDF 生成器輸出真正多頁 PDF 位元組",
+        ],
+        "長考增量保存、當機恢復、S Pen、雙指縮放、滑動翻頁與 PDF 救援均有獨立驗收案例",
+    )
+
+    personalization = _source_contract_gate(
+        "personalization-report-engineering", "個人化推薦與老師週報工程合約",
+        [
+            REPO_ROOT / "tests" / "learner-model.test.js",
+            REPO_ROOT / "tests" / "learning-loop.test.js",
+            REPO_ROOT / "tests" / "ui.test.js",
+        ],
+        [
+            "教材精選冷啟動與能力變化都有明確三帶配額",
+            "老師具名修正保留 AI 原判與每次歷史",
+            "老師單頁只把跨兩題以上的流程錯誤列為反覆斷點",
+            "首頁只列最多兩個真的到期閉環",
+            "推薦題換題與品質回報不會污染作答證據",
+        ],
+        "弱點證據、推薦限流、冷啟動、首頁閉環與老師報告都有獨立驗收案例",
+    )
+    return [pipeline, grading, durability, personalization]
+
+
 def audit_starter(work_root: Path) -> tuple[
         dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     search_root = work_root.parent if work_root.parent.is_dir() else work_root
@@ -2465,7 +2693,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     paper_engineering, calibration = audit_full_papers(
         args.inventory, args.private_root, evidence_roots, args.capability_evidence,
     )
-    gates = [paper_engineering]
+    gates = [paper_engineering, *audit_core_feature_contracts()]
     gates.append(audit_device([args.downloads, args.private_root], selected_paper, args.device_audit))
     gates.append(calibration)
     gates.append(audit_score_stability(
@@ -2477,21 +2705,38 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         args.release_work_root,
     )
     gates.extend([review, deployment_gate, runtime_gate, app_loader_gate])
+    starter_capacity = gate(
+        "starter-capacity", "Starter 題庫容量與難度平衡", "blocked",
+        "目前正式庫 217 題，尚未達藍圖 M3 的 350–500 題",
+        evidence=["current:217", "targetMinimum:350", "remainingMinimum:133"],
+        blockers=["從既有未審批次繼續逐題像素與官方答案 QA，不重跑付費 OCR"],
+        required_for_delivery=False,
+    )
+    gates.append(starter_capacity)
     gates.append(audit_github_delivery(
         [args.private_root, args.downloads], args.github_delivery,
     ))
+    gates.append(audit_supabase_delivery(
+        [args.private_root, args.downloads], args.supabase_delivery,
+    ))
     engineering = [row for row in gates if row["phase"] == "engineering"]
     post_delivery = [row for row in gates if row["phase"] == "post-delivery"]
-    engineering_complete = all(row["status"] == "pass" for row in engineering)
+    core_delivery_ready = all(
+        row["status"] == "pass" for row in engineering if row["requiredForDelivery"]
+    )
+    construction_complete = all(row["status"] == "pass" for row in engineering)
     capability_validated = all(row["status"] == "pass" for row in post_delivery)
+    all_goals_complete = construction_complete and capability_validated
     return {
-        "kind": "matha-system-blueprint-readiness-v2",
+        "kind": "matha-system-blueprint-readiness-v3",
         "generatedAt": datetime.now(timezone(timedelta(hours=8))).isoformat(),
         "appVersion": current_app_version(),
-        "complete": engineering_complete,
-        "engineeringComplete": engineering_complete,
+        "complete": all_goals_complete,
+        "coreDeliveryReady": core_delivery_ready,
+        "engineeringComplete": construction_complete,
+        "constructionComplete": construction_complete,
         "capabilityValidated": capability_validated,
-        "allGoalsComplete": engineering_complete and capability_validated,
+        "allGoalsComplete": all_goals_complete,
         "counts": {
             "pass": sum(row["status"] == "pass" for row in gates),
             "blocked": sum(row["status"] == "blocked" for row in gates),
@@ -2515,21 +2760,23 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def markdown(report: dict[str, Any]) -> str:
-    status_label = {"pass": "通過", "blocked": "待外部證據", "fail": "不通過"}
+    status_label = {"pass": "通過", "blocked": "尚未完成", "fail": "不通過"}
     lines = [
         "# 數A系統完工稽核",
         "",
         f"產生時間：{report['generatedAt']}  ",
         f"App 版本：{report['appVersion']}  ",
-        f"工程交付：{'已完成' if report['engineeringComplete'] else '尚未完成'}  ",
+        f"目前核心可交付：{'是' if report['coreDeliveryReady'] else '否'}  ",
+        f"藍圖工程全數完成：{'是' if report['engineeringComplete'] else '否'}  ",
         f"能力驗證：{'已完成' if report['capabilityValidated'] else '待真實使用累積'}",
+        f"整體目標完成：{'是' if report['complete'] else '否'}",
         "",
         "| 階段 | 關卡 | 狀態 | 證據結論 |",
         "|---|---|---|---|",
     ]
     for row in report["gates"]:
         summary = str(row["summary"]).replace("|", "／").replace("\n", " ")
-        phase_label = "工程交付" if row["phase"] == "engineering" else "交付後證據"
+        phase_label = "工程施工" if row["phase"] == "engineering" else "交付後證據"
         lines.append(f"| {phase_label} | {row['label']} | {status_label[row['status']]} | {summary} |")
     for row in report["gates"]:
         lines.extend(["", f"## {row['label']}", "", f"狀態：{status_label[row['status']]}。{row['summary']}"])
@@ -2553,21 +2800,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device-audit", type=Path, action="append")
     parser.add_argument("--capability-evidence", type=Path, action="append")
     parser.add_argument("--github-delivery", type=Path, action="append")
+    parser.add_argument("--supabase-delivery", type=Path, action="append")
     parser.add_argument("--private-eval-root", type=Path, default=private_root / "matha-private-evals")
     parser.add_argument("--detail-gold", type=Path, default=private_root / "matha-private-evals" / "paper-mock-1-detail-gold-v1.json")
     parser.add_argument("--detail-prediction", type=Path)
     parser.add_argument("--release-work-root", type=Path, default=private_root / "matha-starter-v4-batch-01-release-workflow-20260829")
     parser.add_argument("--output", type=Path, default=desktop / "數學系統完工稽核.json")
-    parser.add_argument("--require-complete", action="store_true")
+    parser.add_argument("--require-delivery-ready", action="store_true")
+    parser.add_argument("--require-complete", action="store_true",
+                        help="require the whole blueprint, including M3 and real-use outcomes")
     args = parser.parse_args(argv)
     report = build_report(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     md_path = args.output.with_suffix(".md")
     md_path.write_text(markdown(report), encoding="utf-8")
-    print(json.dumps({"complete": report["complete"], "engineeringComplete": report["engineeringComplete"],
+    print(json.dumps({"complete": report["complete"], "coreDeliveryReady": report["coreDeliveryReady"],
+                      "engineeringComplete": report["engineeringComplete"],
                       "capabilityValidated": report["capabilityValidated"], "counts": report["counts"],
                       "json": str(args.output), "markdown": str(md_path)}, ensure_ascii=False))
+    if args.require_delivery_ready and not report["coreDeliveryReady"]:
+        return 1
     return 1 if args.require_complete and not report["complete"] else 0
 
 

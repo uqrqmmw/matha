@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -526,6 +527,7 @@ class BlueprintReadinessTests(unittest.TestCase):
         write_json(storage, {
             "kind": "matha-official-paper-storage-verification-v1",
             "releaseAuthority": False, "readOnlyVerification": True,
+            "readbackMode": "live-authenticated-download", "credentialsSerialized": False,
             "projectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-papers",
             "sourceManifestSha256": digest(asset_manifest), "paperCount": 6,
             "assetCount": 48, "remoteHashMismatches": 0, "assets": storage_assets,
@@ -554,6 +556,16 @@ class BlueprintReadinessTests(unittest.TestCase):
             "remoteListingExact": True, "readbackHashMismatches": 0,
             "assets": solution_assets,
         })
+        solution_storage = solution_root / "official-solution-storage.json"
+        write_json(solution_storage, {
+            "kind": "matha-private-paper-solution-storage-verification-v1",
+            "releaseAuthority": False, "readOnlyVerification": True,
+            "readbackMode": "live-authenticated-download", "credentialsSerialized": False,
+            "projectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-solutions",
+            "sourceManifestSha256": digest(solution_manifest),
+            "paperCount": 1, "assetCount": 8, "remoteHashMismatches": 0,
+            "assets": solution_assets,
+        })
         return ({
             "status": "deployed-and-hash-verified", "appVersion": app_version,
             "supabaseProjectRef": "rrihysbxhsbxjteqmtdu", "bucket": "matha-papers",
@@ -565,7 +577,10 @@ class BlueprintReadinessTests(unittest.TestCase):
             "storageVerificationSha256": digest(storage),
             "solutionManifestPathHint": str(solution_manifest),
             "solutionManifestSha256": digest(solution_manifest),
-            "answerKeyPapersBehindPostSubmitGate": 7, "edgeFunctionVersion": 34,
+            "officialSolutionStorageVerificationPathHint": str(solution_storage),
+            "officialSolutionStorageVerificationSha256": digest(solution_storage),
+            "answerKeyPapersBehindPostSubmitGate": 7,
+            "edgeFunctionVersion": audit.EXPECTED_EDGE_FUNCTION_VERSION,
             "officialDetailedSolutionPapers": 1, "officialSolutionPages": 8,
             "solutionStorageHashMismatches": 0,
             "freshnessStillRequiresUserConfirmation": True,
@@ -684,6 +699,28 @@ class BlueprintReadinessTests(unittest.TestCase):
             )
             self.assertEqual(engineering["status"], "pass")
             self.assertEqual(calibration["status"], "pass")
+
+    def test_full_paper_gate_rejects_stale_app_or_cached_storage_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            inventory, integration, _ = self.private_paper_inventory_fixture(root)
+            value = json.loads(inventory.read_text(encoding="utf-8"))
+            value["privateAppIntegration"]["appVersion"] = "0000a"
+            write_json(inventory, value)
+            engineering, _ = audit.audit_full_papers(inventory, root)
+            self.assertEqual(engineering["status"], "fail")
+            self.assertIn("evidence=0000a", engineering["summary"])
+
+            value["privateAppIntegration"]["appVersion"] = audit.current_app_version()
+            storage_path = Path(value["privateAppIntegration"]["storageVerificationPathHint"])
+            storage_value = json.loads(storage_path.read_text(encoding="utf-8"))
+            storage_value["readbackMode"] = "offline-cache"
+            write_json(storage_path, storage_value)
+            value["privateAppIntegration"]["storageVerificationSha256"] = digest(storage_path)
+            write_json(inventory, value)
+            engineering, _ = audit.audit_full_papers(inventory, root)
+            self.assertEqual(engineering["status"], "fail")
+            self.assertIn("Storage", engineering["summary"])
 
     def test_full_paper_gate_rejects_duplicate_app_source_identity(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1079,6 +1116,35 @@ class BlueprintReadinessTests(unittest.TestCase):
                 audit.validate_github_delivery(
                     path, command_runner=runner, fetcher=catalog_drift,
                 )
+
+    def test_supabase_delivery_binds_current_head_migrations_and_exact_edge_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "supabase-runtime-delivery.json"
+            edge_root = ROOT / "supabase" / "functions" / "openai-proxy"
+            source_files = [{
+                "file": source.name, "sha256": digest(source), "bytes": source.stat().st_size,
+            } for source in edge_root.glob("*.ts") if not source.name.endswith(".test.ts")]
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                text=True, encoding="utf-8", check=True,
+            ).stdout.strip()
+            write_json(path, {
+                "kind": "matha-supabase-runtime-delivery-v1", "version": 1,
+                "status": "verified", "verifiedAt": datetime.now(timezone.utc).isoformat(),
+                "projectRef": "rrihysbxhsbxjteqmtdu", "headSha": head,
+                "appVersion": audit.current_app_version(), "appJsSha256": digest(ROOT / "app.js"),
+                "migrations": audit.EXPECTED_MIGRATIONS,
+                "edge": {"slug": "openai-proxy", "version": audit.EXPECTED_EDGE_FUNCTION_VERSION,
+                         "status": "ACTIVE", "verifyJwt": False, "sourceFiles": source_files},
+                "contractProbe": {"optionsStatus": 204, "unauthenticatedPostStatus": 401},
+                "browserUsed": False, "openAiApiCalled": False, "credentialsSerialized": False,
+            })
+            self.assertIn("migrations:001-011:exact", audit.validate_supabase_delivery(path))
+            value = json.loads(path.read_text(encoding="utf-8"))
+            value["edge"]["sourceFiles"][0]["sha256"] = "0" * 64
+            write_json(path, value)
+            with self.assertRaisesRegex(audit.ReadinessError, "Edge"):
+                audit.validate_supabase_delivery(path)
 
     def test_owner_delegated_multi_batch_starter_is_transparent_and_hash_bound(self):
         with tempfile.TemporaryDirectory() as temp:

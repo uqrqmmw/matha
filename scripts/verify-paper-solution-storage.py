@@ -8,9 +8,15 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from scripts.storage_live_readback import download_assets
+except ModuleNotFoundError:  # direct `python scripts/...py` execution
+    from storage_live_readback import download_assets
 
 
 KIND = "matha-private-paper-solution-storage-verification-v1"
@@ -26,6 +32,20 @@ def sha256(path: Path) -> str:
 
 def expected_assets(manifest_path: Path) -> dict[str, dict[str, Any]]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("kind") == "matha-official-solution-assets-v1":
+        source_id = str(manifest.get("appSourceId") or "")
+        assets = manifest.get("assets") or []
+        bindings = manifest.get("questionPageMap") or []
+        if (not source_id or len(assets) < 1 or len(bindings) != 20
+                or int(manifest.get("sourcePages") or 0) != len(assets)):
+            raise ValueError("official solution manifest is invalid")
+        rows: dict[str, dict[str, Any]] = {}
+        for row in assets:
+            relative = str(row.get("file") or "").replace("\\", "/")
+            if not relative.startswith(f"{source_id}/") or relative in rows:
+                raise ValueError("official solution asset path is invalid or duplicated")
+            rows[relative] = row
+        return rows
     if (manifest.get("kind") != "matha-private-paper-solution-assets-v1"
             or int(manifest.get("paperCount") or 0) < 1):
         raise ValueError("private solution asset manifest is invalid")
@@ -97,7 +117,10 @@ def list_remote(npx: str, project_ref: str, bucket: str,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset-manifest", required=True, type=Path)
-    parser.add_argument("--readback-root", required=True, type=Path)
+    parser.add_argument("--readback-root", type=Path,
+                        help="prior cache; accepted only together with --offline-readback")
+    parser.add_argument("--offline-readback", action="store_true",
+                        help="diagnostic only; cannot satisfy the live release gate")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--project-ref", required=True)
     parser.add_argument("--bucket", default="matha-solutions")
@@ -107,13 +130,26 @@ def main() -> int:
     expected = expected_assets(manifest_path)
     source_ids = sorted({relative.split("/", 1)[0] for relative in expected})
     remote_names = list_remote(args.npx, args.project_ref, args.bucket, source_ids)
-    verified = verify_readback(expected, args.readback_root.resolve(), remote_names)
+    if args.offline_readback:
+        if args.readback_root is None:
+            raise ValueError("--offline-readback requires --readback-root")
+        verified = verify_readback(expected, args.readback_root.resolve(), remote_names)
+        readback_mode = "offline-cache"
+    else:
+        with tempfile.TemporaryDirectory(prefix="matha-solution-live-readback-") as temporary:
+            readback_root = download_assets(
+                expected, Path(temporary), project_ref=args.project_ref,
+                bucket=args.bucket, npx=args.npx,
+            )
+            verified = verify_readback(expected, readback_root, remote_names)
+        readback_mode = "live-authenticated-download"
     version = subprocess.run([args.npx, "supabase", "--version"], capture_output=True,
                              text=True, encoding="utf-8", errors="replace", timeout=60,
                              check=True).stdout.strip()
     output = {
         "kind": KIND, "verifiedAt": datetime.now(timezone.utc).isoformat(),
         "releaseAuthority": False, "readOnlyVerification": True,
+        "readbackMode": readback_mode, "credentialsSerialized": False,
         "projectRef": args.project_ref, "bucket": args.bucket,
         "supabaseCliVersion": version, "sourceManifestSha256": sha256(manifest_path),
         "paperCount": len(source_ids), "assetCount": len(verified),

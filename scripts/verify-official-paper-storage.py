@@ -13,9 +13,15 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from scripts.storage_live_readback import download_assets
+except ModuleNotFoundError:  # direct `python scripts/...py` execution
+    from storage_live_readback import download_assets
 
 
 KIND = "matha-official-paper-storage-verification-v1"
@@ -119,7 +125,10 @@ def list_remote(npx: str, bucket: str, paper_ids: list[str]) -> dict[str, list[s
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset-manifest", required=True, type=Path)
-    parser.add_argument("--readback-root", required=True, type=Path)
+    parser.add_argument("--readback-root", type=Path,
+                        help="prior cache; accepted only together with --offline-readback")
+    parser.add_argument("--offline-readback", action="store_true",
+                        help="diagnostic only; cannot satisfy the live release gate")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--project-ref", required=True)
     parser.add_argument("--bucket", default="matha-papers")
@@ -127,16 +136,29 @@ def main() -> int:
     args = parser.parse_args()
 
     manifest_path = args.asset_manifest.resolve()
-    readback_root = args.readback_root.resolve()
     expected = expected_assets(manifest_path)
     paper_ids = sorted({relative.split("/", 1)[0] for relative in expected})
     remote_names = list_remote(args.npx, args.bucket, paper_ids)
-    verified = verify_readback(expected, readback_root, remote_names)
+    if args.offline_readback:
+        if args.readback_root is None:
+            raise ValueError("--offline-readback requires --readback-root")
+        verified = verify_readback(expected, args.readback_root.resolve(), remote_names)
+        readback_mode = "offline-cache"
+    else:
+        with tempfile.TemporaryDirectory(prefix="matha-paper-live-readback-") as temporary:
+            readback_root = download_assets(
+                expected, Path(temporary), project_ref=args.project_ref,
+                bucket=args.bucket, npx=args.npx,
+            )
+            verified = verify_readback(expected, readback_root, remote_names)
+        readback_mode = "live-authenticated-download"
     output = {
         "kind": KIND,
         "verifiedAt": datetime.now(timezone.utc).isoformat(),
         "releaseAuthority": False,
         "readOnlyVerification": True,
+        "readbackMode": readback_mode,
+        "credentialsSerialized": False,
         "projectRef": args.project_ref,
         "bucket": args.bucket,
         "supabaseCliVersion": supabase_version(args.npx),

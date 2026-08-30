@@ -16,6 +16,21 @@ SPEC.loader.exec_module(storage)
 
 
 class PaperSolutionStorageTests(unittest.TestCase):
+    def test_official_solution_manifest_is_supported_for_live_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "manifest.json"
+            path.write_text(json.dumps({
+                "kind": "matha-official-solution-assets-v1",
+                "appSourceId": "paper-official-110-trial",
+                "sourcePages": 1,
+                "questionPageMap": [1] * 20,
+                "assets": [{"file": "paper-official-110-trial/page-01.png"}],
+            }), encoding="utf-8")
+            self.assertEqual(
+                list(storage.expected_assets(path)),
+                ["paper-official-110-trial/page-01.png"],
+            )
+
     def test_expected_assets_requires_twenty_bound_questions(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "manifest.json"
