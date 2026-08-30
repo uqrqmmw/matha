@@ -67,7 +67,7 @@ OpenAI 付費 API 已透過 Supabase Edge Function 實際呼叫成功（HTTP 200
 - **0712d 內容/狀態分家**：題庫/重點/公式卡進 `CONTENT.packs`（IndexedDB＋雲端 content_packs 表），S 只剩輕狀態；存取走 `extBankArr/extFlashArr/extNotesArr`；`probeContent` 偵測表→啟用+`migrateContentFromS` 遷移；表沒建則維持舊行為（進 S.extbank）零風險降級。
 - **0712e**：訂正重算（答錯→看解答攤開再手寫一遍，共用 side 支線 `cfg.redo`）、手機筆記卡手指畫線（`inkSurface.allowTouch`）、口訣快答 `startMnQuiz`（看口訣選概念，取代召回難度過高的口訣背卡）。
 - **0712f**：修內容匯入持久化競態（`reloadAfterContent`＝寫入→讀回驗證→才 reload；`idbOpen` 快取連線）。
-- **0712g**：模擬葛雁用講義的 6 情境回報修正——mock/批改面板 fill 正解走 mDispOpt、錯題卡/衝刺/批改補 `q.stem`＋選項、級分門檻校正 72/78、薄單元標庫存、`buildPaper` 題型配額。
+- **0712g**：模擬實際使用者用講義的 6 情境回報修正——mock/批改面板 fill 正解走 mDispOpt、錯題卡/衝刺/批改補 `q.stem`＋選項、級分門檻校正 72/78、薄單元標庫存、`buildPaper` 題型配額。
 - **0712h**：對抗式 code review 修 10 bug——備份還原三情境丟資料（改 reloadAfterContent＋非分家折回 S.ext*）、`buildPaper` 難度分散（改難度桶+題型配額=易5中5難2/單3多2填7）、`pullContent` 聯集、同步 churn（只在內容變才重傳）、`contentInit` 取較新來源、手指雙指捲動死指。
 - **十本講義進料**：4521 題+309 重點（私有夾 `20260711-ghost/`，絕不進 repo）；管線見桌面 handoff §3。
 - **還沒做（只有飼主能做，卡憑證/硬體）**：Supabase 建 content_packs 表、匯入內容、平板真機 smoke——見桌面 handoff §7。

@@ -574,6 +574,7 @@ test('真機驗收用實際翻頁 P95、落筆保存、100 分鐘、恢復與 PD
 
 test('真機量測事件與樣本都有固定上限，換 app 版本也不會清掉同一回證據', () => {
   const { run } = loadApp();
+  const expectedVersion = plain(run('APP_VER'));
   const result = plain(run(`(() => {
     const runRow = { id:'bounded-audit', sourceId:'paper-mock-3', remainingMs:6000000, runtimeAudit:{
       schema:PAPER_RUNTIME_AUDIT_SCHEMA, appVersion:'older-version', runId:'bounded-audit', sourceId:'paper-mock-3',
@@ -593,10 +594,11 @@ test('真機量測事件與樣本都有固定上限，換 app 版本也不會清
       firstSample:same.samples[0].at,
     };
   })()`));
+  assert.equal(result.lastVersion, expectedVersion);
+  delete result.lastVersion;
   assert.deepEqual(result, {
     sameObject:true,
     originalVersion:'older-version',
-    lastVersion:'0829w',
     events:240,
     firstEvent:160,
     samples:220,

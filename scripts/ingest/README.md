@@ -2,6 +2,8 @@
 
 來源資料夾目前確認有 **25 份數學 PDF、6,720 頁**：24 本主教材共 6,210 頁，另含 510 頁《週攻略數學 A》。`textbook-catalog.js` 已逐份固定檔名、頁數與 PDF SHA-256；舊的 14 本／3,786 頁本機索引只是早期製作基線，不是完整藏書數。這個目錄的工具把一本書變成可人工複核的 section map、題目候選、圖形候選與原卷裁切，並在人工複核後轉成正式題包格式。
 
+**目前工程收尾限制：**不可使用內建 browser、不可呼叫 OpenAI API、不可重跑 YesScanner 或其他付費 OCR／去筆跡。下文的供應商指令只記錄既有管線與事故復原方式，不是目前允許重跑的施工步驟；現階段只能從已保存且雜湊驗證的產物續作。
+
 ## 硬規則
 
 - **OCR 只作索引。** 題目顯示真值一律是原 PDF 的裁切像素；OCR 文字只用來切段、配對與搜尋，記錄裡的欄位名稱就叫 `ocrIndex`。
@@ -291,7 +293,7 @@ python scripts/ingest/intersect-cleaned-human-reviews.py \
   --out "<repo 外>/cleaned-dual-review-candidates.json"
 ```
 
-驗證器會拒絕未完成審核、AI／bot 審核者、無時區時間戳、題目缺漏或重複、來源／題面／答案／紅圖雜湊漂移、通過題仍有未勾安全項、缺少或矛盾的 `structuredAnswer`，以及答案綁定隔離題。只有去筆跡像素 QA 與答案數學 QA 都通過的題會進交集。輸出仍固定 `releaseAuthority:false`、`uploadPerformed:false`；還需要另一道具名真人發布簽核及私有素材部署，不能直接被正式 app 載入。
+這一節是具名真人雙審核路徑，因此驗證器會拒絕未完成審核、AI／bot 審核者、無時區時間戳、題目缺漏或重複、來源／題面／答案／紅圖雜湊漂移、通過題仍有未勾安全項、缺少或矛盾的 `structuredAnswer`，以及答案綁定隔離題。只有兩道 QA 都通過的題會進交集。輸出仍固定 `releaseAuthority:false`、`uploadPerformed:false`；後續還要完成具名真人簽核，或改走擁有者明確授權且透明標記的 owner-delegated 完整審核路徑，再部署私有素材，不能直接被正式 App 載入。
 
 正式 v4 批次不必手動搬路徑。兩份審核 JSON 下載後，可由協調器依 `candidateManifestSha256` 自動找出這一批最新且不歧義的匯出檔，完成交集並建立固定十題簽核包：
 
@@ -308,9 +310,9 @@ python scripts/ingest/advance-starter-release.py finalize `
 
 它會驗簽、產生具名來源與不可變 bundle，並修正原子搬移後 upload-plan 的本機 bucket root；最後只停在 `ready-for-explicit-supabase-deploy`，不會自行切換正式 alias。
 
-### 5d. Starter 具名發布、版本化上傳與可驗證回滾
+### 5d. Starter 發布授權、版本化上傳與可驗證回滾
 
-雙審核交集完成後，用 `prepare-starter-private-release.py prepare` 把題圖、14 單元映射、真人輸入的正解與原始 catalog PDF 重新交叉核對。工具不呼叫 OCR 或模型；任一 PDF／題圖／答案圖／題號／頁碼／單元／正解雜湊不一致即停止。它產生 image-first 私有題源、版本化題圖路徑，以及由 exact source hash 決定的固定 10 題視覺抽查頁：
+安全審核交集完成後，用 `prepare-starter-private-release.py prepare` 把題圖、14 單元映射、可判分正解與原始 catalog PDF 重新交叉核對。工具不呼叫 OCR 或模型；任一 PDF／題圖／答案圖／題號／頁碼／單元／正解雜湊不一致即停止。它產生 image-first 私有題源、版本化題圖路徑，以及由 exact source hash 決定的固定 10 題視覺抽查頁：
 
 ```powershell
 python scripts/ingest/prepare-starter-private-release.py prepare `
@@ -320,13 +322,24 @@ python scripts/ingest/prepare-starter-private-release.py prepare `
   --output "<repo 外>/batch-01-release-preparation"
 ```
 
-具名真人在 `release-review.html` 對照即將發布的題面、官方答案與 App 判分答案，十題都確認後匯出 `starter-private-release-signoff.json`。再以 `finalize` 驗證全部 exact hash、抽查題號與簽核人；AI／bot 名稱、未勾抽查、改過的題源或資產都會被拒絕：
+發布授權有兩條互斥路徑，不能混在同一 release：
+
+- **具名真人路徑：**具名真人在 `release-review.html` 對照題面、官方答案與 App 判分答案，十題都確認後匯出 `starter-private-release-signoff.json`；`finalize` 會拒絕 AI／bot 名稱、未勾抽查或任何 hash drift。
+- **owner-delegated 路徑：**擁有者明確授權代理完成整批直接像素／答案審核；每份授權、執行者、題目決策及審核檔 SHA-256 必須完整綁定，輸出明列 `humanPixelReviewClaimed:false`。`finalize-owner-delegated` 接受這種透明代理審核，不要求冒充具名真人。本次 217 題 release 使用此路徑。
 
 ```powershell
+# 具名真人路徑
 python scripts/ingest/prepare-starter-private-release.py finalize `
   --source "<準備目錄>/unsigned-private-question-source.json" `
   --asset-manifest "<準備目錄>/asset-manifest.json" `
   --signoff "<真人下載>/starter-private-release-signoff.json" `
+  --output "<準備目錄>/signed-private-question-source.json"
+
+# 或：owner-delegated 路徑；每份直接審核依簽核鏈順序重複 --delegated-review
+python scripts/ingest/prepare-starter-private-release.py finalize-owner-delegated `
+  --source "<準備目錄>/unsigned-private-question-source.json" `
+  --asset-manifest "<準備目錄>/asset-manifest.json" `
+  --delegated-review "<repo 外>/owner-delegated-review-01.json" `
   --output "<準備目錄>/signed-private-question-source.json"
 
 python scripts/ingest/assemble-private-release.py `
@@ -335,7 +348,7 @@ python scripts/ingest/assemble-private-release.py `
   --output "<repo 外>/batch-01-upload-bundle"
 ```
 
-Bundle 中所有題包、題圖與版本 manifest 都放在不可變的 `releases/<releaseId>/...`；固定 alias `manifest-mistral-ocr4-verified-v1.json` 只在最後一步切換。`deploy-private-release.py deploy` 會先上傳並逐檔回讀驗 SHA-256，再次確認 alias 未被別人改動，最後才 upsert alias，並把上一版 alias 原始 bytes 保存於 repo 外的 deployment record。部署記錄不保存 service key。正式執行時金鑰只從環境讀取：
+Bundle 中所有題包、題圖與版本 manifest 都放在不可變的 `releases/<releaseId>/...`；固定 alias `manifest-mistral-ocr4-verified-v1.json` 只在最後一步切換。`deploy-private-release.py deploy` 會先上傳並逐檔回讀驗 SHA-256，再次確認 alias 未被別人改動；在 upsert alias **之前**，先以原子寫檔把上一版 alias 原始 bytes 與新舊雜湊保存於 repo 外的 prepared deployment record。即使程序剛好在 alias 請求送出後中斷，既有 record 仍足以安全回滾；成功回讀新 alias 後才把狀態改為 `deployed`。部署記錄不保存 service key。正式執行時金鑰只從環境讀取：
 
 ```powershell
 $env:SUPABASE_URL = "https://<project-ref>.supabase.co"
@@ -353,6 +366,41 @@ python scripts/ingest/deploy-private-release.py rollback `
   --deployment-record "<repo 外>/deployment-record.json" `
   --record "<repo 外>/rollback-record.json"
 ```
+
+第一次部署 D1 後必須用綁定 D1 的 record 實際回滾，再用同一 bundle 產生時間較晚且檔案不同的最終部署 D2。接著執行 Storage 全量真值回讀；驗證器會回讀固定 alias 與 410 個版本化物件，逐檔驗 bytes／SHA-256，並核對 217 題、191 題包、14 單元、角色、答案、題圖引用及 owner-delegated 簽核鏈。成功證據在 repo 外原子寫入，service-role key 不會進輸出：
+
+```powershell
+python scripts/ingest/verify-private-release-runtime.py `
+  --plan "<upload-bundle>/upload-plan.json" `
+  --deployment-record "<repo 外>/D2-final-deployment-record.json" `
+  --signed-source "<發布準備>/signed-private-question-source.json" `
+  --delegated-review "<repo 外>/owner-delegated-review-01.json" `
+  --output "<repo 外>/private-release-runtime-verification.json" `
+  --supabase-url $env:SUPABASE_URL
+```
+
+簽核鏈若含多份直接審核檔，依 signed source 記錄的順序重複 `--delegated-review`；少一份、順序錯誤或內容漂移都會拒絕。
+
+Storage 證據只證明管理端能讀回資料，**不能**證明學生 App 能登入載入。下一道獨立關卡使用啟用中的真實 App 使用者 JWT，依 `app.js` 的方式以 signed URL 取得 alias、以 Storage RLS 載入全部 191 題包與 217/217 題圖，再讓覆蓋 14 單元／4 種角色的題圖樣本通過 signed URL 交叉核對。service role 若用於簽發短效 session，也不會用來下載學生路徑或寫入證據：
+
+```powershell
+$env:SUPABASE_USER_ACCESS_TOKEN = "<啟用中的真實 App 使用者短效 JWT>"
+python scripts/ingest/verify-private-app-loader.py `
+  --plan "<upload-bundle>/upload-plan.json" `
+  --deployment-record "<repo 外>/D2-final-deployment-record.json" `
+  --runtime-record "<repo 外>/private-release-runtime-verification.json" `
+  --output "<repo 外>/private-app-loader-verification.json" `
+  --supabase-url $env:SUPABASE_URL
+```
+
+最後在所有修改已提交推送後驗證 GitHub：工作樹必須乾淨、`main == origin/main`，同一 HEAD 的 `CI` 與 `Deploy GitHub Pages` workflow 都成功，且 Pages 上的 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。工具只用 Git／GitHub CLI／HTTPS，不開 browser、也不呼叫 AI API：
+
+```powershell
+python scripts/verify-github-delivery.py `
+  --output "<repo 外>/github-delivery-verification.json"
+```
+
+完工稽核只有在 `starter-deployment`（D1→回滾→D2）、`starter-storage-readback`、`starter-authenticated-app-load` 與 `github-delivery` 都依序 hash-bound 後才會放行。任何 544、缺檔、alias 競態、錯專案、未啟用使用者、RLS 失敗、CI／Pages 失敗或雜湊漂移都不產生成功證據，也不得切換正式題庫。
 
 先前預備的 TextIn 工具仍保留作供應商備援，但目前不作主線：
 

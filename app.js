@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0829w'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0830a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 
 /* ═══════════ 狀態 ═══════════ */
 const LEGACY_KEY = 'mathA13';
@@ -3491,6 +3491,153 @@ function mockCalibration() {
   const staleDays = Math.max(0, Math.round((new Date(today() + 'T00:00:00Z') - new Date(last.d + 'T00:00:00Z')) / 86400000));
   const passes = recent.filter((m) => Number(m.acc) >= SCORE_GOAL.targetAcc).length;
   return { count: recent.length, recent, source, ok, n, acc, low, high, grade: gradeOf(acc), passes, stable: recent.length === 3 && passes === 3, staleDays };
+}
+
+/* 能力目標證據只取可回查的正式原卷紀錄；不複製筆跡、作答文字、帳號或供應商資料。
+   stable 是給工程驗收看的窄門檻，不會因一般練習或一筆鬆散的 extMock 被誤判達標。 */
+const CAPABILITY_EVIDENCE_KIND = 'matha-capability-goal-evidence-v1';
+const CAPABILITY_EVIDENCE_REQUIRED_RUNS = 3;
+const CAPABILITY_EVIDENCE_MIN_SCORE = 72;
+const CAPABILITY_EVIDENCE_MAX_AGE_MS = 180 * 86400000;
+const CAPABILITY_EVIDENCE_LATEST_MAX_AGE_MS = 90 * 86400000;
+function capabilityCanonicalJson(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `[${value.map(capabilityCanonicalJson).join(',')}]`;
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('能力證據含非有限數值');
+    return JSON.stringify(Object.is(value, -0) ? 0 : value);
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
+      .map((key) => `${JSON.stringify(key)}:${capabilityCanonicalJson(value[key])}`).join(',')}}`;
+  }
+  throw new Error('能力證據含不可序列化欄位');
+}
+async function capabilityCanonicalDigest(value) {
+  const bytes = new TextEncoder().encode(capabilityCanonicalJson(value));
+  return sha256Bytes(bytes);
+}
+function capabilityQuestionGradeSummary(grade) {
+  const source = grade && Array.isArray(grade.questions) ? grade.questions : [];
+  if (source.length !== 20) return null;
+  const allowed = new Set(['correct', 'incorrect', 'uncertain', 'unanswered']);
+  const seen = new Set(), questions = [];
+  for (const item of source) {
+    const no = Number(item && item.no), status = String(item && item.status || '');
+    const points = Number(item && item.points), maxPoints = Number(item && item.maxPoints);
+    if (!Number.isInteger(no) || no < 1 || no > 20 || seen.has(no) || !allowed.has(status)
+      || !Number.isFinite(points) || !Number.isFinite(maxPoints) || maxPoints <= 0
+      || points < 0 || points > maxPoints
+      || (status === 'unanswered' && points !== 0)
+      || (status === 'correct' && points !== maxPoints)) return null;
+    seen.add(no);
+    questions.push({ no, status, points, maxPoints });
+  }
+  questions.sort((a, b) => a.no - b.no);
+  if (questions.some((item, index) => item.no !== index + 1)) return null;
+  const round = (value) => Math.round(value * 100) / 100;
+  const awardedPoints = round(questions.reduce((sum, item) => sum + item.points, 0));
+  const maxPoints = round(questions.reduce((sum, item) => sum + item.maxPoints, 0));
+  if (maxPoints !== 100 || awardedPoints !== round(Number(grade.score))) return null;
+  const statusCounts = { correct:0, incorrect:0, uncertain:0, unanswered:0 };
+  questions.forEach((item) => { statusCounts[item.status]++; });
+  return { questionCount:20, awardedPoints, maxPoints, statusCounts, questions };
+}
+function capabilityEvidenceCandidate(run, extMocks) {
+  if (!run || !paperRunInCurrentBaseline(run) || !['awaiting-key', 'awaiting-correction', 'completed'].includes(run.status)
+    || run.calibrationEligible !== true || !run.aiGrade) return null;
+  const runId = String(run.id || ''), sourceId = String(run.sourceId || '');
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(runId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(sourceId)) return null;
+  const source = paperSourceById(sourceId);
+  if (!source || Number(source.questions) !== 20 || Number(source.minutes) !== 100 || source.calibrationEligible === false) return null;
+  const matches = extMocks.filter((record) => record && record.paperRunId === runId && record.sourceId === sourceId);
+  if (matches.length !== 1) return null;
+  const record = matches[0], submittedAt = Number(run.submittedAt), gradedAt = Number(run.aiGrade.gradedAt);
+  const freshnessConfirmedAt = Number(run.freshnessConfirmedAt);
+  const baseline = learningBaselineStart();
+  if (!Number.isFinite(submittedAt) || !Number.isFinite(gradedAt) || !Number.isFinite(freshnessConfirmedAt)
+    || submittedAt <= 0 || gradedAt < submittedAt || freshnessConfirmedAt <= 0 || freshnessConfirmedAt > submittedAt
+    || (baseline && (submittedAt < baseline || freshnessConfirmedAt < baseline))) return null;
+  if (record.calibrationEligible !== true || Number(record.questions) !== 20 || Number(record.total) !== 100
+    || Number(record.ts) !== submittedAt || Number(record.freshnessConfirmedAt) !== freshnessConfirmedAt) return null;
+  const score = Math.round(Number(run.aiGrade.score) * 100) / 100;
+  if (!Number.isFinite(score) || score < 0 || score > 100 || Number(run.score) !== score || Number(record.score) !== score) return null;
+  const gradeSummary = capabilityQuestionGradeSummary(run.aiGrade);
+  if (!gradeSummary || gradeSummary.awardedPoints !== score) return null;
+  return { runId, sourceId, submittedAt, gradedAt, score, total:100, freshnessConfirmedAt, appVersion:APP_VER, gradeSummary };
+}
+function capabilityCalibrationMatches(runs, calibration) {
+  if (!calibration || calibration.source !== 'external' || calibration.count !== 3
+    || calibration.passes !== 3 || calibration.stable !== true || !Array.isArray(calibration.recent)) return false;
+  const signature = (score, total) => `${Math.round(Number(score) * 100) / 100}/${Number(total)}`;
+  const expected = runs.map((run) => signature(run.score, run.total)).sort();
+  const actual = calibration.recent.map((row) => signature(row.ok, row.n)).sort();
+  return expected.length === actual.length && expected.every((value, index) => value === actual[index]);
+}
+function capabilityGoalSnapshot(now = Date.now()) {
+  const evidenceNow = Number(now) || Date.now();
+  const extMocks = Array.isArray(S.extMocks) ? S.extMocks : [];
+  const candidates = (S.paperRuns || []).map((run) => capabilityEvidenceCandidate(run, extMocks)).filter(Boolean)
+    .sort((a, b) => b.submittedAt - a.submittedAt || b.gradedAt - a.gradedAt || b.runId.localeCompare(a.runId));
+  const runIds = new Set(), sourceIds = new Set(), selected = [];
+  for (const row of candidates) {
+    if (runIds.has(row.runId) || sourceIds.has(row.sourceId)) continue;
+    runIds.add(row.runId); sourceIds.add(row.sourceId); selected.push(row);
+    if (selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS) break;
+  }
+  selected.sort((a, b) => a.submittedAt - b.submittedAt || a.gradedAt - b.gradedAt || a.runId.localeCompare(b.runId));
+  const calibration = mockCalibration();
+  const calibrationMatches = capabilityCalibrationMatches(selected, calibration);
+  const latestSubmittedAt = selected.length ? Math.max(...selected.map((run) => run.submittedAt)) : 0;
+  const timeWindowValid = selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS
+    && selected.every((run) => run.submittedAt <= evidenceNow && run.gradedAt <= evidenceNow
+      && run.freshnessConfirmedAt <= evidenceNow && evidenceNow - run.submittedAt <= CAPABILITY_EVIDENCE_MAX_AGE_MS)
+    && evidenceNow - latestSubmittedAt <= CAPABILITY_EVIDENCE_LATEST_MAX_AGE_MS;
+  const blockers = [];
+  if (selected.length !== CAPABILITY_EVIDENCE_REQUIRED_RUNS) blockers.push(`eligible-distinct-formal-runs:${selected.length}/${CAPABILITY_EVIDENCE_REQUIRED_RUNS}`);
+  if (selected.some((run) => run.score < CAPABILITY_EVIDENCE_MIN_SCORE)) blockers.push('one-or-more-runs-below-72');
+  if (selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS && !calibrationMatches) blockers.push('mock-calibration-cross-check-failed');
+  if (selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS && !timeWindowValid) blockers.push('formal-runs-too-old-or-future');
+  const stable = selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS
+    && selected.every((run) => run.score >= CAPABILITY_EVIDENCE_MIN_SCORE) && calibrationMatches && timeWindowValid;
+  return { evidenceNow, selected, calibration, blockers, stable };
+}
+async function capabilityGoalEvidence(now = Date.now()) {
+  const { evidenceNow, selected, calibration, blockers, stable } = capabilityGoalSnapshot(now);
+  const runs = await Promise.all(selected.map(async (row) => ({ ...row, canonicalDigest:await capabilityCanonicalDigest(row) })));
+  const payload = {
+    kind:CAPABILITY_EVIDENCE_KIND, schemaVersion:1, generatedAt:new Date(evidenceNow).toISOString(), appVersion:APP_VER,
+    baselineResetAt:learningBaselineStart(), status:stable ? 'stable' : 'blocked', stable, blockers,
+    goal:{ requiredRuns:3, distinctRuns:true, distinctSources:true, questionsPerRun:20, minutesPerRun:100, totalPoints:100, minimumScore:72 },
+    calibration:{ source:calibration.source || null, count:Number(calibration.count) || 0, passes:Number(calibration.passes) || 0,
+      stable:calibration.stable === true, scorePercent:Number.isFinite(Number(calibration.acc)) ? Math.round(Number(calibration.acc) * 10000) / 100 : null,
+      grade:String(calibration.grade || '') },
+    digest:{ algorithm:'SHA-256', canonicalization:'recursive-key-sorted-json-v1', runDigestFields:['runId','sourceId','submittedAt','gradedAt','score','total','freshnessConfirmedAt','appVersion','gradeSummary'] },
+    runs,
+  };
+  payload.canonicalDigest = await capabilityCanonicalDigest({
+    kind:payload.kind, schemaVersion:payload.schemaVersion, generatedAt:payload.generatedAt,
+    appVersion:payload.appVersion, baselineResetAt:payload.baselineResetAt,
+    status:payload.status, stable:payload.stable, blockers:payload.blockers,
+    goal:payload.goal, calibration:payload.calibration, digest:payload.digest, runs:payload.runs,
+  });
+  return payload;
+}
+async function exportCapabilityGoalEvidence() {
+  try {
+    const payload = await capabilityGoalEvidence();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `數A能力目標證據-${today()}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    return payload;
+  } catch (error) {
+    alert(`能力證據匯出失敗：${error && error.message || error}`);
+    return null;
+  }
 }
 function extMockCalibrationEligible(record) {
   if (!record || record.calibrationEligible === false) return false;
@@ -10343,6 +10490,7 @@ function questionFeedbackCard() {
 }
 function learnerModelCard() {
   const model = learnerModel(), cal = model.calibration;
+  const capability = capabilityGoalSnapshot();
   const topicRows = Object.values(model.topics);
   const directionN = topicRows.reduce((sum, row) => sum + row.directionN, 0);
   const directionWeight = topicRows.reduce((sum, row) => sum + row.directionWeight, 0);
@@ -10352,13 +10500,13 @@ function learnerModelCard() {
   const retentionEarned = topicRows.reduce((sum, row) => sum + row.retentionEarned, 0);
   const directionText = directionN >= 10 ? `${Math.round(directionEarned / Math.max(.001, directionWeight) * 100)}%` : `${directionN}/10 筆`;
   const retentionText = retentionN >= 6 ? `${Math.round(retentionEarned / Math.max(.001, retentionWeight) * 100)}%` : `${retentionN}/6 次`;
-  const goal = !cal.count
+  const goal = capability.stable
+    ? `最近三回不同來源的正式新鮮卷都站上 72 分參考線；此結論已符合可匯出的能力證據門檻。`
+    : !cal.count
     ? `${model.baselineResetAt ? '舊制成績已歸零。' : ''}還缺一回完整 20 題、100 分鐘模考，才能建立目前級分基準。`
     : cal.acc < SCORE_GOAL.targetAcc
-      ? `最近完整模考約 ${Math.round(cal.acc * 100)} 分（${cal.grade}）；距 13 級分的 72 分參考線約差 ${Math.ceil((SCORE_GOAL.targetAcc - cal.acc) * 100)} 分。`
-      : cal.stable
-        ? `最近三回都站上 72 分參考線；目前達到「穩定 13 級分」的系統標準，下一步是降低波動。`
-        : `最近完整模考已到 ${Math.round(cal.acc * 100)} 分（${cal.grade}），但近三回只有 ${cal.passes}/3 回站上 72 分參考線；現在要把一次達標變成可重現。`;
+      ? `近期完整模考紀錄約 ${Math.round(cal.acc * 100)} 分（${cal.grade}）；距 72 分參考線約差 ${Math.ceil((SCORE_GOAL.targetAcc - cal.acc) * 100)} 分。正式能力結論仍要三回不同來源的新鮮卷。`
+      : `已有完整模考達線紀錄，但尚未同時滿足三回不同來源、freshness-confirmed 與時效門檻；目前不宣稱穩定 13 級分。`;
   const topicItem = (row, kind) => {
     const detail = kind === 'strength'
       ? `模型 ${row.score}/100｜${row.confidence.label}證據`
@@ -10404,7 +10552,7 @@ function learnerModelCard() {
     <div class="learner-errors"><h3>解題流程斷點</h3><div>${processHTML}</div></div>
     <div class="learner-errors"><h3>反覆出現的卡點</h3><div>${errorRows}</div></div>
     <p class="learner-model-note">這不是固定標籤。獨立作答、題型辨認、眼刷方向、隔日三級、詳解後重算、2／7 日保留、大綱與觀念自述會分開計權；一次錯誤不會被宣布成弱項。下一輪教材精選與 AI 詳批會直接讀取這份模型。${model.baselineResetAt ? `目前基準自 ${escH(learningBaselineDate())} 起算，較早資料只保留原稿。` : ''}</p>
-    <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button><button class="btn subtle" onclick="resetLearningBaseline()">重新建立學習基準</button></div>
+    <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button><button class="btn subtle" onclick="exportCapabilityGoalEvidence()">下載能力目標證據</button><button class="btn subtle" onclick="resetLearningBaseline()">重新建立學習基準</button></div>
   </section>`;
 }
 const SYSTEM_READINESS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -10595,8 +10743,8 @@ async function runSystemReadiness(sourceId) {
       ? await navigator.storage.persisted().catch(() => false) : false;
     add('persistent', '瀏覽器持久儲存', persistent ? 'pass' : 'warn', persistent ? '瀏覽器已承諾不在空間壓力下自動清除' : '尚未取得持久儲存承諾；本機與雲端雙存仍會運作', false);
 
-    if (curatedState.status === 'ready' && curatedState.count > 0) add('bank', '真人核准私有題庫', 'pass', `${curatedState.count} 題已通過 manifest 與雜湊驗證`, false);
-    else add('bank', '真人核准私有題庫', 'warn', `尚未發布；正式練習只會使用 ${BUILTIN_N} 題非 OCR 核心題`, false);
+    if (curatedState.status === 'ready' && curatedState.count > 0) add('bank', '擁有者授權私有題庫', 'pass', `${curatedState.count} 題已通過 manifest、審核授權鏈與雜湊驗證`, false);
+    else add('bank', '擁有者授權私有題庫', 'warn', `尚未發布；正式練習只會使用 ${BUILTIN_N} 題非 OCR 核心題`, false);
 
     const completePapers = PAPER_SOURCES.filter((source) => source.questions === 20 && source.minutes === 100).length;
     add('inventory', '完整卷來源', completePapers >= 6 ? 'pass' : 'warn', `目前 ${completePapers} 回符合 20 題、100 分鐘；正式級分只採計當次確認未看過的卷`, false);

@@ -9,7 +9,9 @@ evidence remains blocked instead of being inferred from tests or filenames.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -23,6 +25,31 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_DETAIL_NOS = {3, 4, 11, 12, 13, 14, 16}
 NON_HUMAN = re.compile(r"(?:^|\b)(?:ai|bot|agent|codex|claude|chatgpt|openai)(?:\b|$)", re.I)
 DEVICE_MODEL = "Samsung Galaxy Tab S10 Ultra"
+EXPECTED_SUPABASE_URL = "https://rrihysbxhsbxjteqmtdu.supabase.co"
+EXPECTED_MANIFEST_ALIAS = "manifest-mistral-ocr4-verified-v1.json"
+EXPECTED_TOPICS = {
+    "comb", "data", "exp", "line", "mat", "num", "poly", "prob",
+    "seq", "splane", "svec", "trig1", "trig2", "vec",
+}
+EXPECTED_ROLES = {
+    "example": 114,
+    "chapter-end-easy": 56,
+    "chapter-end-medium": 34,
+    "chapter-end-hard": 13,
+}
+EXPECTED_CORPUS = {
+    "corpusGeneration": "mistral-ocr4-verified-v1",
+    "sourceInventorySha256": "c0cedf6b71917211fce887f002978b1180ee661e86f16885e1625c34e5f9fc96",
+    "sourceDocuments": 25,
+    "sourcePages": 6720,
+    "ocrProvider": "mistral",
+    "ocrModel": "mistral-ocr-latest",
+    "verificationPolicy": "pdf-crop-and-answer-review-v1",
+}
+EXPECTED_REVIEW_POLICY = "owner-delegated-agent-direct-pixel-v1"
+_RUNTIME_VERIFIER: Any | None = None
+_APP_LOADER_VERIFIER: Any | None = None
+_GITHUB_DELIVERY_VERIFIER: Any | None = None
 
 
 class ReadinessError(RuntimeError):
@@ -49,14 +76,81 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def parse_timestamp(value: Any, label: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ReadinessError(f"{label}缺少時間")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ReadinessError(f"{label}時間格式不合法") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ReadinessError(f"{label}時間缺少時區")
+    return parsed.astimezone(timezone.utc)
+
+
+def canonical_sha(value: Any) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def runtime_verifier() -> Any:
+    """Load the authoritative offline release validator without network access."""
+    global _RUNTIME_VERIFIER
+    if _RUNTIME_VERIFIER is not None:
+        return _RUNTIME_VERIFIER
+    path = REPO_ROOT / "scripts" / "ingest" / "verify-private-release-runtime.py"
+    spec = importlib.util.spec_from_file_location("matha_private_runtime_audit", path)
+    if spec is None or spec.loader is None:
+        raise ReadinessError("無法載入正式題庫 runtime 驗證器")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _RUNTIME_VERIFIER = module
+    return module
+
+
+def app_loader_verifier() -> Any:
+    """Load the authoritative authenticated App-loader evidence validator."""
+    global _APP_LOADER_VERIFIER
+    if _APP_LOADER_VERIFIER is not None:
+        return _APP_LOADER_VERIFIER
+    path = REPO_ROOT / "scripts" / "ingest" / "verify-private-app-loader.py"
+    spec = importlib.util.spec_from_file_location("matha_private_app_loader_audit", path)
+    if spec is None or spec.loader is None:
+        raise ReadinessError("無法載入登入 App loader 驗證器")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _APP_LOADER_VERIFIER = module
+    return module
+
+
+def github_delivery_verifier() -> Any:
+    """Load the authoritative live GitHub/Pages verifier once."""
+    global _GITHUB_DELIVERY_VERIFIER
+    if _GITHUB_DELIVERY_VERIFIER is None:
+        path = REPO_ROOT / "scripts" / "verify-github-delivery.py"
+        spec = importlib.util.spec_from_file_location("matha_github_delivery_verifier", path)
+        if spec is None or spec.loader is None:
+            raise ReadinessError("無法載入 GitHub delivery verifier")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _GITHUB_DELIVERY_VERIFIER = module
+    return _GITHUB_DELIVERY_VERIFIER
+
+
 def gate(identifier: str, label: str, status: str, summary: str,
          *, evidence: list[str] | None = None,
-         blockers: list[str] | None = None) -> dict[str, Any]:
+         blockers: list[str] | None = None,
+         phase: str = "engineering") -> dict[str, Any]:
     if status not in {"pass", "blocked", "fail"}:
         raise ValueError(f"invalid gate status: {status}")
+    if phase not in {"engineering", "post-delivery"}:
+        raise ValueError(f"invalid gate phase: {phase}")
     return {
         "id": identifier,
         "label": label,
+        "phase": phase,
         "status": status,
         "summary": summary,
         "evidence": evidence or [],
@@ -147,7 +241,6 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
     expected_version = current_app_version()
     expected_values = {
         "status": "deployed-and-hash-verified",
-        "appVersion": expected_version,
         "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
         "bucket": "matha-papers",
         "remoteHashMismatches": 0,
@@ -159,6 +252,9 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
     for key, expected in expected_values.items():
         if row.get(key) != expected:
             raise ReadinessError(f"私有 App 整合證據不符：{key}")
+    evidence_version = str(row.get("appVersion") or "")
+    if not re.fullmatch(r"\d{4}[a-z]", evidence_version):
+        raise ReadinessError("私有 App 整合證據缺少已部署版本")
     paper_count = int(row.get("integratedPapers") or row.get("officialPapers") or 0)
     page_count = int(row.get("integratedPages") or row.get("officialPages") or 0)
     official_count = int(row.get("officialPapers") or 0)
@@ -393,11 +489,11 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
             [f"regionalDetailedSolutions:{hashes['regionalSolutions']}:{regional_solution_pages}:mismatch=0"]
             if regional_solution_pages else []
         ),
-        f"privatePaperAppVersion:{expected_version}:edge={row['edgeFunctionVersion']}:serverKeys={answer_key_count}",
+        f"privatePaperAppVersion:evidence={evidence_version}:current={expected_version}:edge={row['edgeFunctionVersion']}:serverKeys={answer_key_count}",
     ]
 
 
-def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any]:
+def audit_full_papers(inventory_path: Path, private_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         inventory = load_json(inventory_path, "完整卷清冊")
         if inventory.get("schema") != 1 or not isinstance(inventory.get("papers"), list):
@@ -439,6 +535,13 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any
             raise ReadinessError(
                 f"既有合格結構候選只有 {len(integrated)} / {len(potential)} 回接入 App"
             )
+        if integrated_paper_count < 6 or len(integrated) < 6:
+            raise ReadinessError("接入 App 且通過私有資產驗證的 20 題／100 分鐘完整卷少於 6 回")
+        engineering = gate(
+            "full-paper-engineering", "完整卷工程庫存", "pass",
+            f"已驗證 {source_document_count} 份題本／答案來源；{integrated_paper_count} 回已接入 App 且私有資產回讀雜湊一致",
+            evidence=verified,
+        )
         if len(ready) < 6:
             needed = 6 - len(ready)
             pending = min(needed, len([row for row in potential if row not in ready]))
@@ -448,19 +551,27 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> dict[str, Any
                 blockers.append(f"{pending} 回既有候選仍需本人確認未看過並完成 Galaxy Tab 真機開考驗收")
             if additional:
                 blockers.append(f"仍需 {additional} 回額外的 20 題、100 分鐘且答案完整新來源")
-            return gate(
-                "full-papers", "正式校準卷庫存", "blocked",
-                f"已驗證 {source_document_count} 份題本／答案來源；{integrated_paper_count} / {integrated_paper_count} 回已接入 App 且私有資產回讀雜湊一致，正式新鮮校準證據為 {len(ready)} / 6 回",
-                evidence=verified,
+            calibration = gate(
+                "fresh-calibration", "正式新鮮校準證據", "blocked",
+                f"工程卷庫存已完成；本人正式新鮮校準證據為 {len(ready)} / 6 回",
                 blockers=blockers,
+                phase="post-delivery",
             )
-        return gate(
-            "full-papers", "正式校準卷庫存", "pass",
+            return engineering, calibration
+        calibration = gate(
+            "fresh-calibration", "正式新鮮校準證據", "pass",
             f"已有 {len(ready)} 回 hash-bound 新鮮正式卷",
             evidence=[str(row.get("id")) for row in ready],
+            phase="post-delivery",
         )
+        return engineering, calibration
     except ReadinessError as error:
-        return gate("full-papers", "正式校準卷庫存", "fail", str(error))
+        return (
+            gate("full-paper-engineering", "完整卷工程庫存", "fail", str(error)),
+            gate("fresh-calibration", "正式新鮮校準證據", "blocked",
+                 "完整卷工程關卡尚未通過，暫不能驗證新鮮校準證據",
+                 blockers=["先修復完整卷工程庫存"], phase="post-delivery"),
+        )
 
 
 def find_json_files(roots: list[Path], patterns: list[str]) -> list[Path]:
@@ -473,6 +584,304 @@ def find_json_files(roots: list[Path], patterns: list[str]) -> list[Path]:
                 if path.is_file():
                     found[path.resolve()] = None
     return sorted(found, key=lambda path: path.stat().st_mtime_ns, reverse=True)
+
+
+def validate_capability_goal_evidence(path: Path) -> list[str]:
+    value = load_json(path, "能力目標證據")
+    generated_at = parse_timestamp(value.get("generatedAt"), "能力目標證據")
+    now = datetime.now(timezone.utc)
+    if generated_at > now + timedelta(minutes=10) or now - generated_at > timedelta(days=7):
+        raise ReadinessError("能力證據不是本週由目前 App 匯出的最新快照")
+    generated_ms = generated_at.timestamp() * 1000
+    goal = value.get("goal") or {}
+    calibration = value.get("calibration") or {}
+    runs = value.get("runs")
+    baseline = value.get("baselineResetAt")
+    if (value.get("kind") != "matha-capability-goal-evidence-v1"
+            or value.get("schemaVersion") != 1
+            or value.get("appVersion") != current_app_version()
+            or value.get("status") != "stable" or value.get("stable") is not True
+            or value.get("blockers") != []
+            or goal != {
+                "requiredRuns": 3, "distinctRuns": True, "distinctSources": True,
+                "questionsPerRun": 20, "minutesPerRun": 100,
+                "totalPoints": 100, "minimumScore": 72,
+            }
+            or not isinstance(baseline, (int, float)) or isinstance(baseline, bool)
+            or baseline < 0
+            or calibration.get("source") != "external"
+            or calibration.get("count") != 3
+            or calibration.get("passes") != 3
+            or calibration.get("stable") is not True
+            or not isinstance(runs, list) or len(runs) != 3):
+        raise ReadinessError("能力證據未證明最近三回正式新鮮卷皆達 72 分")
+    digest_meta = value.get("digest") or {}
+    digest_fields = [
+        "runId", "sourceId", "submittedAt", "gradedAt", "score", "total",
+        "freshnessConfirmedAt", "appVersion", "gradeSummary",
+    ]
+    if (digest_meta.get("algorithm") != "SHA-256"
+            or digest_meta.get("canonicalization") != "recursive-key-sorted-json-v1"
+            or digest_meta.get("runDigestFields") != digest_fields):
+        raise ReadinessError("能力證據 canonical digest 規格不符")
+    run_ids: set[str] = set()
+    source_ids: set[str] = set()
+    submitted_times: list[float] = []
+    allowed_status = {"correct", "incorrect", "uncertain", "unanswered"}
+    for row in runs:
+        if not isinstance(row, dict):
+            raise ReadinessError("能力證據含非物件正式卷")
+        run_id, source_id = row.get("runId"), row.get("sourceId")
+        submitted, graded, fresh = (
+            row.get("submittedAt"), row.get("gradedAt"), row.get("freshnessConfirmedAt"),
+        )
+        score, total = row.get("score"), row.get("total")
+        if (not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", run_id)
+                or not isinstance(source_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", source_id)
+                or run_id in run_ids or source_id in source_ids
+                or not all(isinstance(item, (int, float)) and not isinstance(item, bool)
+                           for item in (submitted, graded, fresh, score, total))
+                or submitted <= 0 or graded < submitted or fresh <= 0 or fresh > submitted
+                or submitted > generated_ms or graded > generated_ms or fresh > generated_ms
+                or submitted < baseline or fresh < baseline
+                or score < 72 or score > 100 or total != 100
+                or row.get("appVersion") != current_app_version()):
+            raise ReadinessError("能力證據正式卷資格、分數、新鮮度或唯一性不符")
+        summary = row.get("gradeSummary") or {}
+        questions = summary.get("questions")
+        status_counts = summary.get("statusCounts")
+        if (summary.get("questionCount") != 20 or summary.get("maxPoints") != 100
+                or summary.get("awardedPoints") != score
+                or not isinstance(questions, list) or len(questions) != 20
+                or not isinstance(status_counts, dict)
+                or set(status_counts) != allowed_status
+                or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
+                       for count in status_counts.values())
+                or sum(status_counts.values()) != 20):
+            raise ReadinessError("能力證據的 20 題分數摘要不可重算")
+        awarded = 0.0
+        maximum = 0.0
+        recomputed_counts = {key: 0 for key in allowed_status}
+        for index, item in enumerate(questions, start=1):
+            if not isinstance(item, dict):
+                raise ReadinessError("能力證據題分摘要含非物件")
+            points, max_points, status = item.get("points"), item.get("maxPoints"), item.get("status")
+            if (item.get("no") != index or status not in allowed_status
+                    or not isinstance(points, (int, float)) or isinstance(points, bool)
+                    or not isinstance(max_points, (int, float)) or isinstance(max_points, bool)
+                    or max_points <= 0 or points < 0 or points > max_points
+                    or (status == "unanswered" and points != 0)
+                    or (status == "correct" and points != max_points)):
+                raise ReadinessError("能力證據含不合法題號、狀態或配分")
+            awarded += float(points)
+            maximum += float(max_points)
+            recomputed_counts[status] += 1
+        if (round(awarded, 2) != score or round(maximum, 2) != 100
+                or recomputed_counts != status_counts):
+            raise ReadinessError("能力證據題分或狀態計數無法重算")
+        digest_value = {key: row.get(key) for key in digest_fields}
+        if row.get("canonicalDigest") != canonical_sha(digest_value):
+            raise ReadinessError("能力證據單回 canonical digest 不符")
+        run_ids.add(run_id)
+        source_ids.add(source_id)
+        submitted_times.append(float(submitted))
+    if submitted_times != sorted(submitted_times):
+        raise ReadinessError("能力證據不是依交卷時間排序的最近三回")
+    if (generated_ms - submitted_times[-1] > 90 * 86400000
+            or generated_ms - submitted_times[0] > 180 * 86400000):
+        raise ReadinessError("最近三回距能力證據產生時間過久，不能代表目前程度")
+    canonical_payload = {key: value.get(key) for key in (
+        "kind", "schemaVersion", "generatedAt", "appVersion", "baselineResetAt",
+        "status", "stable", "blockers", "goal", "calibration", "digest", "runs",
+    )}
+    if value.get("canonicalDigest") != canonical_sha(canonical_payload):
+        raise ReadinessError("能力證據總 canonical digest 不符")
+    return [
+        f"capability:{sha256(path)}", "formalRuns:3", "minimumScore:72",
+        "freshness:confirmed", "gradePoints:recomputed",
+    ]
+
+
+def audit_score_stability(roots: list[Path], explicit: list[Path] | None = None) -> dict[str, Any]:
+    candidates = list(explicit or [])
+    candidates.extend(find_json_files(
+        roots, ["數A能力目標證據-*.json", "*capability*goal*evidence*.json"],
+    ))
+    unique = list(dict.fromkeys(path.resolve() for path in candidates if path.is_file()))
+    if not unique:
+        return gate(
+            "score-stability", "最近三回正式卷皆達 72 分", "blocked",
+            "尚無 App 匯出的能力目標證據",
+            blockers=["交付後完成三回未看過的 20 題／100 分鐘正式卷"],
+            phase="post-delivery",
+        )
+    valid: list[tuple[datetime, Path, list[str]]] = []
+    errors: list[str] = []
+    for path in unique:
+        try:
+            evidence = validate_capability_goal_evidence(path)
+            value = load_json(path, "能力目標證據")
+            valid.append((parse_timestamp(value.get("generatedAt"), "能力目標證據"), path, evidence))
+        except ReadinessError as error:
+            errors.append(str(error))
+    if not valid:
+        return gate(
+            "score-stability", "最近三回正式卷皆達 72 分", "blocked",
+            errors[0] if errors else "能力目標證據尚未達標",
+            blockers=["需三回 distinct、freshness-confirmed、20 題／100 分鐘正式卷且每回至少 72 分"],
+            phase="post-delivery",
+        )
+    _, path, evidence = max(valid, key=lambda row: row[0])
+    return gate(
+        "score-stability", "最近三回正式卷皆達 72 分", "pass",
+        "最近三回不同來源的正式新鮮卷皆達 72 分，題分與 digest 可重算",
+        evidence=[str(path), *evidence], phase="post-delivery",
+    )
+
+
+def validate_github_delivery(path: Path, *, command_runner: Any | None = None,
+                             fetcher: Any | None = None) -> list[str]:
+    try:
+        path.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ReadinessError("GitHub 交付證據不可放進公開 repo")
+    value = load_json(path, "GitHub 交付證據")
+    verified_at = parse_timestamp(value.get("verifiedAt"), "GitHub 交付證據")
+    if verified_at > datetime.now(timezone.utc) + timedelta(minutes=10):
+        raise ReadinessError("GitHub 交付證據時間在未來")
+    verifier = github_delivery_verifier()
+    runner = command_runner or verifier.run
+    live_fetch = fetcher or verifier.default_fetch
+    try:
+        public_auditor = verifier.public_repo_auditor()
+    except verifier.DeliveryVerificationError as error:
+        raise ReadinessError(f"無法載入公開 Git 安全稽核器：{error}") from error
+    try:
+        public_repo_audit = public_auditor.audit_tracked_tree(REPO_ROOT)
+        if runner(["git", "status", "--porcelain"]):
+            raise ReadinessError("目前工作樹不是交付後的乾淨狀態")
+        runner(["git", "fetch", "--quiet", "origin", "main"])
+        head = runner(["git", "rev-parse", "HEAD"])
+        origin = runner(["git", "rev-parse", "origin/main"])
+        branch = runner(["git", "branch", "--show-current"])
+        remote_head = runner([
+            "gh", "api", "repos/uqrqmmw/matha/git/ref/heads/main",
+            "--jq", ".object.sha",
+        ])
+        repo = json.loads(runner([
+            "gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef",
+        ]))
+        rows = json.loads(runner([
+            "gh", "run", "list", "--commit", head, "--limit", "50", "--json",
+            "databaseId,workflowName,status,conclusion,headSha,url,updatedAt",
+        ]))
+        live_actions = {
+            "ci": verifier.select_run(rows, "CI", head),
+            "pages": verifier.select_run(rows, "Deploy GitHub Pages", head),
+        }
+    except ReadinessError:
+        raise
+    except (OSError, ValueError, json.JSONDecodeError,
+            verifier.DeliveryVerificationError,
+            public_auditor.PublicRepoAuditError) as error:
+        raise ReadinessError(f"無法即時核對 GitHub／Pages：{error}") from error
+    if (head != origin or head != remote_head or branch != "main"
+            or not re.fullmatch(r"[0-9a-f]{40}", head)
+            or repo.get("nameWithOwner") != "uqrqmmw/matha"
+            or (repo.get("defaultBranchRef") or {}).get("name") != "main"):
+        raise ReadinessError("目前 main、origin/main 與 GitHub 遠端 main 不一致")
+    expected_assets = {
+        name: {"sha256": sha256(REPO_ROOT / name), "bytes": (REPO_ROOT / name).stat().st_size}
+        for name in ("index.html", "app.js", "sw.js", "textbook-catalog.js")
+    }
+    try:
+        for name, expected in expected_assets.items():
+            remote = live_fetch(f"https://uqrqmmw.github.io/matha/{name}?audit={head}")
+            if hashlib.sha256(remote).hexdigest() != expected["sha256"] or len(remote) != expected["bytes"]:
+                raise ReadinessError(f"GitHub Pages 的 {name} 已與目前 HEAD 漂移")
+    except ReadinessError:
+        raise
+    except (OSError, verifier.DeliveryVerificationError) as error:
+        raise ReadinessError(f"無法即時讀回 GitHub Pages：{error}") from error
+    actions = value.get("actions") or {}
+    if actions != live_actions:
+        raise ReadinessError("GitHub 交付證據的 Actions 紀錄不是目前 HEAD 的即時成功紀錄")
+    for key, workflow in (("ci", "CI"), ("pages", "Deploy GitHub Pages")):
+        row = actions.get(key) or {}
+        if (row.get("workflowName") != workflow or row.get("headSha") != head
+                or row.get("status") != "completed" or row.get("conclusion") != "success"
+                or not isinstance(row.get("databaseId"), int)
+                or not str(row.get("url") or "").startswith(
+                    "https://github.com/uqrqmmw/matha/actions/runs/")):
+            raise ReadinessError(f"GitHub {workflow} 尚未對目前 HEAD 成功")
+        parse_timestamp(row.get("updatedAt"), f"GitHub {workflow}")
+    binding = {
+        key: value.get(key) for key in (
+            "repository", "branch", "headSha", "originMainSha", "remoteMainSha", "appVersion",
+            "appJsSha256", "pagesRoot", "publicRepoAudit", "actions", "published",
+        )
+    }
+    if (value.get("kind") != "matha-github-delivery-verification"
+            or value.get("version") != 1 or value.get("status") != "verified"
+            or value.get("repository") != "uqrqmmw/matha"
+            or value.get("branch") != "main"
+            or value.get("headSha") != head or value.get("originMainSha") != origin
+            or value.get("remoteMainSha") != remote_head
+            or value.get("workingTreeClean") is not True
+            or value.get("publicRepoAudit") != public_repo_audit
+            or value.get("appVersion") != current_app_version()
+            or value.get("appJsSha256") != expected_assets["app.js"]["sha256"]
+            or value.get("pagesRoot") != "https://uqrqmmw.github.io/matha"
+            or value.get("published") != expected_assets
+            or value.get("deliveryBindingSha256") != canonical_sha(binding)):
+        raise ReadinessError("GitHub 交付證據未綁定目前 HEAD、App 與 Pages 位元")
+    return [
+        f"delivery:{sha256(path)}", f"head:{head}",
+        f"ci:{actions['ci']['databaseId']}:success",
+        f"pages:{actions['pages']['databaseId']}:success",
+        f"publicRepo:{public_repo_audit['treeSha256']}:violations=0",
+        f"publishedApp:{expected_assets['app.js']['sha256']}",
+        f"publishedCatalog:{expected_assets['textbook-catalog.js']['sha256']}",
+    ]
+
+
+def audit_github_delivery(roots: list[Path], explicit: list[Path] | None = None) -> dict[str, Any]:
+    candidates = list(explicit or [])
+    candidates.extend(find_json_files(
+        roots, ["*github*delivery*verification*.json"],
+    ))
+    unique = list(dict.fromkeys(path.resolve() for path in candidates if path.is_file()))
+    if not unique:
+        return gate(
+            "github-delivery", "GitHub main、CI 與 Pages 實際交付", "blocked",
+            "目前版本尚無 repo 外的 CI／Pages 位元驗證紀錄",
+            blockers=["提交推送乾淨 main，等待 CI 與 Pages 成功，再讀回線上 app.js"],
+        )
+    valid: list[tuple[datetime, Path, list[str]]] = []
+    errors: list[str] = []
+    for path in unique:
+        try:
+            evidence = validate_github_delivery(path)
+            value = load_json(path, "GitHub 交付證據")
+            valid.append((parse_timestamp(value.get("verifiedAt"), "GitHub 交付證據"),
+                          path, evidence))
+        except ReadinessError as error:
+            errors.append(str(error))
+    if not valid:
+        return gate(
+            "github-delivery", "GitHub main、CI 與 Pages 實際交付", "blocked",
+            errors[0] if errors else "CI／Pages 證據尚未對應目前版本",
+            blockers=["對目前乾淨 HEAD 重新執行 GitHub delivery verifier"],
+        )
+    _, path, evidence = max(valid, key=lambda row: row[0])
+    return gate(
+        "github-delivery", "GitHub main、CI 與 Pages 實際交付", "pass",
+        "乾淨 main 已等於 origin/main，CI 與 Pages 成功且線上四個信任檔逐位元相符",
+        evidence=[str(path), *evidence],
+    )
 
 
 def validate_device_audit(path: Path, selected_paper: str, app_version: str) -> list[str]:
@@ -529,16 +938,17 @@ def audit_device(roots: list[Path], selected_paper: str,
             "galaxy-tab", "Galaxy Tab 100 分鐘真機驗收", "blocked",
             "尚無真機驗收匯出檔",
             blockers=["在 Galaxy Tab S10 Ultra 完成第三回、滑動翻頁、恢復、交卷與 PDF 後按『同步並匯出驗收檔』"],
+            phase="post-delivery",
         )
     errors = []
     version = current_app_version()
     for path in candidates:
         try:
             evidence = validate_device_audit(path, selected_paper, version)
-            return gate("galaxy-tab", "Galaxy Tab 100 分鐘真機驗收", "pass", "真機必要證據全部通過", evidence=evidence)
+            return gate("galaxy-tab", "Galaxy Tab 100 分鐘真機驗收", "pass", "真機必要證據全部通過", evidence=evidence, phase="post-delivery")
         except ReadinessError as error:
             errors.append(f"{path.name}: {error}")
-    return gate("galaxy-tab", "Galaxy Tab 100 分鐘真機驗收", "fail", "找到驗收檔但沒有一份可通過", evidence=errors)
+    return gate("galaxy-tab", "Galaxy Tab 100 分鐘真機驗收", "fail", "找到驗收檔但沒有一份可通過", evidence=errors, phase="post-delivery")
 
 
 def validate_gold_sources(gold: dict[str, Any], gold_path: Path) -> None:
@@ -598,8 +1008,8 @@ def audit_detail(private_eval_root: Path, gold_path: Path,
             raise ReadinessError("詳批 gold 不是固定 7 題")
         validate_gold_sources(gold, gold_path)
     except ReadinessError as error:
-        failed = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "fail", str(error))
-        scale = gate("detail-gold-scale", "30 題真實詳批 gold", "fail", str(error))
+        failed = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "fail", str(error), phase="post-delivery")
+        scale = gate("detail-gold-scale", "30 題真實詳批 gold", "fail", str(error), phase="post-delivery")
         return failed, scale
 
     if prediction_path is None:
@@ -612,6 +1022,7 @@ def audit_detail(private_eval_root: Path, gold_path: Path,
             "7 題來源像素已驗證，但尚無真實 prediction",
             evidence=[f"gold:{gold_path}", f"goldSha256:{sha256(gold_path)}"],
             blockers=["先在 App 保存真實隔日重想，再經正式 Edge Function 產生 7 題 prediction"],
+            phase="post-delivery",
         )
     else:
         command = ["node", str(REPO_ROOT / "scripts" / "evaluate-paper-detail-gold.js"),
@@ -619,13 +1030,13 @@ def audit_detail(private_eval_root: Path, gold_path: Path,
         completed = subprocess.run(command, cwd=REPO_ROOT, text=True, encoding="utf-8",
                                    capture_output=True, check=False)
         if completed.returncode:
-            detail_gate = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "fail", completed.stderr.strip()[:800])
+            detail_gate = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "fail", completed.stderr.strip()[:800], phase="post-delivery")
         else:
             result = json.loads(completed.stdout)
             if result.get("safeToShip") is True and approved_gold(gold, gold_path):
-                detail_gate = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "pass", "詳批門檻與具名真人簽核皆通過", evidence=[str(prediction_path), json.dumps(result.get("metrics"), ensure_ascii=False)])
+                detail_gate = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "pass", "詳批門檻與具名真人簽核皆通過", evidence=[str(prediction_path), json.dumps(result.get("metrics"), ensure_ascii=False)], phase="post-delivery")
             else:
-                detail_gate = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "blocked", "prediction 已評測但正式門檻或具名真人簽核未完成", evidence=[json.dumps(result.get("gates"), ensure_ascii=False)], blockers=["修正未通過門檻，並完成 exact-hash 具名真人 gold 簽核"])
+                detail_gate = gate("detail-eval", "7 題 GPT-5.5 詳批評測", "blocked", "prediction 已評測但正式門檻或具名真人簽核未完成", evidence=[json.dumps(result.get("gates"), ensure_ascii=False)], blockers=["修正未通過門檻，並完成 exact-hash 具名真人 gold 簽核"], phase="post-delivery")
 
     released_cases: set[tuple[str, int]] = set()
     for path in find_json_files([private_eval_root], ["paper-*-detail-gold*.json"]):
@@ -639,154 +1050,864 @@ def audit_detail(private_eval_root: Path, gold_path: Path,
         except (ReadinessError, ValueError):
             continue
     if len(released_cases) >= 30:
-        scale_gate = gate("detail-gold-scale", "30 題真實詳批 gold", "pass", f"已有 {len(released_cases)} 題具名真人簽核 gold")
+        scale_gate = gate("detail-gold-scale", "30 題真實詳批 gold", "pass", f"已有 {len(released_cases)} 題具名真人簽核 gold", phase="post-delivery")
     else:
-        scale_gate = gate("detail-gold-scale", "30 題真實詳批 gold", "blocked", f"目前具名真人簽核 gold {len(released_cases)} / 30 題", blockers=[f"仍需 {30 - len(released_cases)} 題真實錯題 gold"])
+        scale_gate = gate("detail-gold-scale", "30 題真實詳批 gold", "blocked", f"目前具名真人簽核 gold {len(released_cases)} / 30 題", blockers=[f"仍需 {30 - len(released_cases)} 題真實錯題 gold"], phase="post-delivery")
     return detail_gate, scale_gate
 
 
-def audit_starter(work_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    dual_path = work_root / "dual-review.json"
-    signed_path = work_root / "signed-private-question-source.json"
-    plan_path = work_root / "private-bundle" / "upload-plan.json"
-    deployment_paths = [work_root / "deployment.json", work_root / "deployment-final.json"]
-    search_root = work_root.parent if work_root.parent.is_dir() else work_root
-    if not signed_path.is_file() and search_root.is_dir():
-        candidates = sorted(search_root.rglob("signed-private-question-source.json"),
-                            key=lambda path: path.stat().st_mtime, reverse=True)
-        signed_path = candidates[0] if candidates else signed_path
-    if not signed_path.is_file():
-        review = gate("starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "blocked",
-                      "尚無可驗證的簽核題源",
-                      blockers=["完成逐題像素、官方答案、數學正確性與發布授權鏈"])
-    elif dual_path.is_file():
-        try:
-            dual = load_json(dual_path, "雙審核交集")
-            counts = dual.get("counts") or {}
-            if (dual.get("kind") != "matha-private-cleaned-dual-review-candidates"
-                    or int(counts.get("totalCandidates") or 0) != 35
-                    or not identifiable_human(dual.get("pixelReviewer"))
-                    or not identifiable_human(dual.get("answerReviewer"))):
-                raise ReadinessError("雙審核交集缺 35 題完整性或具名真人")
-            signed = load_json(signed_path, "簽核題源")
-            approval = signed.get("releaseApproval") or {}
-            if (not identifiable_human(signed.get("releaseApprovedBy"))
-                    or approval.get("kind") != "named-human-starter-private-release-signoff"):
-                raise ReadinessError("尚未完成十題具名真人發布簽核")
-            review = gate("starter-human-review", "Batch 01 真人雙 QA 與發布簽核", "pass", "35 題雙 QA 與十題發布簽核已通過", evidence=[f"dual:{sha256(dual_path)}", f"signed:{sha256(signed_path)}"])
-        except ReadinessError as error:
-            review = gate("starter-human-review", "Batch 01 真人雙 QA 與發布簽核", "fail", str(error))
-    else:
-        try:
-            signed = load_json(signed_path, "代理簽核題源")
-            approval = signed.get("releaseApproval") or {}
-            direct_hashes = (signed.get("reviewAudit") or {}).get("directReviewSha256")
-            approval_hashes = approval.get("delegatedReviewSha256")
-            if isinstance(approval_hashes, str):
-                approval_hashes = [approval_hashes]
-            if (signed.get("reviewPolicy") != "owner-delegated-agent-direct-pixel-v1"
-                    or approval.get("kind") != "owner-delegated-agent-starter-private-release-signoff"
-                    or int(approval.get("version") or 0) not in {1, 2}
-                    or not identifiable_human(signed.get("releaseApprovedBy"))
-                    or approval.get("authorizedBy") != signed.get("releaseApprovedBy")
-                    or approval.get("humanPixelReviewClaimed") is not False
-                    or not isinstance(approval.get("performedBy"), str)
-                    or NON_HUMAN.search(approval["performedBy"]) is None
-                    or not isinstance(direct_hashes, list) or not direct_hashes
-                    or approval_hashes != direct_hashes
-                    or any(not re.fullmatch(r"[a-f0-9]{64}", str(value))
-                           for value in direct_hashes)
-                    or len(signed.get("questions") or []) < 100):
-                raise ReadinessError("擁有者委託、逐批雜湊或 100 題安全門檻不完整")
-            review = gate(
-                "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "pass",
-                f"{len(signed['questions'])} 題已由透明代理逐像素與官方答案審核；未冒充真人 QA",
-                evidence=[f"signed:{sha256(signed_path)}", *[f"direct:{value}" for value in direct_hashes]],
-            )
-        except ReadinessError as error:
-            review = gate("starter-safe-review", "Starter 題庫逐題安全審核與發布授權",
-                          "fail", str(error))
+def release_object_rows(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if (plan.get("kind") != "matha-private-storage-upload-plan"
+            or plan.get("version") != 1
+            or plan.get("releaseReady") is not True
+            or plan.get("uploadPerformed") is not False):
+        raise ReadinessError("上傳計畫不是可發布的私有題庫")
+    release_id = plan.get("releaseId")
+    if not isinstance(release_id, str) or not release_id:
+        raise ReadinessError("上傳計畫缺少 releaseId")
+    alias_path = plan.get("manifestAlias")
+    versioned_manifest = f"releases/{release_id}/manifest.json"
+    if alias_path != EXPECTED_MANIFEST_ALIAS:
+        raise ReadinessError("上傳計畫不是 App 使用的固定 alias")
+    if plan.get("versionedManifest") != versioned_manifest:
+        raise ReadinessError("上傳計畫的版本化 manifest 路徑不符")
+    if plan.get("summary") != {
+        "questions": 217, "contentFiles": 194, "stemAssets": 217,
+    }:
+        raise ReadinessError("上傳計畫摘要不符 217 題正式 bundle")
+    if not re.fullmatch(r"[a-f0-9]{64}", str(plan.get("sourceSha256") or "")):
+        raise ReadinessError("上傳計畫缺少簽核題源雜湊")
+    buckets = plan.get("buckets")
+    if not isinstance(buckets, dict) or set(buckets) != {"matha-content", "matha-figures"}:
+        raise ReadinessError("上傳計畫缺少 bucket 清冊")
+    versioned: list[dict[str, Any]] = []
+    alias_row = None
+    seen: set[tuple[str, str]] = set()
+    for bucket in ("matha-content", "matha-figures"):
+        payload = buckets.get(bucket)
+        files = payload.get("files") if isinstance(payload, dict) else None
+        if not isinstance(files, list):
+            raise ReadinessError(f"上傳計畫 bucket 不完整：{bucket}")
+        for raw in files:
+            if not isinstance(raw, dict):
+                raise ReadinessError(f"上傳計畫物件不合法：{bucket}")
+            row = {key: raw.get(key) for key in ("path", "sha256", "bytes")}
+            if (not isinstance(row["path"], str) or not row["path"]
+                    or not re.fullmatch(r"[a-f0-9]{64}", str(row["sha256"] or ""))
+                    or not isinstance(row["bytes"], int) or isinstance(row["bytes"], bool)
+                    or row["bytes"] < 0):
+                raise ReadinessError(f"上傳計畫物件欄位不完整：{bucket}")
+            normalized = {"bucket": bucket, **row}
+            key = (bucket, row["path"])
+            if key in seen:
+                raise ReadinessError(f"上傳計畫有重複物件：{bucket}/{row['path']}")
+            seen.add(key)
+            if bucket == "matha-content" and row["path"] == alias_path:
+                if alias_row is not None:
+                    raise ReadinessError("上傳計畫有重複 alias")
+                alias_row = normalized
+            else:
+                if not row["path"].startswith(f"releases/{release_id}/"):
+                    raise ReadinessError(f"上傳計畫含非版本化物件：{bucket}/{row['path']}")
+                versioned.append(normalized)
+    if alias_row is None:
+        raise ReadinessError("上傳計畫找不到 alias 物件")
+    content_count = sum(row["bucket"] == "matha-content" for row in versioned)
+    figure_count = sum(row["bucket"] == "matha-figures" for row in versioned)
+    if content_count != 193 or figure_count != 217 or len(versioned) != 410:
+        raise ReadinessError("上傳計畫不是 193 個內容物件加 217 個題圖")
+    if not any(row["bucket"] == "matha-content"
+               and row["path"] == versioned_manifest for row in versioned):
+        raise ReadinessError("上傳計畫缺少版本化 manifest")
+    return versioned, alias_row
 
-    signed_release_id = None
-    if signed_path.is_file():
+
+def runtime_object_set(plan: dict[str, Any]) -> tuple[str, dict[str, Any], int, int]:
+    versioned, alias_row = release_object_rows(plan)
+    canonical = json.dumps(
+        sorted(versioned, key=lambda row: (row["bucket"], row["path"])),
+        ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    content_count = sum(row["bucket"] == "matha-content" for row in versioned)
+    figure_count = sum(row["bucket"] == "matha-figures" for row in versioned)
+    return hashlib.sha256(canonical).hexdigest(), alias_row, content_count, figure_count
+
+
+def validate_deployment_record(plan_path: Path, record_path: Path) \
+        -> tuple[dict[str, Any], datetime]:
+    plan = load_json(plan_path, "上傳計畫")
+    versioned, alias_row = release_object_rows(plan)
+    record = load_json(record_path, "部署記錄")
+    alias = record.get("alias") or {}
+    if (record.get("kind") != "matha-private-storage-deployment"
+            or record.get("version") != 1
+            or record.get("state") != "deployed"
+            or record.get("rollbackAvailable") is not True
+            or record.get("releaseId") != plan.get("releaseId")
+            or record.get("projectUrl") != EXPECTED_SUPABASE_URL
+            or record.get("uploadPlanSha256") != sha256(plan_path)):
+        raise ReadinessError("部署記錄不是目前 App 專案的已完成發布")
+    deployed_at = parse_timestamp(record.get("deployedAt"), "部署記錄")
+    prepared_at = parse_timestamp(record.get("preparedAt"), "部署準備記錄")
+    if deployed_at < prepared_at:
+        raise ReadinessError("部署完成時間早於準備時間")
+    if ((alias.get("bucket"), alias.get("path"), alias.get("newSha256")) !=
+            (alias_row["bucket"], alias_row["path"], alias_row["sha256"])):
+        raise ReadinessError("部署記錄 alias 與上傳計畫不一致")
+    previous_sha = str(alias.get("previousSha256") or "")
+    if (not re.fullmatch(r"[a-f0-9]{64}", previous_sha)
+            or previous_sha == alias_row["sha256"]):
+        raise ReadinessError("部署記錄缺少可回復的不同舊 alias")
+    try:
+        previous = base64.b64decode(alias.get("previousBytesBase64"), validate=True)
+    except (TypeError, ValueError) as error:
+        raise ReadinessError("部署記錄舊 alias 位元不合法") from error
+    if hashlib.sha256(previous).hexdigest() != previous_sha:
+        raise ReadinessError("部署記錄舊 alias 位元與雜湊不一致")
+    uploaded = record.get("uploaded")
+    if not isinstance(uploaded, list):
+        raise ReadinessError("部署記錄缺少完整上傳清冊")
+    expected_uploaded = sorted(versioned, key=lambda row: (row["bucket"], row["path"]))
+    actual_uploaded = []
+    for raw in uploaded:
+        if not isinstance(raw, dict):
+            raise ReadinessError("部署記錄上傳清冊格式不合法")
+        actual_uploaded.append({key: raw.get(key) for key in ("bucket", "path", "sha256", "bytes")})
+    actual_uploaded.sort(key=lambda row: (str(row["bucket"]), str(row["path"])))
+    if actual_uploaded != expected_uploaded:
+        raise ReadinessError("部署記錄未精確涵蓋 410 個版本化物件")
+    return record, deployed_at
+
+
+def validate_rollback_record(path: Path, deployment_path: Path,
+                             deployment: dict[str, Any], deployed_at: datetime) \
+        -> tuple[dict[str, Any], datetime]:
+    value = load_json(path, "回滾演練")
+    alias = deployment.get("alias") or {}
+    if (value.get("kind") != "matha-private-storage-rollback"
+            or value.get("version") != 1
+            or value.get("releaseId") != deployment.get("releaseId")
+            or value.get("deploymentRecordSha256") != sha256(deployment_path)
+            or value.get("restoredAliasSha256") != alias.get("previousSha256")):
+        raise ReadinessError("回滾演練未精確綁定初次部署與舊 alias")
+    rolled_back_at = parse_timestamp(value.get("rolledBackAt"), "回滾演練")
+    if rolled_back_at <= deployed_at:
+        raise ReadinessError("回滾時間未晚於初次部署")
+    return value, rolled_back_at
+
+
+def validate_signed_starter(path: Path) -> tuple[dict[str, Any], list[str]]:
+    signed = load_json(path, "代理簽核題源")
+    approval = signed.get("releaseApproval") or {}
+    direct_hashes = (signed.get("reviewAudit") or {}).get("directReviewSha256")
+    approval_hashes = approval.get("delegatedReviewSha256")
+    if isinstance(approval_hashes, str):
+        approval_hashes = [approval_hashes]
+    questions = signed.get("questions")
+    if (signed.get("schema") != 3
+            or signed.get("kind") != "private-question-source"
+            or any(signed.get(key) != value for key, value in EXPECTED_CORPUS.items())
+            or signed.get("originalPdfVerified") is not True
+            or signed.get("answerKeyVerified") is not True
+            or signed.get("mathematicalCorrectnessVerified") is not True
+            or signed.get("reviewPolicy") != EXPECTED_REVIEW_POLICY
+            or approval.get("kind") != "owner-delegated-agent-starter-private-release-signoff"
+            or int(approval.get("version") or 0) != (
+                1 if isinstance(direct_hashes, list) and len(direct_hashes) == 1 else 2
+            )
+            or not identifiable_human(signed.get("releaseApprovedBy"))
+            or approval.get("authorizedBy") != signed.get("releaseApprovedBy")
+            or approval.get("humanPixelReviewClaimed") is not False
+            or not isinstance(approval.get("performedBy"), str)
+            or NON_HUMAN.search(approval["performedBy"]) is None
+            or not isinstance(direct_hashes, list) or not direct_hashes
+            or approval_hashes != direct_hashes
+            or any(not re.fullmatch(r"[a-f0-9]{64}", str(value))
+                   for value in direct_hashes)
+            or not isinstance(questions, list) or len(questions) != 217):
+        raise ReadinessError("217 題簽核來源的世代、授權或逐批雜湊不完整")
+    question_ids: set[str] = set()
+    for row in questions:
+        if not isinstance(row, dict):
+            raise ReadinessError("簽核題源含非物件題目")
+        qid = row.get("id")
+        stem = row.get("stemAsset") or {}
+        answer = row.get("answerVerification") or {}
+        structured = answer.get("structuredAnswer") or {}
+        if (not isinstance(qid, str) or not qid or qid in question_ids
+                or not isinstance(row.get("ans"), list) or not row["ans"]
+                or not isinstance(row.get("sol"), str) or not row["sol"].strip()
+                or row.get("displayTruth") != "original-pdf-crop"
+                or row.get("needsStemAsset") is not True
+                or stem.get("assetStatus") != "verified"
+                or stem.get("containsAnswer") is not False
+                or stem.get("containsSolution") is not False
+                or stem.get("containsHandwriting") is not False
+                or not re.fullmatch(r"[a-f0-9]{64}", str(stem.get("sha256") or ""))
+                or not re.fullmatch(r"[a-f0-9]{64}",
+                                    str(answer.get("officialAnswerSha256") or ""))
+                or structured.get("schema") != 1):
+            raise ReadinessError(f"簽核題源題面或官方答案鏈不完整：{qid}")
+        question_ids.add(qid)
+    samples = approval.get("sampleQuestionIds")
+    if (not isinstance(samples, list) or not samples
+            or any(item not in question_ids for item in samples)):
+        raise ReadinessError("簽核題源抽查題號未綁定 217 題集合")
+    return signed, [
+        f"signed:{sha256(path)}",
+        *[f"direct:{value}" for value in direct_hashes],
+        f"questions:{len(questions)}:unique={len(question_ids)}",
+    ]
+
+
+def validate_runtime_pointer(path: Path, runtime: dict[str, Any]) -> None:
+    """Prove that the latest mutable pointer names immutable evidence."""
+    role = runtime.get("recordRole")
+    if role != "current-pointer":
+        raise ReadinessError("runtime 完工證據必須是綁定不可覆寫檔的 current pointer")
+    name = runtime.get("immutableRecord")
+    expected_sha = str(runtime.get("immutableRecordSha256") or "")
+    if (not isinstance(name, str) or not name or Path(name).name != name
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_sha)):
+        raise ReadinessError("runtime current pointer 缺少不可覆寫證據綁定")
+    immutable_path = path.with_name(name)
+    if not immutable_path.is_file() or sha256(immutable_path) != expected_sha:
+        raise ReadinessError("runtime 不可覆寫證據不存在或雜湊漂移")
+    immutable = load_json(immutable_path, "runtime 不可覆寫證據")
+    pointer_payload = {
+        key: value for key, value in runtime.items()
+        if key not in {"recordRole", "immutableRecord", "immutableRecordSha256"}
+    }
+    if immutable != pointer_payload:
+        raise ReadinessError("runtime current pointer 與不可覆寫證據內容不一致")
+
+
+def validate_runtime_verification(path: Path, plan_path: Path,
+                                  record_path: Path, signed_path: Path,
+                                  *, not_before: datetime | None = None) -> list[str]:
+    try:
+        path.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ReadinessError("runtime 驗證記錄不可放進公開 repo")
+    runtime = load_json(path, "正式題庫 runtime 驗證")
+    validate_runtime_pointer(path, runtime)
+    plan = load_json(plan_path, "上傳計畫")
+    signed, _ = validate_signed_starter(signed_path)
+    if plan.get("sourceSha256") != sha256(signed_path):
+        raise ReadinessError("runtime 所依據的上傳計畫未綁定簽核真值")
+    authorization = (runtime.get("trust") or {}).get("authorizationChain")
+    evidence_files = authorization.get("evidenceFiles") \
+        if isinstance(authorization, dict) else None
+    if not isinstance(evidence_files, dict):
+        raise ReadinessError("runtime 缺少逐題審核與官方答案裁圖實檔證據")
+
+    def evidence_paths(key: str) -> list[Path]:
+        rows = evidence_files.get(key)
+        if not isinstance(rows, list) or not rows:
+            raise ReadinessError(f"runtime 缺少完整 {key} 實檔清單")
+        paths: list[Path] = []
+        for row in rows:
+            value = row.get("path") if isinstance(row, dict) else None
+            if not isinstance(value, str) or not value.strip():
+                raise ReadinessError(f"runtime {key} 實檔路徑不合法")
+            paths.append(Path(value))
+        return paths
+
+    direct_review_paths = evidence_paths("directReviews")
+    dual_review_paths = evidence_paths("dualReviews")
+    answer_binding_paths = evidence_paths("answerBindings")
+    verifier = runtime_verifier()
+    try:
+        signed, _, signed_answer_modes, authoritative_chain = (
+            verifier._validate_signed_source(
+                signed_path, plan, plan.get("releaseId"),
+                direct_review_paths, dual_review_paths, answer_binding_paths,
+            )
+        )
+    except (verifier.RuntimeVerificationError, OSError, ValueError) as error:
+        raise ReadinessError(f"簽核真值未通過正式 runtime 驗證器：{error}") from error
+    record, deployed_at = validate_deployment_record(plan_path, record_path)
+    object_set_sha, alias_row, content_objects, stem_assets = runtime_object_set(plan)
+    record_alias = record.get("alias") or {}
+    if ((record_alias.get("bucket"), record_alias.get("path"),
+         record_alias.get("newSha256")) !=
+            (alias_row["bucket"], alias_row["path"], alias_row["sha256"])):
+        raise ReadinessError("runtime 所依據的不是本 bundle 最終部署記錄")
+    binding = {
+        "releaseId": plan.get("releaseId"),
+        "uploadPlanSha256": sha256(plan_path),
+        "deploymentRecordSha256": sha256(record_path),
+        "signedSourceSha256": sha256(signed_path),
+        "aliasSha256": alias_row["sha256"],
+        "versionedObjectSetSha256": object_set_sha,
+        "appVersion": current_app_version(),
+        "appJsSha256": sha256(REPO_ROOT / "app.js"),
+        "textbookCatalogSha256": sha256(REPO_ROOT / "textbook-catalog.js"),
+    }
+    binding_sha = canonical_sha(binding)
+    verified_at = parse_timestamp(runtime.get("verifiedAt"), "runtime 驗證")
+    lower_bound = max(deployed_at, not_before) if not_before is not None else deployed_at
+    if verified_at <= lower_bound:
+        raise ReadinessError("runtime 驗證必須晚於回滾後最終部署")
+    if (runtime.get("kind") != "matha-private-release-runtime-verification"
+            or runtime.get("version") != 2
+            or runtime.get("status") != "verified"
+            or any(runtime.get(key) != value for key, value in binding.items())
+            or runtime.get("releaseAppBindingSha256") != binding_sha
+            or runtime.get("projectUrl") != EXPECTED_SUPABASE_URL
+            or record.get("projectUrl") != EXPECTED_SUPABASE_URL):
+        raise ReadinessError("runtime 記錄未綁定最終部署、物件集合、簽核真值或目前 App")
+    alias = runtime.get("alias") or {}
+    if alias != {
+        "bucket": alias_row["bucket"], "path": alias_row["path"],
+        "sha256": alias_row["sha256"], "bytes": alias_row["bytes"],
+    }:
+        raise ReadinessError("runtime alias 回讀證據不一致")
+    readback = runtime.get("readback") or {}
+    if readback != {
+        "aliasObjects": 1,
+        "versionedObjects": content_objects + stem_assets,
+        "contentObjects": content_objects,
+        "stemAssets": stem_assets,
+        "hashMismatches": 0,
+        "missingObjects": 0,
+    }:
+        raise ReadinessError("runtime 未完整讀回全部私有物件")
+    content = runtime.get("content") or {}
+    topics = content.get("topics") or {}
+    topic_values = list(topics.values()) if isinstance(topics, dict) else []
+    if (content.get("questions") != 217 or content.get("packs") != 191
+            or not isinstance(topics, dict) or set(topics) != EXPECTED_TOPICS
+            or any(not isinstance(value, int) or isinstance(value, bool)
+                   or value < 13 or value > 18 for value in topic_values)
+            or sum(topic_values) != 217
+            or content.get("roles") != EXPECTED_ROLES
+            or signed_answer_modes != {"multi": 21, "single": 35, "text": 161}
+            or content.get("answerModes") != signed_answer_modes
+            or content.get("answersVerifiedAgainstSignedSource") != 217
+            or content.get("pendingVisuals") != 0
+            or content_objects != 193 or stem_assets != 217):
+        raise ReadinessError("runtime 題數、題包、單元、角色或答案分布不符 217 題版本")
+    trust = runtime.get("trust") or {}
+    authorization = trust.get("authorizationChain")
+    if authorization != authoritative_chain:
+        raise ReadinessError("runtime 授權鏈未精確綁定簽核真值")
+    answer_evidence = [
+        {
+            "id": question["id"], "ans": question["ans"],
+            "sol": question["sol"],
+            "answerVerification": question["answerVerification"],
+        }
+        for question in signed["questions"]
+    ]
+    if (any(trust.get(key) != value for key, value in EXPECTED_CORPUS.items())
+            or trust.get("reviewPolicy") != EXPECTED_REVIEW_POLICY
+            or trust.get("releaseApprovedBy") != signed.get("releaseApprovedBy")
+            or trust.get("signedSourceQuestionSetSha256") != canonical_sha(signed["questions"])
+            or trust.get("answerEvidenceSetSha256") != canonical_sha(answer_evidence)
+            or trust.get("authorizationChainSha256") != canonical_sha(authorization)):
+        raise ReadinessError("runtime 題源、官方答案或授權真值雜湊不一致")
+    return [
+        f"runtime:{sha256(path)}", f"release:{binding['releaseId']}",
+        f"alias:{binding['aliasSha256']}", f"app:{binding['appVersion']}:{binding['appJsSha256']}",
+        f"signedSource:{binding['signedSourceSha256']}",
+        "readback:alias=1,versioned=410,questions=217,packs=191,topics=14,answers=217",
+    ]
+
+
+def validate_app_loader_verification(path: Path, plan_path: Path,
+                                     record_path: Path, runtime_path: Path,
+                                     *, not_before: datetime) -> list[str]:
+    try:
+        path.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ReadinessError("App loader 驗證記錄不可放進公開 repo")
+    plan = load_json(plan_path, "上傳計畫")
+    _, alias_row = release_object_rows(plan)
+    runtime = load_json(runtime_path, "Storage 全量讀回")
+    validate_runtime_pointer(runtime_path, runtime)
+    signed_path = Path(str(plan.get("source") or ""))
+    if not signed_path.is_absolute():
+        signed_path = plan_path.resolve().parent / signed_path
+    if not signed_path.is_file() or sha256(signed_path) != plan.get("sourceSha256"):
+        raise ReadinessError("App loader 所綁定的簽核題源不存在或雜湊漂移")
+    value = load_json(path, "登入 App loader 驗證")
+    verifier = app_loader_verifier()
+    try:
+        verifier.validate_app_loader_evidence(value)
+    except (verifier.AppLoaderVerificationError, OSError, ValueError) as error:
+        raise ReadinessError(f"登入 App loader 未通過正式證據驗證器：{error}") from error
+    verified_at = parse_timestamp(value.get("verifiedAt"), "登入 App loader 驗證")
+    if verified_at <= not_before:
+        raise ReadinessError("登入 App loader 驗證必須晚於 Storage 全量讀回")
+    if runtime.get("recordRole") == "current-pointer":
+        pointer_sha: str | None = sha256(runtime_path)
+        immutable_name = runtime.get("immutableRecord")
+        immutable_sha = runtime.get("immutableRecordSha256")
+    else:
+        pointer_sha = None
+        immutable_name = runtime_path.name
+        immutable_sha = sha256(runtime_path)
+    binding = {
+        "releaseId": plan.get("releaseId"),
+        "uploadPlanSha256": sha256(plan_path),
+        "deploymentRecordSha256": sha256(record_path),
+        "storageRuntimeRecordSha256": sha256(runtime_path),
+        "storageRuntimeCurrentPointerSha256": pointer_sha,
+        "storageRuntimeImmutableRecord": immutable_name,
+        "storageRuntimeImmutableRecordSha256": immutable_sha,
+        "storageRuntimeBindingSha256": runtime.get("releaseAppBindingSha256"),
+        "signedSourceSha256": sha256(signed_path),
+        "aliasSha256": alias_row["sha256"],
+        "appVersion": current_app_version(),
+        "appJsSha256": sha256(REPO_ROOT / "app.js"),
+        "textbookCatalogSha256": sha256(REPO_ROOT / "textbook-catalog.js"),
+        "projectUrl": EXPECTED_SUPABASE_URL,
+    }
+    if (value.get("kind") != "matha-private-app-loader-verification"
+            or value.get("version") != 1
+            or value.get("status") != "verified"
+            or any(value.get(key) != expected for key, expected in binding.items())
+            or value.get("appLoaderBindingSha256") != canonical_sha(binding)):
+        raise ReadinessError("登入 App loader 記錄未綁定最終部署、Storage 證據與目前 App")
+    authentication = value.get("authentication") or {}
+    if (authentication.get("mode") not in {
+            "provided-user-access-token", "admin-generated-one-time-magiclink",
+            }
+            or authentication.get("realUserSession") is not True
+            or authentication.get("appUserEnabled") is not True
+            or authentication.get("serviceRoleUsedForStorage") is not False
+            or authentication.get("credentialsSerialized") is not False):
+        raise ReadinessError("登入 App loader 未使用啟用中的真實使用者與 RLS")
+    loader = value.get("loader") or {}
+    topics = loader.get("topics") or {}
+    if (loader.get("alias") != EXPECTED_MANIFEST_ALIAS
+            or loader.get("aliasRoute") != "authenticated-jwt-signed-url"
+            or loader.get("packs") != 191
+            or loader.get("packRoute") != "authenticated-jwt-storage-rls"
+            or loader.get("packHashMismatches") != 0
+            or loader.get("questions") != 217
+            or loader.get("questionSchemaFailures") != 0
+            or loader.get("quarantinedQuestions") != 0
+            or not isinstance(topics, dict) or set(topics) != EXPECTED_TOPICS
+            or any(not isinstance(count, int) or isinstance(count, bool)
+                   or count < 13 or count > 18 for count in topics.values())
+            or sum(topics.values()) != 217
+            or loader.get("roles") != EXPECTED_ROLES):
+        raise ReadinessError("登入 App loader 題包、題數、隔離或分布證據不完整")
+    sample = value.get("stemAssetSample") or {}
+    count = sample.get("count")
+    ids = sample.get("questionIds")
+    if (not isinstance(count, int) or isinstance(count, bool) or count < 14
+            or not isinstance(ids, list) or len(ids) != count or len(set(ids)) != count
+            or sample.get("coveredTopics") != sorted(EXPECTED_TOPICS)
+            or sample.get("coveredRoles") != sorted(EXPECTED_ROLES)
+            or sample.get("authenticatedRlsDownloads") != count
+            or sample.get("signedUrlCrossChecks") != count
+            or sample.get("hashMismatches") != 0):
+        raise ReadinessError("登入 App loader 題圖 RLS／signed URL 覆蓋不足")
+    readback = value.get("stemAssetReadback") or {}
+    if (readback.get("count") != 217
+            or readback.get("authenticatedRlsDownloads") != 217
+            or readback.get("missingObjects") != 0
+            or readback.get("hashMismatches") != 0):
+        raise ReadinessError("登入 App loader 未以一般使用者 RLS 完整讀回 217 張題圖")
+    return [
+        f"appLoader:{sha256(path)}",
+        f"storageRuntime:{binding['storageRuntimeRecordSha256']}",
+        f"auth:{authentication['mode']}:serviceRoleStorage=false",
+        f"loader:packs=191,questions=217,quarantined=0,stemRls=217,stemSamples={count}",
+    ]
+
+
+def _ordered_evidence_files(candidates: list[Path], expected_hashes: list[str],
+                            label: str) -> list[Path]:
+    by_hash: dict[str, list[Path]] = {}
+    for path in candidates:
         try:
-            signed_release_id = load_json(signed_path, "簽核題源").get("releaseId")
-        except ReadinessError:
-            pass
-    if not plan_path.is_file() and signed_release_id and search_root.is_dir():
-        for candidate in search_root.rglob("upload-plan.json"):
+            by_hash.setdefault(sha256(path), []).append(path)
+        except OSError:
+            continue
+    ordered: list[Path] = []
+    for expected in expected_hashes:
+        matches = by_hash.get(expected) or []
+        if not matches:
+            raise ReadinessError(f"找不到簽核鏈指定的 {label} 實檔：{expected}")
+        ordered.append(sorted(matches, key=lambda value: str(value).casefold())[0])
+    return ordered
+
+
+def validate_starter_review_files(signed_path: Path, plan_path: Path,
+                                  search_root: Path) -> list[str]:
+    """Re-run the authoritative 217-question review against real private files."""
+    signed = load_json(signed_path, "Starter 簽核題源")
+    audit = signed.get("reviewAudit") or {}
+    direct_hashes = audit.get("directReviewSha256")
+    dual_hashes = audit.get("dualReviewSha256")
+    if not isinstance(direct_hashes, list) or not isinstance(dual_hashes, list):
+        raise ReadinessError("Starter 簽核題源缺少 direct／dual 實檔雜湊鏈")
+    direct_candidates = find_json_files(
+        [search_root], ["*decisions*.json", "*direct-review*.json", "delegated-review.json"],
+    )
+    dual_candidates = find_json_files(
+        [search_root], ["*owner-delegated-intersection*.json", "dual-review.json"],
+    )
+    binding_candidates = find_json_files(
+        [search_root], ["answer-binding-candidates.json"],
+    )
+    direct_paths = _ordered_evidence_files(
+        direct_candidates, [str(value) for value in direct_hashes], "direct review",
+    )
+    dual_paths = _ordered_evidence_files(
+        dual_candidates, [str(value) for value in dual_hashes], "dual review",
+    )
+    binding_hashes: list[str] = []
+    for path in dual_paths:
+        value = load_json(path, "Starter dual review")
+        hash_value = str(value.get("answerBindingSha256") or "")
+        if not re.fullmatch(r"[a-f0-9]{64}", hash_value):
+            raise ReadinessError(f"dual review 缺少官方答案來源雜湊：{path}")
+        binding_hashes.append(hash_value)
+    binding_paths = _ordered_evidence_files(
+        binding_candidates, binding_hashes, "answer binding",
+    )
+    verifier = runtime_verifier()
+    plan = load_json(plan_path, "Starter 上傳計畫")
+    try:
+        _, questions, _, chain = verifier._validate_signed_source(
+            signed_path, plan, plan.get("releaseId"),
+            direct_paths, dual_paths, binding_paths,
+        )
+    except (verifier.RuntimeVerificationError, OSError, ValueError) as error:
+        raise ReadinessError(f"Starter 審核實檔未通過正式驗證器：{error}") from error
+    binding_rows = chain["evidenceFiles"]["answerBindings"]
+    if len(questions) != 217 or sum(row["answerAssetCount"] for row in binding_rows) != 217:
+        raise ReadinessError("Starter 審核實檔未完整涵蓋 217 題與 217 張官方答案裁圖")
+    return [
+        *[f"directFile:{sha256(path)}" for path in direct_paths],
+        *[f"dualFile:{sha256(path)}" for path in dual_paths],
+        *[f"answerBinding:{sha256(path)}" for path in binding_paths],
+        "answerCrops:217:hashVerified=217",
+    ]
+
+
+def audit_starter(work_root: Path) -> tuple[
+        dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    search_root = work_root.parent if work_root.parent.is_dir() else work_root
+    signed_paths = find_json_files(
+        [work_root, search_root], ["signed-private-question-source.json"],
+    )
+    valid_signed: dict[str, tuple[Path, dict[str, Any], list[str]]] = {}
+    signed_errors: list[str] = []
+    for path in signed_paths:
+        try:
+            signed, evidence = validate_signed_starter(path)
+            valid_signed.setdefault(sha256(path), (path, signed, evidence))
+        except ReadinessError as error:
+            signed_errors.append(str(error))
+    if not valid_signed:
+        review = gate(
+            "starter-safe-review", "Starter 題庫逐題安全審核與發布授權",
+            "fail" if signed_paths else "blocked",
+            signed_errors[0] if signed_errors else "尚無 217 題可驗證簽核題源",
+            blockers=[] if signed_paths else ["完成逐題像素、官方答案、數學正確性與發布授權鏈"],
+        )
+        signed_path = None
+        signed = None
+    elif len(valid_signed) > 1:
+        review = gate(
+            "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "fail",
+            "找到多份不同的 217 題簽核真值，拒絕猜測正式來源",
+        )
+        signed_path = None
+        signed = None
+    else:
+        signed_path, signed, evidence = next(iter(valid_signed.values()))
+        review = gate(
+            "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "pass",
+            "217 題簽核真值格式有效，尚待核對 direct／dual／官方答案裁圖實檔",
+            evidence=evidence,
+        )
+
+    plan_paths: list[Path] = []
+    if signed_path is not None and signed is not None:
+        for candidate in find_json_files([work_root, search_root], ["upload-plan.json"]):
             try:
-                if load_json(candidate, "上傳計畫").get("releaseId") == signed_release_id:
-                    plan_path = candidate
-                    break
+                plan = load_json(candidate, "上傳計畫")
+                release_object_rows(plan)
+                if (plan.get("releaseId") == signed.get("releaseId")
+                        and plan.get("sourceSha256") == sha256(signed_path)
+                        and plan.get("releaseApprovedBy") == signed.get("releaseApprovedBy")):
+                    plan_paths.append(candidate)
             except ReadinessError:
                 continue
-    if signed_release_id and search_root.is_dir():
-        deployment_paths.extend(sorted(search_root.glob("*deployment*.json")))
-    matching_records = []
-    for path in deployment_paths:
-        if not path.is_file():
-            continue
-        try:
-            value = load_json(path, "部署記錄")
-            if value.get("kind") == "matha-private-storage-deployment" \
-                    and (not signed_release_id or value.get("releaseId") == signed_release_id):
-                matching_records.append(path)
-        except ReadinessError:
-            continue
-    record_path = max(matching_records, key=lambda path: path.stat().st_mtime) \
-        if matching_records else None
-    if not plan_path.is_file() or record_path is None:
-        deployment_gate = gate("starter-deployment", "Starter Supabase 私有發布與回滾驗證", "blocked", "尚無正式部署記錄", blockers=["完成 bundle 上傳、回讀驗 hash、切換 alias 並完成回滾演練"])
+
+    if review["status"] == "pass":
+        verified_review_evidence: list[str] | None = None
+        review_errors: list[str] = []
+        for plan_path in plan_paths:
+            try:
+                verified_review_evidence = validate_starter_review_files(
+                    signed_path, plan_path, search_root,
+                )
+                break
+            except ReadinessError as error:
+                review_errors.append(str(error))
+        if verified_review_evidence is None:
+            review = gate(
+                "starter-safe-review", "Starter 題庫逐題安全審核與發布授權",
+                "fail" if plan_paths and review_errors else "blocked",
+                review_errors[0] if review_errors
+                else "仍缺 exact-hash bundle 或 direct／dual／官方答案裁圖實檔",
+                blockers=[] if review_errors else [
+                    "補齊 7 組 direct、7 組 dual 與 217 張官方答案裁圖後重驗",
+                ],
+            )
+        else:
+            review = gate(
+                "starter-safe-review", "Starter 題庫逐題安全審核與發布授權", "pass",
+                "217 題已由透明代理逐像素核對原題與官方答案；實檔與 217 張答案裁圖均逐雜湊重驗，未冒充真人 QA",
+                evidence=[*evidence, *verified_review_evidence],
+            )
+
+    deployment_paths = find_json_files([work_root, search_root], ["*deployment*.json"])
+    rollback_paths = find_json_files([work_root, search_root], ["*rollback*.json"])
+    chains: list[dict[str, Any]] = []
+    matching_deployment_evidence = False
+    for plan_path in plan_paths:
+        plan = load_json(plan_path, "上傳計畫")
+        plan_sha = sha256(plan_path)
+        deployments: list[tuple[Path, dict[str, Any], datetime]] = []
+        for path in deployment_paths:
+            try:
+                raw = load_json(path, "部署記錄")
+                if (raw.get("kind") != "matha-private-storage-deployment"
+                        or raw.get("releaseId") != plan.get("releaseId")
+                        or raw.get("uploadPlanSha256") != plan_sha):
+                    continue
+                matching_deployment_evidence = True
+                record, deployed_at = validate_deployment_record(plan_path, path)
+                deployments.append((path, record, deployed_at))
+            except ReadinessError:
+                continue
+        for first_path, first, first_time in deployments:
+            for rollback_path in rollback_paths:
+                try:
+                    rollback, rollback_time = validate_rollback_record(
+                        rollback_path, first_path, first, first_time,
+                    )
+                except ReadinessError:
+                    continue
+                for final_path, final, final_time in deployments:
+                    if final_path.resolve() == first_path.resolve() \
+                            or sha256(final_path) == sha256(first_path):
+                        continue
+                    final_prepared = parse_timestamp(final.get("preparedAt"), "最終部署準備記錄")
+                    final_alias = final.get("alias") or {}
+                    if (final_prepared <= rollback_time or final_time <= rollback_time
+                            or final_alias.get("previousSha256") != rollback.get("restoredAliasSha256")
+                            or final_alias.get("newSha256") != (first.get("alias") or {}).get("newSha256")):
+                        continue
+                    chains.append({
+                        "planPath": plan_path,
+                        "plan": plan,
+                        "signedPath": signed_path,
+                        "firstPath": first_path,
+                        "first": first,
+                        "firstAt": first_time,
+                        "rollbackPath": rollback_path,
+                        "rollback": rollback,
+                        "rollbackAt": rollback_time,
+                        "finalPath": final_path,
+                        "final": final,
+                        "finalAt": final_time,
+                    })
+
+    chain = max(chains, key=lambda row: row["finalAt"]) if chains else None
+    if review["status"] != "pass" or not plan_paths:
+        deployment_gate = gate(
+            "starter-deployment", "Starter Supabase 私有發布、回滾與最終重部署",
+            "blocked", "須先有唯一 217 題簽核真值與 exact-hash bundle",
+            blockers=["以簽核題源建立 217 題正式上傳計畫"],
+        )
+    elif chain is None:
+        deployment_gate = gate(
+            "starter-deployment", "Starter Supabase 私有發布、回滾與最終重部署",
+            "fail" if matching_deployment_evidence else "blocked",
+            "現有紀錄無法證明初次部署 → 回滾舊 alias → 不同紀錄最終重部署"
+            if matching_deployment_evidence else "尚未執行 217 題正式發布與回滾演練",
+            blockers=[] if matching_deployment_evidence else [
+                "Supabase 恢復後依序部署 217 題、回滾 153 題、再最終部署 217 題",
+            ],
+        )
     else:
-        try:
-            plan = load_json(plan_path, "上傳計畫")
-            record = load_json(record_path, "部署記錄")
-            alias = record.get("alias") or {}
-            if (record.get("kind") != "matha-private-storage-deployment"
-                    or record.get("rollbackAvailable") is not True
-                    or record.get("releaseId") != plan.get("releaseId")
-                    or record.get("uploadPlanSha256") != sha256(plan_path)
-                    or not alias.get("newSha256")):
-                raise ReadinessError("部署記錄與 bundle 不一致")
-            rollback_candidates = [work_root / "rollback-drill.json"]
-            if search_root.is_dir():
-                rollback_candidates.extend(search_root.glob("*rollback-drill*.json"))
-            rollback = next((path for path in rollback_candidates if path.is_file()
-                             and any(sha256(record_candidate) ==
-                                     (load_json(path, "回滾演練").get("deploymentRecordSha256"))
-                                     for record_candidate in matching_records)), None)
-            if rollback is None:
-                raise ReadinessError("缺少正式 alias 回滾演練記錄")
-            rollback_value = load_json(rollback, "回滾演練")
-            if (rollback_value.get("kind") != "matha-private-storage-rollback"
-                    or rollback_value.get("restoredAliasSha256") != alias.get("previousSha256")):
-                raise ReadinessError("回滾演練記錄未綁定本次部署")
-            deployment_gate = gate("starter-deployment", "Starter Supabase 私有發布與回滾驗證", "pass", "部署、alias 與回滾記錄已 hash-bound", evidence=[str(record_path), str(rollback)])
-        except ReadinessError as error:
-            deployment_gate = gate("starter-deployment", "Starter Supabase 私有發布與回滾驗證", "fail", str(error))
-    return review, deployment_gate
+        deployment_gate = gate(
+            "starter-deployment", "Starter Supabase 私有發布、回滾與最終重部署", "pass",
+            "初次部署、綁定該紀錄的回滾與回滾後最終重部署已依時間及雜湊串接",
+            evidence=[
+                f"plan:{sha256(chain['planPath'])}",
+                f"firstDeployment:{sha256(chain['firstPath'])}",
+                f"rollback:{sha256(chain['rollbackPath'])}",
+                f"finalDeployment:{sha256(chain['finalPath'])}",
+            ],
+        )
+
+    selected_runtime_path: Path | None = None
+    selected_runtime_time: datetime | None = None
+    if chain is None:
+        runtime_gate = gate(
+            "starter-storage-readback", "Starter Storage 全量讀回與簽核真值綁定",
+            "blocked", "須先完成回滾後最終部署",
+            blockers=["最終部署後讀回固定 alias 與全部 410 個版本物件"],
+        )
+    else:
+        # Only the canonical current pointer written beside D2 may represent
+        # current state. Historical/renamed pointer copies are evidence archives,
+        # never alternate candidates for a mutable "current" decision.
+        canonical_runtime = chain["finalPath"].with_name(
+            "private-release-runtime-verification.json"
+        )
+        runtime_paths = [canonical_runtime] if canonical_runtime.is_file() else []
+        valid_runtime: list[tuple[datetime, int, Path, list[str]]] = []
+        runtime_errors: list[str] = []
+        for path in runtime_paths:
+            try:
+                value = load_json(path, "Storage 全量讀回")
+                if (value.get("kind") != "matha-private-release-runtime-verification"
+                        or value.get("releaseId") != chain["plan"].get("releaseId")
+                        or value.get("uploadPlanSha256") != sha256(chain["planPath"])
+                        or value.get("deploymentRecordSha256") != sha256(chain["finalPath"])):
+                    continue
+                evidence = validate_runtime_verification(
+                    path, chain["planPath"], chain["finalPath"], chain["signedPath"],
+                    not_before=chain["rollbackAt"],
+                )
+                valid_runtime.append((
+                    parse_timestamp(value.get("verifiedAt"), "Storage 全量讀回"),
+                    int(value.get("recordRole") == "current-pointer"),
+                    path, evidence,
+                ))
+            except ReadinessError as error:
+                runtime_errors.append(str(error))
+        if not valid_runtime:
+            runtime_gate = gate(
+                "starter-storage-readback", "Starter Storage 全量讀回與簽核真值綁定",
+                "fail" if runtime_errors else "blocked",
+                runtime_errors[0] if runtime_errors else "尚無綁定最終部署的 Storage 全量讀回證據",
+                blockers=[] if runtime_errors else [
+                    "讀回 alias、410 個版本物件、217 題／191 題包並核對簽核題源",
+                ],
+            )
+        else:
+            selected_runtime_time, _, selected_runtime_path, evidence = max(
+                valid_runtime, key=lambda row: (row[0], row[1]),
+            )
+            runtime_gate = gate(
+                "starter-storage-readback", "Starter Storage 全量讀回與簽核真值綁定", "pass",
+                "遠端 alias 與 410 個版本物件已逐位元讀回，217 題題包已綁定簽核真值",
+                evidence=[str(selected_runtime_path), *evidence],
+            )
+
+    if (chain is None or selected_runtime_path is None or selected_runtime_time is None):
+        app_loader_gate = gate(
+            "starter-authenticated-app-load", "Starter 登入使用者 App loader 實載",
+            "blocked", "須先完成回滾後最終部署與 Storage 全量讀回",
+            blockers=["以啟用中的一般使用者 JWT 驗證 RLS、signed URL、191 題包與題圖"],
+        )
+    else:
+        canonical_loader = chain["finalPath"].with_name(
+            "private-app-loader-verification.json"
+        )
+        app_loader_paths = [canonical_loader] if canonical_loader.is_file() else []
+        valid_loader: list[tuple[datetime, Path, list[str]]] = []
+        loader_errors: list[str] = []
+        for path in app_loader_paths:
+            try:
+                raw = load_json(path, "登入 App loader 驗證")
+                if (raw.get("kind") != "matha-private-app-loader-verification"
+                        or raw.get("releaseId") != chain["plan"].get("releaseId")
+                        or raw.get("deploymentRecordSha256") != sha256(chain["finalPath"])
+                        or raw.get("storageRuntimeRecordSha256") != sha256(selected_runtime_path)):
+                    continue
+                evidence = validate_app_loader_verification(
+                    path, chain["planPath"], chain["finalPath"], selected_runtime_path,
+                    not_before=selected_runtime_time,
+                )
+                valid_loader.append((parse_timestamp(raw.get("verifiedAt"), "登入 App loader 驗證"),
+                                     path, evidence))
+            except ReadinessError as error:
+                loader_errors.append(str(error))
+        if not valid_loader:
+            app_loader_gate = gate(
+                "starter-authenticated-app-load", "Starter 登入使用者 App loader 實載",
+                "fail" if loader_errors else "blocked",
+                loader_errors[0] if loader_errors else "尚無綁定最終 Storage 證據的登入載入紀錄",
+                blockers=[] if loader_errors else [
+                    "用一般登入者執行 alias signed URL、191 題包 RLS 與題圖雙路徑 smoke test",
+                ],
+            )
+        else:
+            _, loader_path, evidence = max(valid_loader, key=lambda row: row[0])
+            app_loader_gate = gate(
+                "starter-authenticated-app-load", "Starter 登入使用者 App loader 實載", "pass",
+                "一般啟用使用者已經由 App 同路徑載入 191 題包、217 題與跨單元題圖抽樣",
+                evidence=[str(loader_path), *evidence],
+            )
+    return review, deployment_gate, runtime_gate, app_loader_gate
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     inventory = load_json(args.inventory, "完整卷清冊")
     selected_paper = str(inventory.get("selectedNextPaperId") or "paper-mock-3")
-    gates = [audit_full_papers(args.inventory, args.private_root)]
+    paper_engineering, calibration = audit_full_papers(args.inventory, args.private_root)
+    gates = [paper_engineering]
     gates.append(audit_device([args.downloads, args.private_root], selected_paper, args.device_audit))
+    gates.append(calibration)
+    gates.append(audit_score_stability(
+        [args.downloads, args.private_root], args.capability_evidence,
+    ))
     detail, scale = audit_detail(args.private_eval_root, args.detail_gold, args.detail_prediction)
     gates.extend([detail, scale])
-    review, deployment_gate = audit_starter(args.release_work_root)
-    gates.extend([review, deployment_gate])
+    review, deployment_gate, runtime_gate, app_loader_gate = audit_starter(
+        args.release_work_root,
+    )
+    gates.extend([review, deployment_gate, runtime_gate, app_loader_gate])
+    gates.append(audit_github_delivery(
+        [args.private_root, args.downloads], args.github_delivery,
+    ))
+    engineering = [row for row in gates if row["phase"] == "engineering"]
+    post_delivery = [row for row in gates if row["phase"] == "post-delivery"]
+    engineering_complete = all(row["status"] == "pass" for row in engineering)
+    capability_validated = all(row["status"] == "pass" for row in post_delivery)
     return {
-        "kind": "matha-system-blueprint-readiness-v1",
+        "kind": "matha-system-blueprint-readiness-v2",
         "generatedAt": datetime.now(timezone(timedelta(hours=8))).isoformat(),
         "appVersion": current_app_version(),
-        "complete": all(row["status"] == "pass" for row in gates),
+        "complete": engineering_complete,
+        "engineeringComplete": engineering_complete,
+        "capabilityValidated": capability_validated,
+        "allGoalsComplete": engineering_complete and capability_validated,
         "counts": {
             "pass": sum(row["status"] == "pass" for row in gates),
             "blocked": sum(row["status"] == "blocked" for row in gates),
             "fail": sum(row["status"] == "fail" for row in gates),
             "total": len(gates),
+        },
+        "engineeringCounts": {
+            "pass": sum(row["status"] == "pass" for row in engineering),
+            "blocked": sum(row["status"] == "blocked" for row in engineering),
+            "fail": sum(row["status"] == "fail" for row in engineering),
+            "total": len(engineering),
+        },
+        "postDeliveryCounts": {
+            "pass": sum(row["status"] == "pass" for row in post_delivery),
+            "blocked": sum(row["status"] == "blocked" for row in post_delivery),
+            "fail": sum(row["status"] == "fail" for row in post_delivery),
+            "total": len(post_delivery),
         },
         "gates": gates,
     }
@@ -799,21 +1920,23 @@ def markdown(report: dict[str, Any]) -> str:
         "",
         f"產生時間：{report['generatedAt']}  ",
         f"App 版本：{report['appVersion']}  ",
-        f"整體：{'已完成' if report['complete'] else '尚未完成'}",
+        f"工程交付：{'已完成' if report['engineeringComplete'] else '尚未完成'}  ",
+        f"能力驗證：{'已完成' if report['capabilityValidated'] else '待真實使用累積'}",
         "",
-        "| 關卡 | 狀態 | 證據結論 |",
-        "|---|---|---|",
+        "| 階段 | 關卡 | 狀態 | 證據結論 |",
+        "|---|---|---|---|",
     ]
     for row in report["gates"]:
         summary = str(row["summary"]).replace("|", "／").replace("\n", " ")
-        lines.append(f"| {row['label']} | {status_label[row['status']]} | {summary} |")
+        phase_label = "工程交付" if row["phase"] == "engineering" else "交付後證據"
+        lines.append(f"| {phase_label} | {row['label']} | {status_label[row['status']]} | {summary} |")
     for row in report["gates"]:
         lines.extend(["", f"## {row['label']}", "", f"狀態：{status_label[row['status']]}。{row['summary']}"])
         if row["blockers"]:
             lines.extend(["", "仍缺：", *[f"- {item}" for item in row["blockers"]]])
         if row["evidence"]:
             lines.extend(["", "證據：", *[f"- `{item}`" for item in row["evidence"]]])
-    lines.extend(["", "此報告只接受 exact-hash、真機與具名真人證據；測試通過不能代替真實作答或簽核。", ""])
+    lines.extend(["", "此報告只接受 exact-hash、真機、真實作答與透明授權鏈證據；測試通過不能代替交付後實證。", ""])
     return "\n".join(lines)
 
 
@@ -827,6 +1950,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--private-root", type=Path, default=private_root)
     parser.add_argument("--downloads", type=Path, default=Path.home() / "Downloads")
     parser.add_argument("--device-audit", type=Path, action="append")
+    parser.add_argument("--capability-evidence", type=Path, action="append")
+    parser.add_argument("--github-delivery", type=Path, action="append")
     parser.add_argument("--private-eval-root", type=Path, default=private_root / "matha-private-evals")
     parser.add_argument("--detail-gold", type=Path, default=private_root / "matha-private-evals" / "paper-mock-1-detail-gold-v1.json")
     parser.add_argument("--detail-prediction", type=Path)
@@ -839,7 +1964,8 @@ def main(argv: list[str] | None = None) -> int:
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     md_path = args.output.with_suffix(".md")
     md_path.write_text(markdown(report), encoding="utf-8")
-    print(json.dumps({"complete": report["complete"], "counts": report["counts"],
+    print(json.dumps({"complete": report["complete"], "engineeringComplete": report["engineeringComplete"],
+                      "capabilityValidated": report["capabilityValidated"], "counts": report["counts"],
                       "json": str(args.output), "markdown": str(md_path)}, ensure_ascii=False))
     return 1 if args.require_complete and not report["complete"] else 0
 

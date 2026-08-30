@@ -1,4 +1,4 @@
-# 數A特訓工程驗收摘要（2026-08-29）
+# 數A特訓工程驗收摘要（2026-08-29；2026-08-30 收尾更新）
 
 本檔只記錄可由程式與雜湊驗證的工程證據，不把尚未發生的本人作答、Galaxy Tab 真機長考或個人詳批 gold 冒充完成。
 
@@ -9,8 +9,12 @@
 - 14 單元各 13–18 題；例題 114、章末簡單 56、中等 34、困難 13。
 - 平衡版 release ID：`starter-ae19e7c7061200e7`。
 - 簽核題源 SHA-256：`6e014d34223e865c10eb783058282eec362595b8d4966dccf340dc2be53f8b45`。
+- 此版採擁有者明確委託的代理直接像素／答案審核；授權、執行者、完整批次與每份審核雜湊都寫入簽核鏈，並明列 `humanPixelReviewClaimed:false`。這是被允許的透明 owner-delegated 流程，不要求把代理冒充具名真人。
 - manifest、內容包與 217 張題圖皆使用版本化路徑；固定 alias 只允許在全部上傳並回讀雜湊後最後切換。
-- 目前 Supabase Storage 回覆 `DatabaseTimeout (544)`，因此線上仍保留已驗證的 153 題版；217 題版尚未半套切換。
+- 部署器會在固定 alias 切換前，先以原子寫檔保存上一版 alias bytes、新舊雜湊與完整上傳清冊；即使網路回應遺失或程序在切換途中終止，prepared record 仍可直接驅動安全回滾。
+- 工程發布順序固定為第一次部署 D1 → 綁定 D1 的回滾 → 時間較晚且記錄不同的最終部署 D2；三者須綁同一 upload plan 與 alias 雜湊。
+- D2 後先由 Storage verifier 全量回讀固定 alias 與 410 個版本化物件，核對 217 題、191 題包、14 單元、角色分布、全部題圖引用及簽核題源；再由啟用中的真實登入使用者以 JWT／RLS 讀回 191 題包與 217/217 題圖，signed URL 另做跨 14 單元／4 角色抽查。兩份證據都須綁 D2、`APP_VER` 與 `app.js` SHA，不能互相替代。
+- 目前 Supabase 管理面雖顯示 `ACTIVE_HEALTHY`，Storage alias 直讀與 DB login role 仍皆回 `DatabaseTimeout (544)`。固定 alias 沒有切換；最後一次成功驗證的內容是 153 題，但目前可用性未知，不能宣稱 153 題仍在線。217 題 release 只存在 repo 外本地 bundle，尚未部署。
 
 ## 平板資料安全壓測
 
@@ -33,8 +37,11 @@
 
 ## 自動測試
 
-- Web／PWA：269 項，267 通過、2 項私人 gold 在沒有真實證據時按設計跳過、0 失敗。
-- Python 教材／發布／完整卷：245 項，全部通過。
-- Supabase Edge／GPT-5.5 閘門：14 項，全部通過。
+- 2026-08-30 本地收尾版：Web／PWA 270 項（268 通過、2 項私人 gold 因尚無真實證據按設計跳過、0 失敗）；Python 教材／發布／完整卷／公開 Git 安全 291 項全部通過；Supabase Edge／GPT-5.5 閘門 14 項全部通過。
+- 最終提交若再修改程式，仍須重跑 `npm test`、`npm run test:figures`、`npm run test:edge` 與 `python scripts/audit-blueprint-readiness.py`；不得把上述施工 checkpoint 冒充不同 HEAD 的最終結果。
+- GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
+- 所有證據留在 repo 外；不得把 service-role key、使用者 token、私人教材、答案或部署記錄提交到公開 Git。
 
-仍不能由工程測試代替的只有：Galaxy Tab S10 Ultra 真實 100 分鐘紀錄、本人未看過的正式卷新鮮度、7／30 題本人詳批 gold，以及最後的 13 級分成績證據。
+`matha-system-blueprint-readiness-v2` 將證據分成兩層。6 道工程關卡中，完整卷接線與 Starter 安全審核已有可驗證證據；D1→回滾→D2、Storage 全量回讀、登入使用者 App loader、乾淨 HEAD 的 CI＋Pages 尚未完成。GitHub 關卡也會重新比對公開 tracked tree 安全稽核。5 道交付後能力關卡目前均待真實使用，不會被工程測試代替。
+
+仍不能由工程測試代替的只有：至少 6 回本人未看過的正式卷、最近 3 回不同來源且 freshness-confirmed 的 20 題／100 分鐘正式卷各 ≥72 分、Galaxy Tab S10 Ultra 真實 100 分鐘與翻頁 P95、7 題第一錯步 precision／coverage、30 題個人詳批 gold。它們只影響 `capabilityValidated`，不倒灌成施工前假證據。

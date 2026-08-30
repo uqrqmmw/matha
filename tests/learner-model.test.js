@@ -2,7 +2,100 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { webcrypto } = require('node:crypto');
+const { TextEncoder } = require('node:util');
 const { loadApp, plain } = require('./helpers/load-app');
+
+test('能力目標證據匯出只接受重置後三回互異正式卷且輸出可重算、無敏感資料', async () => {
+  const { run, context } = loadApp();
+  context.crypto = webcrypto;
+  context.TextEncoder = TextEncoder;
+  const result = plain(await run(`(async () => {
+    const formal = PAPER_SOURCES.filter((source) => source.questions === 20 && source.minutes === 100 && source.calibrationEligible !== false).slice(-4);
+    const practice = PAPER_SOURCES.find((source) => source.calibrationEligible === false || source.questions !== 20);
+    const makeRun = (id, source, score, submittedAt, freshnessConfirmedAt, day) => {
+      const questions = Array.from({ length:20 }, (_, index) => ({
+        no:index + 1, status:index < score / 5 ? 'correct' : 'incorrect',
+        points:index < score / 5 ? 5 : 0, maxPoints:5,
+        read:'private-read-' + id, finalAnswer:'private-answer-' + id,
+        selectedOptions:[1], strokes:'private-strokes-' + id, token:'private-token-' + id, email:'private@example.com',
+      }));
+      return {
+        id, sourceId:source.id, d:day, createdAt:submittedAt - 100, submittedAt,
+        freshnessConfirmedAt, calibrationEligible:true, status:'awaiting-correction', score,
+        strokes:'run-strokes-' + id, token:'run-token-' + id, email:'run@example.com',
+        aiGrade:{ score, gradedAt:submittedAt + 50, questions, strokes:'grade-strokes', token:'grade-token', email:'grade@example.com' },
+      };
+    };
+    const extFor = (row, source) => ({
+      id:'external-' + row.id, paperRunId:row.id, sourceId:source.id, d:row.d, ts:row.submittedAt,
+      score:row.score, total:100, questions:source.questions, calibrationEligible:true,
+      freshnessConfirmedAt:row.freshnessConfirmedAt, strokes:'ext-strokes', token:'ext-token', email:'ext@example.com',
+    });
+    const evidence = async (runs, rows, baseline = 1000) => {
+      S.learningBaselineResetAt = baseline; S.paperRuns = runs; S.extMocks = rows; S.mocks = [];
+      return capabilityGoalEvidence(9999);
+    };
+
+    const empty = await evidence([], []);
+    const practiceRun = makeRun('practice-run', practice, 100, 1200, 1100, '2026-08-01');
+    const practiceOnly = await evidence([practiceRun], [extFor(practiceRun, practice)]);
+    const unseenMissing = makeRun('freshness-missing', formal[0], 100, 1200, null, '2026-08-02');
+    const noFreshness = await evidence([unseenMissing], [extFor(unseenMissing, formal[0])]);
+    const oldRuns = formal.slice(0, 3).map((source, index) => makeRun('old-' + index, source, 80, 1200 + index * 100, 1100 + index * 100, '2026-08-0' + (3 + index)));
+    const beforeReset = await evidence(oldRuns, oldRuns.map((row, index) => extFor(row, formal[index])), 2000);
+    const lowRuns = formal.slice(0, 3).map((source, index) => makeRun('low-' + index, source, [75, 70, 80][index], 2200 + index * 100, 2100 + index * 100, '2026-08-1' + index));
+    const belowGoal = await evidence(lowRuns, lowRuns.map((row, index) => extFor(row, formal[index])));
+    const duplicateRuns = [
+      makeRun('duplicate-a', formal[0], 75, 3200, 3100, '2026-08-20'),
+      makeRun('duplicate-b', formal[0], 80, 3300, 3200, '2026-08-21'),
+      makeRun('duplicate-c', formal[1], 85, 3400, 3300, '2026-08-22'),
+    ];
+    const duplicateSource = await evidence(duplicateRuns, duplicateRuns.map((row, index) => extFor(row, index < 2 ? formal[0] : formal[1])));
+    const goodRuns = formal.slice(0, 3).map((source, index) => makeRun('good-' + index, source, [75, 80, 85][index], 4200 + index * 100, 4100 + index * 100, '2026-08-2' + (3 + index)));
+    const stable = await evidence(goodRuns, goodRuns.map((row, index) => extFor(row, formal[index])));
+    const originalNow = Date.now; Date.now = () => 9999;
+    const stableCard = learnerModelCard(); Date.now = originalNow;
+    const unansweredRuns = formal.slice(0, 3).map((source, index) => {
+      const row = makeRun('unanswered-' + index, source, 100, 5200 + index * 100, 5100 + index * 100, '2026-08-2' + (6 + index));
+      row.aiGrade.questions.forEach((question) => { question.status = 'unanswered'; });
+      return row;
+    });
+    const unansweredWithPoints = await evidence(unansweredRuns, unansweredRuns.map((row, index) => extFor(row, formal[index])));
+    const recomputed = [];
+    for (const row of stable.runs) {
+      const { canonicalDigest, ...digestInput } = row;
+      recomputed.push({ expected:canonicalDigest, actual:await capabilityCanonicalDigest(digestInput) });
+    }
+    S.paperRuns = []; S.extMocks = [];
+    S.mocks = [1, 2, 3].map((index) => ({ n:20, acc:.8, mt:6000 + index, d:'2026-08-2' + index }));
+    const looseCard = learnerModelCard();
+    return { empty, practiceOnly, noFreshness, beforeReset, belowGoal, duplicateSource,
+      unansweredWithPoints, stable, recomputed, stableCard, looseCard };
+  })()`));
+
+  for (const blocked of [result.empty, result.practiceOnly, result.noFreshness, result.beforeReset,
+    result.belowGoal, result.duplicateSource, result.unansweredWithPoints]) {
+    assert.equal(blocked.kind, 'matha-capability-goal-evidence-v1');
+    assert.equal(blocked.stable, false);
+    assert.equal(blocked.status, 'blocked');
+  }
+  assert.match(result.belowGoal.blockers.join(','), /below-72|cross-check/);
+  assert.match(result.duplicateSource.blockers.join(','), /eligible-distinct-formal-runs:2\/3/);
+  assert.equal(result.stable.stable, true);
+  assert.equal(result.stable.status, 'stable');
+  assert.deepEqual(result.stable.runs.map((row) => row.score), [75, 80, 85]);
+  assert.equal(new Set(result.stable.runs.map((row) => row.runId)).size, 3);
+  assert.equal(new Set(result.stable.runs.map((row) => row.sourceId)).size, 3);
+  assert.equal(result.stable.runs.every((row) => row.total === 100 && row.gradeSummary.questionCount === 20
+    && row.gradeSummary.maxPoints === 100 && row.gradeSummary.awardedPoints === row.score), true);
+  assert.equal(result.recomputed.every((row) => row.expected === row.actual), true);
+  const serialized = JSON.stringify(result.stable).toLowerCase();
+  assert.doesNotMatch(serialized, /private-read|private-answer|strokes|token|@example\.com/);
+  assert.match(result.stableCard, /下載能力目標證據/);
+  assert.match(result.stableCard, /三回不同來源的正式新鮮卷/);
+  assert.match(result.looseCard, /目前不宣稱穩定 13 級分/);
+});
 
 test('統一證據層涵蓋作答、眼刷、訂正、保留、大綱、觀念與原卷', () => {
   const { run } = loadApp();
