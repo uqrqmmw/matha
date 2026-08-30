@@ -3,8 +3,8 @@
 
 This tool never calls a model.  ``prepare`` creates a localhost review packet
 that shows the student pixels, official solution pixels and proposed truth for
-all seven cases.  ``finalize`` only promotes the exact unsigned gold after a
-named human exported a complete hash-bound signoff.
+every case.  ``finalize`` only promotes the exact unsigned gold after a named
+human exported a complete hash-bound signoff.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REQUIRED_NOS = [3, 4, 11, 12, 13, 14, 16]
+MAX_CASES = 30
 CHECK_FIELDS = [
     "studentPixelsVerified", "solutionPixelsVerified", "truthModeVerified",
     "firstErrorEvidenceVerified", "goodWorkEvidenceVerified",
@@ -85,15 +85,49 @@ def timestamp(value: Any) -> str:
     return raw
 
 
+def text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    values = value if isinstance(value, list) else [value]
+    return [str(item) for item in values if str(item).strip()]
+
+
+def question_nos(gold: dict[str, Any]) -> list[int]:
+    rows = gold.get("cases")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_CASES:
+        raise DetailSignoffError(f"gold must contain between 1 and {MAX_CASES} cases")
+    numbers = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise DetailSignoffError("every gold case must be an object")
+        no = row.get("no")
+        if isinstance(no, bool):
+            raise DetailSignoffError("gold question numbers must be unique positive integers")
+        try:
+            number = int(no)
+        except (TypeError, ValueError) as error:
+            raise DetailSignoffError("gold question numbers must be unique positive integers") from error
+        if number < 1 or str(no).strip() != str(number):
+            raise DetailSignoffError("gold question numbers must be unique positive integers")
+        numbers.append(number)
+    if len(set(numbers)) != len(numbers):
+        raise DetailSignoffError("gold question numbers must be unique positive integers")
+    return numbers
+
+
 def validate_unsigned_gold(path: Path) -> dict[str, Any]:
     gold = load_json(path, "unsigned detail gold")
     if (gold.get("schema") != 1 or gold.get("releaseAuthority") is not False
             or gold.get("visibility") != "private-local-only"):
         raise DetailSignoffError("gold must be an unsigned private-local-only draft")
-    rows = gold.get("cases")
-    if not isinstance(rows, list) or [int(row.get("no") or 0) for row in rows] != REQUIRED_NOS:
-        raise DetailSignoffError("gold must contain the exact seven cases in order")
-    for name, source in (gold.get("sources") or {}).items():
+    question_nos(gold)
+    rows = gold["cases"]
+    sources = gold.get("sources") or {}
+    if not isinstance(sources, dict):
+        raise DetailSignoffError("gold sources must be an object")
+    for name, source in sources.items():
+        if not isinstance(source, dict):
+            raise DetailSignoffError(f"gold source is invalid: {name}")
         source_path = Path(str((source or {}).get("path") or ""))
         if (not source_path.is_file()
                 or sha256(source_path).upper() != str((source or {}).get("sha256") or "").upper()):
@@ -104,11 +138,18 @@ def validate_unsigned_gold(path: Path) -> dict[str, Any]:
     for row in rows:
         if row.get("expectedMode") not in {"diagnose", "abstain"}:
             raise DetailSignoffError(f"case {row.get('no')} has invalid expectedMode")
-        if not row.get("officialAnswer") or not row.get("studentEvidence") or not row.get("solutionEvidence"):
+        student = row.get("studentEvidence")
+        solutions = row.get("solutionEvidence")
+        if (not row.get("officialAnswer") or not isinstance(student, dict)
+                or not isinstance(solutions, list) or not solutions
+                or any(not isinstance(item, dict) for item in solutions)):
             raise DetailSignoffError(f"case {row.get('no')} is missing bound evidence")
-        if row.get("expectedMode") == "diagnose" and not row.get("firstErrorEvidenceAliases"):
+        first_error = row.get("firstErrorEvidenceAliases")
+        good_work = row.get("goodWorkEvidenceAliases") or []
+        if (not isinstance(first_error, list) or not isinstance(good_work, list)
+                or (row.get("expectedMode") == "diagnose" and not first_error)):
             raise DetailSignoffError(f"case {row.get('no')} has no first-error truth")
-        for asset in [row["studentEvidence"], *row["solutionEvidence"]]:
+        for asset in [student, *solutions]:
             asset_path = asset_root / str(asset.get("file") or "")
             if (not asset_path.is_file()
                     or sha256(asset_path).upper() != str(asset.get("sha256") or "").upper()):
@@ -132,6 +173,16 @@ ThreadingHTTPServer(('127.0.0.1', 8775), SimpleHTTPRequestHandler).serve_forever
 def render_html(packet: dict[str, Any]) -> str:
     cards = []
     for row in packet["cases"]:
+        semantic_parts = []
+        for label, value in (
+            ("錯誤類型", row.get("expectedErrorKind")),
+            ("錯因驗證", row.get("expectedWhyWrong")),
+            ("第一步修復", row.get("expectedRepair")),
+            ("完整解法", row.get("expectedSolution")),
+        ):
+            if value:
+                semantic_parts.append(f'<p><b>{label}真值：</b>{escape("；".join(value))}</p>')
+        semantics = "".join(semantic_parts)
         solutions = "".join(
             f'<figure><figcaption>官方詳解 {index}</figcaption><img src="{escape(path)}" alt="第 {row["no"]} 題官方詳解 {index}"></figure>'
             for index, path in enumerate(row["solutionImages"], 1)
@@ -150,6 +201,7 @@ def render_html(packet: dict[str, Any]) -> str:
 <p><b>正解：</b>{escape(row["officialAnswer"])}</p><p>{escape(row["reviewNote"])}</p>
 <p><b>第一錯步真值：</b>{escape("；".join(row["firstErrorEvidenceAliases"]) or "必須 abstain")}</p>
 <p><b>做對部分真值：</b>{escape("；".join(row["goodWorkEvidenceAliases"]) or "沒有具名證據")}</p>
+{semantics}
 <div class="pixels"><figure><figcaption>學生卷面</figcaption><img src="{escape(row["studentImage"])}" alt="第 {row["no"]} 題學生卷面"></figure>{solutions}</div>
 <div class="checks">{checks}</div></article>''')
     meta = json.dumps({
@@ -160,8 +212,8 @@ def render_html(packet: dict[str, Any]) -> str:
     statement = json.dumps(STATEMENT)
     return f'''<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>數A 詳批 Gold 具名複核</title><style>body{{margin:0;background:#f2f0ea;color:#343a36;font:18px/1.55 system-ui,sans-serif}}header{{position:sticky;top:0;z-index:2;padding:14px 4vw;background:#f8f7f2;border-bottom:1px solid #c9c5ba}}main{{max-width:1500px;margin:auto;padding:22px}}article{{background:#fffefa;border:1px solid #d4d0c5;border-radius:12px;margin:0 0 22px;padding:20px}}.pixels{{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px}}figure{{margin:0}}img{{display:block;width:100%;max-height:75vh;object-fit:contain;background:white;border:1px solid #bbb7ad}}.checks{{display:grid;gap:10px;margin-top:18px}}label{{display:block}}input[type=checkbox]{{width:24px;height:24px;vertical-align:middle;margin-right:10px}}.sign{{position:sticky;bottom:0;background:#f8f7f2;border:1px solid #bcb7ab;padding:16px}}input[type=text]{{font-size:18px;padding:10px;width:min(420px,90%)}}button{{font-size:18px;padding:12px 18px;margin-top:10px;background:#4f584f;color:white;border:0;border-radius:7px}}</style>
-<header><b>7 題詳批 Gold 具名複核</b><br>逐題核對學生卷面、官方詳解與人工真值；不得由 AI／agent 簽名。</header><main>{''.join(cards)}
-<section class="sign"><label>簽核人真實姓名<br><input id="reviewer" type="text" autocomplete="name"></label><br><button id="export">七題全部核對完成，下載簽核檔</button></section></main>
+<header><b>{len(packet["cases"])} 題詳批 Gold 具名複核</b><br>逐題核對學生卷面、官方詳解與人工真值；不得由 AI／agent 簽名。</header><main>{''.join(cards)}
+<section class="sign"><label>簽核人真實姓名<br><input id="reviewer" type="text" autocomplete="name"></label><br><button id="export">全部 {len(packet["cases"])} 題核對完成，下載簽核檔</button></section></main>
 <script>'use strict';const meta={meta};document.getElementById('export').onclick=()=>{{const approvedBy=document.getElementById('reviewer').value.trim(),cards=[...document.querySelectorAll('article')];if(approvedBy.length<3){{alert('請填可辨識的真人姓名');return}}for(const card of cards)if([...card.querySelectorAll('[data-check]')].some(box=>!box.checked)){{alert(`第 ${{card.dataset.no}} 題尚未全部核對`);return}}const out={{kind:'matha-paper-detail-gold-signoff',version:1,releaseAuthority:true,approvedBy,approvedAt:new Date().toISOString(),statement:{statement},...meta,checks:cards.map(card=>({{no:Number(card.dataset.no),...Object.fromEntries([...card.querySelectorAll('[data-check]')].map(box=>[box.dataset.check,true]))}}))}};const blob=new Blob([JSON.stringify(out,null,2)+'\n'],{{type:'application/json'}}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='paper-detail-gold-signoff.json';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000)}};</script></html>'''
 
 
@@ -192,6 +244,14 @@ def prepare(gold_path: Path, output: Path) -> dict[str, Any]:
             "reviewNote": str(row.get("reviewNote") or ""),
             "firstErrorEvidenceAliases": list(row.get("firstErrorEvidenceAliases") or []),
             "goodWorkEvidenceAliases": list(row.get("goodWorkEvidenceAliases") or []),
+            "expectedErrorKind": text_list(row.get("expectedErrorKindAliases") or row.get("errorKindAliases")
+                                           or row.get("expectedErrorKind")),
+            "expectedWhyWrong": text_list(row.get("expectedWhyWrongAliases") or row.get("whyWrongAliases")
+                                           or row.get("expectedWhyWrong")),
+            "expectedRepair": text_list(row.get("expectedRepairAliases") or row.get("repairAliases")
+                                         or row.get("expectedRepair")),
+            "expectedSolution": text_list(row.get("expectedSolutionAliases") or row.get("solutionAliases")
+                                           or row.get("expectedSolution")),
             "studentImage": student_target.relative_to(output).as_posix(),
             "studentImageSha256": sha256(student_target),
             "solutionImages": solutions,
@@ -202,7 +262,7 @@ def prepare(gold_path: Path, output: Path) -> dict[str, Any]:
         "releaseAuthority": False, "goldId": gold["id"],
         "unsignedGoldPath": str(gold_path.resolve()),
         "unsignedGoldSha256": sha256(gold_path),
-        "questionNos": REQUIRED_NOS, "cases": cases,
+        "questionNos": question_nos(gold), "cases": cases,
     }
     packet_path = output / "review-packet.json"
     packet_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -219,13 +279,18 @@ def finalize(gold_path: Path, packet_path: Path, signoff_path: Path,
     if output_path.exists():
         raise DetailSignoffError("refusing to overwrite signed gold")
     gold = validate_unsigned_gold(gold_path)
+    expected_nos = question_nos(gold)
     packet = load_json(packet_path, "review packet")
     signoff = load_json(signoff_path, "human signoff")
+    packet_cases = packet.get("cases")
     if (packet.get("kind") != "matha-paper-detail-gold-review-packet"
             or packet.get("releaseAuthority") is not False
             or packet.get("goldId") != gold.get("id")
             or packet.get("unsignedGoldSha256") != sha256(gold_path)
-            or packet.get("questionNos") != REQUIRED_NOS):
+            or packet.get("questionNos") != expected_nos
+            or not isinstance(packet_cases, list)
+            or any(not isinstance(row, dict) for row in packet_cases)
+            or [int(row.get("no") or 0) for row in packet_cases] != expected_nos):
         raise DetailSignoffError("review packet is not bound to this gold")
     if (signoff.get("kind") != "matha-paper-detail-gold-signoff"
             or signoff.get("version") != 1 or signoff.get("releaseAuthority") is not True
@@ -233,14 +298,14 @@ def finalize(gold_path: Path, packet_path: Path, signoff_path: Path,
             or signoff.get("goldId") != gold.get("id")
             or signoff.get("unsignedGoldSha256") != sha256(gold_path)
             or signoff.get("reviewPacketSha256") != sha256(packet_path)
-            or signoff.get("questionNos") != REQUIRED_NOS):
+            or signoff.get("questionNos") != expected_nos):
         raise DetailSignoffError("human signoff hash contract is invalid")
     approved_by = named_human(signoff.get("approvedBy"))
     approved_at = timestamp(signoff.get("approvedAt"))
     checks = signoff.get("checks")
-    if (not isinstance(checks, list) or len(checks) != len(REQUIRED_NOS)
+    if (not isinstance(checks, list) or len(checks) != len(expected_nos)
             or any(not isinstance(row, dict) for row in checks)
-            or [int(row.get("no") or 0) for row in checks if isinstance(row, dict)] != REQUIRED_NOS
+            or [int(row.get("no") or 0) for row in checks if isinstance(row, dict)] != expected_nos
             or any(set(row) != {"no", *CHECK_FIELDS}
                    or any(row.get(field) is not True for field in CHECK_FIELDS)
                    for row in checks if isinstance(row, dict))):

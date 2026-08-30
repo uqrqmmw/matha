@@ -20,7 +20,7 @@ PRIVATE_EXTENSIONS = {
     ".7z", ".rar", ".doc", ".docx",
 }
 PRIVATE_PATH_PATTERNS = tuple(re.compile(pattern, re.I) for pattern in (
-    r"(?:^|/)(?:private-content|matha-content|matha-figures|matha-papers|matha-solutions)(?:/|$)",
+    r"(?:^|/)(?:private-content|matha-content|matha-figures|matha-papers|matha-solutions|matha-audit-private)(?:/|$)",
     r"(?:^|/)(?:signed|unsigned)-private-question-source\.json$",
     r"(?:^|/)answer-binding-candidates\.json$",
     r"(?:^|/)(?:private-release-runtime|private-app-loader)-verification[^/]*\.json$",

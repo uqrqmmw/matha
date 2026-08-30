@@ -24,9 +24,9 @@ from typing import Callable, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROJECT_REF = "rrihysbxhsbxjteqmtdu"
 CLI_VERSION = "2.115.0"
-REMOTE_PREFIX = "ss:///matha-content/runtime-audits"
+REMOTE_PREFIX = "ss:///matha-audit-private/runtime-audits"
 REMOTE_PATH_RE = re.compile(
-    r"^/matha-content/runtime-audits/(?P<user>[a-f0-9]{64})/"
+    r"^/matha-audit-private/runtime-audits/(?P<user>matha_[a-f0-9]{32})/"
     r"(?P<name>matha-paper-runtime-audit-(?P<run>paper-run-\d{10,20})-"
     r"(?P<short>[a-f0-9]{16})\.json)$"
 )
@@ -65,7 +65,7 @@ def validate_runtime_audit(path: Path, remote_path: str) -> dict:
         raise AuditFetchError(f"封存檔不是有效 JSON：{path.name}") from error
     run = value.get("run") or {}
     summary = value.get("summary") or {}
-    if value.get("kind") != "matha-paper-runtime-audit-v1":
+    if value.get("kind") != "matha-paper-runtime-audit-v2" or value.get("schemaVersion") != 2:
         raise AuditFetchError(f"封存檔 kind 不合法：{path.name}")
     if run.get("id") != match.group("run") or summary.get("passed") is not True:
         raise AuditFetchError(f"封存檔 run 或驗收狀態不合法：{path.name}")

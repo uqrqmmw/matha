@@ -3,6 +3,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { webcrypto } = require('node:crypto');
+const { TextEncoder, TextDecoder } = require('node:util');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
@@ -50,6 +52,9 @@ function loadApp() {
     Map,
     Set,
     Promise,
+    crypto: webcrypto,
+    TextEncoder,
+    TextDecoder,
     innerHeight: 900,
     devicePixelRatio: 1,
   };

@@ -15,10 +15,11 @@ SPEC.loader.exec_module(fetch)
 
 def audit_bytes(run_id="paper-run-1234567890123"):
     value = {
-        "kind": "matha-paper-runtime-audit-v1",
+        "kind": "matha-paper-runtime-audit-v2",
+        "schemaVersion": 2,
         "run": {"id": run_id, "sourceId": "paper-mock-3", "status": "awaiting-correction"},
         "summary": {"passed": True},
-        "audit": {"schema": 1},
+        "audit": {"schema": 2},
     }
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
@@ -26,16 +27,16 @@ def audit_bytes(run_id="paper-run-1234567890123"):
 class RuntimeAuditFetchTests(unittest.TestCase):
     def remote_path(self, content, run_id="paper-run-1234567890123"):
         short = hashlib.sha256(content).hexdigest()[:16]
-        return f"/matha-content/runtime-audits/{'a' * 64}/matha-paper-runtime-audit-{run_id}-{short}.json"
+        return f"/matha-audit-private/runtime-audits/matha_{'a' * 32}/matha-paper-runtime-audit-{run_id}-{short}.json"
 
     def test_filters_to_exact_hash_addressed_runtime_audits(self):
         content = audit_bytes()
         valid = self.remote_path(content)
-        self.assertEqual(fetch.accepted_remote_paths([valid, valid, "/matha-content/manifest.json"]), [valid])
+        self.assertEqual(fetch.accepted_remote_paths([valid, valid, "/matha-audit-private/manifest.json"]), [valid])
 
     def test_discover_parses_cli_json_and_rejects_unrelated_objects(self):
         valid = self.remote_path(audit_bytes())
-        runner = lambda _args: json.dumps({"paths": [valid, "/matha-content/runtime-audits/bad.json"]})
+        runner = lambda _args: json.dumps({"paths": [valid, "/matha-audit-private/runtime-audits/bad.json"]})
         self.assertEqual(fetch.discover("project", runner), [valid])
 
     def test_sync_downloads_validates_and_then_reuses_without_redownload(self):

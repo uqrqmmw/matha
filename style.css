@@ -1078,7 +1078,7 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .learner-facts b { color: var(--text); font-size: 20px; font-weight: 620; }
 .learner-diagnosis { margin: 0 0 16px; padding: 15px 16px; border-left: 3px solid #9b8c7d; background: #f3f0ea; }
 .learner-diagnosis p { margin: 5px 0 0; max-width: 900px; }
-.learner-milestones { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 20px; }
+.learner-milestones { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 20px; }
 .learner-milestones span { display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--dim); }
 .learner-milestones b { color: var(--text); font-size: 16px; }
 .learner-model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
@@ -1715,6 +1715,11 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .paper-official-solution p { margin: 0 0 10px; color: var(--muted); }
 .paper-official-solution img { display: block; width: 100%; height: auto; margin-top: 8px; border-radius: 6px; border: 1px solid var(--border); background: #fff; }
 .paper-detail-correction { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.paper-detail-gold-review { margin-top: 18px; padding: 12px; border: 1px solid #d8c9ad; border-radius: 9px; background: #fffaf0; }
+.paper-detail-gold-review h3 { margin-top: 0; padding-top: 0; border-top: 0; }
+.paper-detail-gold-review p { margin: 6px 0 10px; }
+.paper-detail-gold-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.paper-detail-gold-actions .btn { min-height: 42px; }
 .paper-detail-correction label { display: grid; gap: 6px; margin: 10px 0; color: var(--dim); font-size: 12px; }
 .paper-detail-correction textarea { width: 100%; resize: vertical; min-height: 66px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); font: inherit; font-size: 14px; }
 .paper-ui-hidden .paper-review-toast, .paper-ui-hidden .paper-detail-drawer { opacity: 0; pointer-events: none; }

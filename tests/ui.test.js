@@ -79,7 +79,7 @@ test('Ultra 首頁與作答流程善用寬畫面，原卷控制不再切走上�
   assert.match(css, /\.paper-ui-hidden > \.paper-workbar/);
   assert.match(source, /class="mock-paper-nav"/);
   assert.match(source, /class="vision-paper-map"/);
-  assert.match(source, /function paperWorkspaceFit\(\)/);
+  assert.match(source, /function paperWorkspaceFit\(immediatePaint = false\)/);
   assert.match(source, /class="paper-ui-toggle"/);
   assert.doesNotMatch(source, /class="paper-spread-preview"/);
   assert.match(source, /function homeSecondaryTasks\(primary\)/);

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Produce a fail-closed completion audit for the MathA construction blueprint.
 
-The report only accepts exact local evidence.  It does not call a browser, OCR,
-OpenAI, Supabase, or any other paid service.  Missing human/device/source
-evidence remains blocked instead of being inferred from tests or filenames.
+The report never calls a browser, OCR, OpenAI, or another paid service. Most
+checks are offline. Device/capability completion can pass only after a read-only
+private Storage readback, so a locally edited JSON file cannot certify itself.
+Missing human/device/source evidence remains blocked instead of being inferred.
 """
 
 from __future__ import annotations
@@ -13,9 +14,12 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -25,7 +29,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_DETAIL_NOS = {3, 4, 11, 12, 13, 14, 16}
 NON_HUMAN = re.compile(r"(?:^|\b)(?:ai|bot|agent|codex|claude|chatgpt|openai)(?:\b|$)", re.I)
 DEVICE_MODEL = "Samsung Galaxy Tab S10 Ultra"
+DEVICE_PAPER_LAYOUT_VERSION = 2
+DEVICE_ACCEPTANCE_PAGE_COUNTS = {"paper-mock-3": 4}
 EXPECTED_SUPABASE_URL = "https://rrihysbxhsbxjteqmtdu.supabase.co"
+PRIVATE_AUDIT_BUCKET = "matha-audit-private"
+MAX_PRIVATE_AUDIT_BYTES = 15_000_000
 EXPECTED_MANIFEST_ALIAS = "manifest-mistral-ocr4-verified-v1.json"
 EXPECTED_TOPICS = {
     "comb", "data", "exp", "line", "mat", "num", "poly", "prob",
@@ -74,6 +82,35 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReadinessError(f"{label}必須是 JSON object：{path}")
     return value
+
+
+def private_storage_fetcher_from_env() -> Any | None:
+    """Return a read-only private Storage fetcher without exposing its key."""
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not key:
+        return None
+
+    def fetch(bucket: str, object_path: str) -> bytes:
+        if bucket != PRIVATE_AUDIT_BUCKET:
+            raise ReadinessError("私有驗收回讀 bucket 不在允許清單")
+        normalized = str(object_path or "").replace("\\", "/").lstrip("/")
+        if not normalized or ".." in normalized.split("/"):
+            raise ReadinessError("私有驗收回讀路徑不合法")
+        encoded = "/".join(urllib.parse.quote(part, safe="") for part in normalized.split("/"))
+        request = urllib.request.Request(
+            f"{EXPECTED_SUPABASE_URL}/storage/v1/object/{bucket}/{encoded}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = response.read(MAX_PRIVATE_AUDIT_BYTES + 1)
+        except OSError as error:
+            raise ReadinessError(f"私有 Storage 即時回讀失敗：{error}") from error
+        if len(payload) > MAX_PRIVATE_AUDIT_BYTES:
+            raise ReadinessError("私有驗收物件超過允許大小")
+        return payload
+
+    return fetch
 
 
 def parse_timestamp(value: Any, label: str) -> datetime:
@@ -235,9 +272,16 @@ def validate_local_discovery(row: dict[str, Any], private_root: Path) -> list[st
     ]
 
 
-def validate_private_app_integration(row: dict[str, Any], private_root: Path) -> list[str]:
+def validate_private_app_integration(
+    row: dict[str, Any],
+    private_root: Path,
+    verified_source_documents: dict[str, dict[str, Any]] | None = None,
+    inventory_papers: list[dict[str, Any]] | None = None,
+) -> list[str]:
     if not isinstance(row, dict):
         raise ReadinessError("完整卷缺少私有 App 整合證據")
+    if not verified_source_documents:
+        raise ReadinessError("完整卷缺少與原始 PDF 實體雜湊綁定的來源證據")
     expected_version = current_app_version()
     expected_values = {
         "status": "deployed-and-hash-verified",
@@ -434,19 +478,80 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
             raise ReadinessError("地區模考詳解回讀資產未與 manifest 全數綁定")
 
     app_source = (REPO_ROOT / "app.js").read_text(encoding="utf-8")
+    inventory_identity: dict[str, str] = {}
+    inventory_ids: set[str] = set()
+    for paper in inventory_papers or []:
+        source_id = str(paper.get("appSourceId") or "").strip()
+        if not source_id:
+            continue
+        paper_id = str(paper.get("id") or "").strip()
+        if (not paper_id or paper_id in inventory_ids
+                or source_id in inventory_identity):
+            raise ReadinessError("完整卷清冊 paperId 或 appSourceId 空白、不完整或重複")
+        inventory_ids.add(paper_id)
+        inventory_identity[source_id] = paper_id
+
     asset_rows: dict[str, dict[str, Any]] = {}
-    manifest_papers = {str(paper.get("paperId") or "") for paper in assets.get("papers") or []}
-    if len(manifest_papers) != paper_count:
-        raise ReadinessError("完整卷 App 資產題本 ID 不完整或重複")
+    manifest_papers: set[str] = set()
+    manifest_source_ids: set[str] = set()
+    source_pdf_ids: set[str] = set()
+    source_pdf_hashes: set[str] = set()
+    whole_paper_digests: dict[str, str] = {}
     for paper in assets.get("papers") or []:
-        paper_id = str(paper.get("paperId"))
-        source_id = str(paper.get("appSourceId") or "")
+        paper_id = str(paper.get("paperId") or "").strip()
+        source_id = str(paper.get("appSourceId") or "").strip()
+        if (not paper_id or paper_id in manifest_papers
+                or not source_id or source_id in manifest_source_ids):
+            raise ReadinessError("完整卷 App 資產 paperId 或 appSourceId 空白、不完整或重複")
+        manifest_papers.add(paper_id)
+        manifest_source_ids.add(source_id)
+        if inventory_identity and inventory_identity.get(source_id) != paper_id:
+            raise ReadinessError(f"完整卷 {paper_id} 未與清冊 appSourceId 唯一綁定")
+
+        source_pdf_id = str(paper.get("sourceId") or "").strip()
+        source_file_name = str(paper.get("sourceFileName") or "").strip()
+        source_pdf_sha = str(paper.get("sourceSha256") or "").lower()
+        source_pdf = verified_source_documents.get(source_pdf_id)
+        if (not source_pdf_id or source_pdf_id in source_pdf_ids
+                or not re.fullmatch(r"[0-9a-f]{64}", source_pdf_sha)
+                or source_pdf_sha in source_pdf_hashes
+                or not isinstance(source_pdf, dict)
+                or source_pdf.get("sha256") != source_pdf_sha
+                or source_pdf.get("fileName") != source_file_name
+                or int(source_pdf.get("pages") or 0) != int(paper.get("sourcePages") or -1)):
+            raise ReadinessError(f"完整卷 {paper_id} 未與唯一原始 PDF 實體雜湊綁定")
+        source_pdf_ids.add(source_pdf_id)
+        source_pdf_hashes.add(source_pdf_sha)
+
         paper_class = str(paper.get("paperClass") or "official-exam")
         rows = paper.get("assets") or []
         page_map = paper.get("questionPageMap") or []
+        pdf_pages = paper.get("questionPdfPages") or []
+        ordered_app_pages = [asset.get("appPage") for asset in rows]
+        ordered_pdf_pages = [asset.get("pdfPage") for asset in rows]
+        page_hashes = [str(asset.get("sha256") or "").lower() for asset in rows]
         if (not rows or len(page_map) != 20
                 or any(not isinstance(page, int) or page < 1 or page > len(rows) for page in page_map)):
             raise ReadinessError(f"完整卷 {paper_id} 頁面或題號綁定不完整")
+        if (ordered_app_pages != list(range(1, len(rows) + 1))
+                or ordered_pdf_pages != pdf_pages
+                or len(pdf_pages) != len(rows)
+                or len(set(pdf_pages)) != len(pdf_pages)
+                or any(not isinstance(page, int) or page < 1
+                       or page > int(paper.get("sourcePages") or 0) for page in pdf_pages)
+                or any(not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in page_hashes)
+                or len(set(page_hashes)) != len(page_hashes)):
+            raise ReadinessError(f"完整卷 {paper_id} 頁序、PDF 頁碼或逐頁雜湊不完整")
+        whole_digest = canonical_sha({
+            "canonicalization": "ordered-page-sha256-v1",
+            "pageSha256": page_hashes,
+        })
+        previous_paper = whole_paper_digests.get(whole_digest)
+        if previous_paper:
+            raise ReadinessError(
+                f"完整卷 {paper_id} 與 {previous_paper} 整卷逐頁內容雜湊重複"
+            )
+        whole_paper_digests[whole_digest] = paper_id
         if source_id and source_id.startswith("paper-regional-"):
             if source_id not in app_source:
                 raise ReadinessError(f"完整卷 {source_id} 未接入 App")
@@ -472,6 +577,16 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
                     or relative not in app_source):
                 raise ReadinessError(f"完整卷 App 頁面雜湊或引用不符：{relative}")
             asset_rows[relative] = asset
+    if (len(manifest_papers) != paper_count
+            or len(manifest_source_ids) != paper_count
+            or len(whole_paper_digests) != paper_count):
+        raise ReadinessError("完整卷 App 資產題本身分或整卷內容 digest 不完整")
+    if inventory_identity and inventory_identity != {
+        str(paper.get("appSourceId")): str(paper.get("paperId"))
+        for paper in assets.get("papers") or []
+    }:
+        raise ReadinessError("完整卷清冊與 App 資產 manifest 的題本身分集合不一致")
+
     remote_rows = {
         str(asset.get("file") or ""): asset for asset in storage.get("assets") or []
         if isinstance(asset, dict)
@@ -484,6 +599,8 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
         f"privatePaperAppAssets:{hashes['assets']}:{page_count}",
         f"privatePaperVisualReview:{hashes['visual']}:{page_count}",
         f"privatePaperStorageReadback:{hashes['storage']}:{page_count}:mismatch=0",
+        f"privatePaperSourceProvenance:{len(source_pdf_ids)}:unique=1",
+        f"privatePaperWholeDigests:{len(whole_paper_digests)}:unique=1",
         f"officialDetailedSolutions:{hashes['solutions']}:8:mismatch=0",
         *(
             [f"regionalDetailedSolutions:{hashes['regionalSolutions']}:{regional_solution_pages}:mismatch=0"]
@@ -493,37 +610,48 @@ def validate_private_app_integration(row: dict[str, Any], private_root: Path) ->
     ]
 
 
-def audit_full_papers(inventory_path: Path, private_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def audit_full_papers(
+    inventory_path: Path,
+    private_root: Path,
+    evidence_roots: list[Path] | None = None,
+    capability_evidence: list[Path] | None = None,
+    private_fetcher: Any | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         inventory = load_json(inventory_path, "完整卷清冊")
         if inventory.get("schema") != 1 or not isinstance(inventory.get("papers"), list):
             raise ReadinessError("完整卷清冊 schema 不合法")
         files = source_index(private_root)
         verified = []
+        verified_source_documents: dict[str, dict[str, Any]] = {}
         source_document_count = 0
         for row in inventory.get("sourceDocuments") or []:
+            source_id = str(row.get("id") or "").strip()
+            if not source_id or source_id in verified_source_documents:
+                raise ReadinessError("完整卷來源文件 ID 空白或重複")
             path = resolve_source(row, private_root, files)
             if path is None:
                 raise ReadinessError(f"完整卷來源不存在或雜湊不符：{row.get('fileName')}")
-            verified.append(f"{row.get('id')}:{sha256(path)}")
+            actual_sha = sha256(path)
+            verified.append(f"{source_id}:{actual_sha}")
+            verified_source_documents[source_id] = {
+                "sha256": actual_sha,
+                "fileName": str(row.get("fileName") or ""),
+                "pages": int(row.get("pages") or 0),
+                "path": str(path),
+            }
             source_document_count += 1
         discovery = inventory.get("localDiscoveryAudit")
         if isinstance(discovery, dict):
             verified.extend(validate_local_discovery(discovery, private_root))
         verified.extend(validate_private_app_integration(
             inventory.get("privateAppIntegration"), private_root,
+            verified_source_documents, inventory.get("papers") or [],
         ))
         integration = inventory.get("privateAppIntegration") or {}
         integrated_paper_count = int(
             integration.get("integratedPapers") or integration.get("officialPapers") or 0
         )
-        ready = [row for row in inventory["papers"] if
-                 int(row.get("questions") or 0) == 20
-                 and int(row.get("minutes") or 0) == 100
-                 and str(row.get("freshness") or "") in {"confirmed-unseen", "unseen-confirmed"}
-                 and str(row.get("calibrationStatus") or "") in {
-                     "ready", "ready-fresh", "eligible-fresh"
-                 }]
         potential = [row for row in inventory["papers"] if
                      int(row.get("questions") or 0) == 20
                      and int(row.get("minutes") or 0) == 100
@@ -542,27 +670,8 @@ def audit_full_papers(inventory_path: Path, private_root: Path) -> tuple[dict[st
             f"已驗證 {source_document_count} 份題本／答案來源；{integrated_paper_count} 回已接入 App 且私有資產回讀雜湊一致",
             evidence=verified,
         )
-        if len(ready) < 6:
-            needed = 6 - len(ready)
-            pending = min(needed, len([row for row in potential if row not in ready]))
-            additional = max(0, needed - pending)
-            blockers = []
-            if pending:
-                blockers.append(f"{pending} 回既有候選仍需本人確認未看過並完成 Galaxy Tab 真機開考驗收")
-            if additional:
-                blockers.append(f"仍需 {additional} 回額外的 20 題、100 分鐘且答案完整新來源")
-            calibration = gate(
-                "fresh-calibration", "正式新鮮校準證據", "blocked",
-                f"工程卷庫存已完成；本人正式新鮮校準證據為 {len(ready)} / 6 回",
-                blockers=blockers,
-                phase="post-delivery",
-            )
-            return engineering, calibration
-        calibration = gate(
-            "fresh-calibration", "正式新鮮校準證據", "pass",
-            f"已有 {len(ready)} 回 hash-bound 新鮮正式卷",
-            evidence=[str(row.get("id")) for row in ready],
-            phase="post-delivery",
+        calibration = audit_fresh_calibration(
+            evidence_roots or [private_root], capability_evidence, private_fetcher,
         )
         return engineering, calibration
     except ReadinessError as error:
@@ -586,68 +695,71 @@ def find_json_files(roots: list[Path], patterns: list[str]) -> list[Path]:
     return sorted(found, key=lambda path: path.stat().st_mtime_ns, reverse=True)
 
 
-def validate_capability_goal_evidence(path: Path) -> list[str]:
-    value = load_json(path, "能力目標證據")
-    generated_at = parse_timestamp(value.get("generatedAt"), "能力目標證據")
-    now = datetime.now(timezone.utc)
-    if generated_at > now + timedelta(minutes=10) or now - generated_at > timedelta(days=7):
-        raise ReadinessError("能力證據不是本週由目前 App 匯出的最新快照")
-    generated_ms = generated_at.timestamp() * 1000
-    goal = value.get("goal") or {}
-    calibration = value.get("calibration") or {}
-    runs = value.get("runs")
-    baseline = value.get("baselineResetAt")
-    if (value.get("kind") != "matha-capability-goal-evidence-v1"
-            or value.get("schemaVersion") != 1
-            or value.get("appVersion") != current_app_version()
-            or value.get("status") != "stable" or value.get("stable") is not True
-            or value.get("blockers") != []
-            or goal != {
-                "requiredRuns": 3, "distinctRuns": True, "distinctSources": True,
-                "questionsPerRun": 20, "minutesPerRun": 100,
-                "totalPoints": 100, "minimumScore": 72,
-            }
-            or not isinstance(baseline, (int, float)) or isinstance(baseline, bool)
-            or baseline < 0
-            or calibration.get("source") != "external"
-            or calibration.get("count") != 3
-            or calibration.get("passes") != 3
-            or calibration.get("stable") is not True
-            or not isinstance(runs, list) or len(runs) != 3):
-        raise ReadinessError("能力證據未證明最近三回正式新鮮卷皆達 72 分")
-    digest_meta = value.get("digest") or {}
-    digest_fields = [
-        "runId", "sourceId", "submittedAt", "gradedAt", "score", "total",
-        "freshnessConfirmedAt", "appVersion", "gradeSummary",
-    ]
-    if (digest_meta.get("algorithm") != "SHA-256"
-            or digest_meta.get("canonicalization") != "recursive-key-sorted-json-v1"
-            or digest_meta.get("runDigestFields") != digest_fields):
-        raise ReadinessError("能力證據 canonical digest 規格不符")
+CAPABILITY_RUN_DIGEST_FIELDS = [
+    "runId", "sourceId", "submittedAt", "gradedAt", "score", "total",
+    "freshnessConfirmedAt", "appVersion", "sourceContentDigest",
+    "submitAttemptDigest", "gradeReceiptDigest",
+    "submissionContentBindingSha256", "modelInputBindingSha256",
+    "ownerVisualAttestationDigest", "gradeSummary",
+]
+CAPABILITY_GOAL = {
+    "requiredRuns": 3, "distinctRuns": True, "distinctSources": True,
+    "questionsPerRun": 20, "minutesPerRun": 100,
+    "totalPoints": 100, "minimumScore": 72,
+}
+FRESH_CALIBRATION_FIXED = {
+    "requiredRuns": 6, "distinctRuns": True, "distinctSources": True,
+    "questionsPerRun": 20, "minutesPerRun": 100, "totalPoints": 100,
+}
+
+
+def _validate_capability_runs(
+    rows: Any,
+    *,
+    baseline: float,
+    generated_ms: float,
+    label: str,
+    minimum_score: float = 0,
+) -> list[float]:
+    if not isinstance(rows, list):
+        raise ReadinessError(f"{label}不是正式卷陣列")
     run_ids: set[str] = set()
     source_ids: set[str] = set()
+    source_content_digests: set[str] = set()
     submitted_times: list[float] = []
     allowed_status = {"correct", "incorrect", "uncertain", "unanswered"}
-    for row in runs:
+    for row in rows:
         if not isinstance(row, dict):
-            raise ReadinessError("能力證據含非物件正式卷")
+            raise ReadinessError(f"{label}含非物件正式卷")
         run_id, source_id = row.get("runId"), row.get("sourceId")
         submitted, graded, fresh = (
             row.get("submittedAt"), row.get("gradedAt"), row.get("freshnessConfirmedAt"),
         )
         score, total = row.get("score"), row.get("total")
+        binding_digests = (
+            row.get("sourceContentDigest"),
+            row.get("submitAttemptDigest"),
+            row.get("gradeReceiptDigest"),
+            row.get("submissionContentBindingSha256"),
+            row.get("modelInputBindingSha256"),
+            row.get("ownerVisualAttestationDigest"),
+        )
         if (not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", run_id)
                 or not isinstance(source_id, str)
                 or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", source_id)
                 or run_id in run_ids or source_id in source_ids
+                or row.get("sourceContentDigest") in source_content_digests
                 or not all(isinstance(item, (int, float)) and not isinstance(item, bool)
                            for item in (submitted, graded, fresh, score, total))
                 or submitted <= 0 or graded < submitted or fresh <= 0 or fresh > submitted
                 or submitted > generated_ms or graded > generated_ms or fresh > generated_ms
                 or submitted < baseline or fresh < baseline
-                or score < 72 or score > 100 or total != 100
+                or score < minimum_score or score > 100 or total != 100
+                or any(not isinstance(item, str)
+                       or not re.fullmatch(r"[a-f0-9]{64}", item)
+                       for item in binding_digests)
                 or row.get("appVersion") != current_app_version()):
-            raise ReadinessError("能力證據正式卷資格、分數、新鮮度或唯一性不符")
+            raise ReadinessError(f"{label}資格、分數、新鮮度或唯一性不符")
         summary = row.get("gradeSummary") or {}
         questions = summary.get("questions")
         status_counts = summary.get("statusCounts")
@@ -659,51 +771,235 @@ def validate_capability_goal_evidence(path: Path) -> list[str]:
                 or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
                        for count in status_counts.values())
                 or sum(status_counts.values()) != 20):
-            raise ReadinessError("能力證據的 20 題分數摘要不可重算")
+            raise ReadinessError(f"{label}的 20 題分數摘要不可重算")
         awarded = 0.0
         maximum = 0.0
         recomputed_counts = {key: 0 for key in allowed_status}
         for index, item in enumerate(questions, start=1):
             if not isinstance(item, dict):
-                raise ReadinessError("能力證據題分摘要含非物件")
+                raise ReadinessError(f"{label}題分摘要含非物件")
             points, max_points, status = item.get("points"), item.get("maxPoints"), item.get("status")
             if (item.get("no") != index or status not in allowed_status
                     or not isinstance(points, (int, float)) or isinstance(points, bool)
                     or not isinstance(max_points, (int, float)) or isinstance(max_points, bool)
                     or max_points <= 0 or points < 0 or points > max_points
-                    or (status == "unanswered" and points != 0)
+                    or (status in {"uncertain", "unanswered"} and points != 0)
                     or (status == "correct" and points != max_points)):
-                raise ReadinessError("能力證據含不合法題號、狀態或配分")
+                raise ReadinessError(f"{label}含不合法題號、狀態或配分")
             awarded += float(points)
             maximum += float(max_points)
             recomputed_counts[status] += 1
         if (round(awarded, 2) != score or round(maximum, 2) != 100
                 or recomputed_counts != status_counts):
-            raise ReadinessError("能力證據題分或狀態計數無法重算")
-        digest_value = {key: row.get(key) for key in digest_fields}
+            raise ReadinessError(f"{label}題分或狀態計數無法重算")
+        digest_value = {key: row.get(key) for key in CAPABILITY_RUN_DIGEST_FIELDS}
         if row.get("canonicalDigest") != canonical_sha(digest_value):
-            raise ReadinessError("能力證據單回 canonical digest 不符")
+            raise ReadinessError(f"{label}單回 canonical digest 不符")
         run_ids.add(run_id)
         source_ids.add(source_id)
+        source_content_digests.add(row["sourceContentDigest"])
         submitted_times.append(float(submitted))
     if submitted_times != sorted(submitted_times):
-        raise ReadinessError("能力證據不是依交卷時間排序的最近三回")
+        raise ReadinessError(f"{label}不是依交卷時間排序")
+    return submitted_times
+
+
+def _load_capability_goal_evidence(path: Path) -> tuple[dict[str, Any], datetime, list[float], list[float]]:
+    value = load_json(path, "能力目標證據")
+    generated_at = parse_timestamp(value.get("generatedAt"), "能力目標證據")
+    now = datetime.now(timezone.utc)
+    if generated_at > now + timedelta(minutes=10) or now - generated_at > timedelta(days=7):
+        raise ReadinessError("能力證據不是本週由目前 App 匯出的最新快照")
+    generated_ms = generated_at.timestamp() * 1000
+    kind, schema = value.get("kind"), value.get("schemaVersion")
+    if (kind, schema) not in {
+        ("matha-capability-goal-evidence-v1", 1),
+        ("matha-capability-goal-evidence-v2", 2),
+    }:
+        raise ReadinessError("能力證據 kind 或 schemaVersion 不支援")
+    baseline = value.get("baselineResetAt")
+    digest_meta = value.get("digest") or {}
+    if (value.get("appVersion") != current_app_version()
+            or value.get("goal") != CAPABILITY_GOAL
+            or not isinstance(baseline, (int, float)) or isinstance(baseline, bool)
+            or baseline < 0
+            or digest_meta.get("algorithm") != "SHA-256"
+            or digest_meta.get("canonicalization") != "recursive-key-sorted-json-v1"
+            or digest_meta.get("runDigestFields") != CAPABILITY_RUN_DIGEST_FIELDS):
+        raise ReadinessError("能力證據版本、目標、baseline 或 canonical digest 規格不符")
+    runs = value.get("runs")
+    run_times = _validate_capability_runs(
+        runs, baseline=float(baseline), generated_ms=generated_ms,
+        label="能力證據正式卷",
+    )
+    calibration = value.get("calibration") or {}
+    passes = sum(float(row.get("score") or 0) >= 72 for row in runs)
+    calibration_stable = len(runs) == 3 and passes == 3
+    evidence_stable = value.get("stable")
+    if (len(runs) > 3
+            or calibration.get("source") != "external"
+            or calibration.get("count") != len(runs)
+            or calibration.get("passes") != passes
+            or calibration.get("stable") is not calibration_stable
+            or not isinstance(evidence_stable, bool)
+            or (evidence_stable and not calibration_stable)
+            or value.get("status") != ("stable" if evidence_stable else "blocked")
+            or not isinstance(value.get("blockers"), list)
+            or (evidence_stable and value.get("blockers") != [])
+            or (not evidence_stable and not value.get("blockers"))):
+        raise ReadinessError("能力證據校準狀態與正式卷內容不一致")
+    fresh_times: list[float] = []
+    canonical_fields = (
+        "kind", "schemaVersion", "generatedAt", "appVersion", "baselineResetAt",
+        "status", "stable", "blockers", "goal", "calibration", "digest", "runs",
+    )
+    if schema == 2:
+        fresh = value.get("freshCalibration") or {}
+        fresh_runs = value.get("freshRuns")
+        count = fresh.get("count")
+        complete = fresh.get("complete")
+        fixed = {key: fresh.get(key) for key in FRESH_CALIBRATION_FIXED}
+        if (fixed != FRESH_CALIBRATION_FIXED
+                or not isinstance(count, int) or isinstance(count, bool)
+                or count < 0 or count > 6
+                or complete is not (count == 6)
+                or not isinstance(fresh_runs, list) or len(fresh_runs) != count):
+            raise ReadinessError("六回新鮮校準摘要與 freshRuns 不一致")
+        fresh_times = _validate_capability_runs(
+            fresh_runs, baseline=float(baseline), generated_ms=generated_ms,
+            label="六回新鮮校準正式卷",
+        )
+        if len(fresh_runs) >= 3 and runs != fresh_runs[-3:]:
+            raise ReadinessError("最近三回必須是同一組 freshRuns 依交卷時間排序後的最後三回")
+        canonical_fields = (*canonical_fields, "freshCalibration", "freshRuns")
+    canonical_payload = {key: value.get(key) for key in canonical_fields}
+    if value.get("canonicalDigest") != canonical_sha(canonical_payload):
+        raise ReadinessError("能力證據總 canonical digest 不符")
+    return value, generated_at, run_times, fresh_times
+
+
+def validate_capability_server_archive(value: dict[str, Any],
+                                       private_fetcher: Any | None) -> list[str]:
+    if value.get("kind") != "matha-capability-goal-evidence-v2":
+        raise ReadinessError("正式能力證據只接受 Edge 私有封存的 v2")
+    archive = value.get("serverArchive") or {}
+    archive_hash = str(archive.get("sha256") or "").lower()
+    archive_path = str(archive.get("path") or "").replace("\\", "/")
+    pattern = re.compile(
+        rf"capability-evidence/matha_[a-f0-9]{{32}}/matha-capability-goal-([a-f0-9]{{16}})\.json"
+    )
+    match = pattern.fullmatch(archive_path)
+    if (archive.get("authority") != "supabase-service-role-storage-readback"
+            or archive.get("bucket") != PRIVATE_AUDIT_BUCKET
+            or not re.fullmatch(r"[a-f0-9]{64}", archive_hash)
+            or not match or match.group(1) != archive_hash[:16]
+            or not isinstance(archive.get("bytes"), int) or isinstance(archive.get("bytes"), bool)
+            or archive.get("bytes") <= 0 or archive.get("bytes") > MAX_PRIVATE_AUDIT_BYTES
+            or archive.get("evidenceCanonicalDigest") != value.get("canonicalDigest")):
+        raise ReadinessError("能力證據缺少合法的私有伺服器封存指標")
+    parse_timestamp(archive.get("readbackVerifiedAt"), "能力證據私有回讀")
+    if private_fetcher is None:
+        raise ReadinessError("缺少私有 Storage 即時回讀；本機能力 JSON／SHA 不能自行證明六回成績")
+    try:
+        remote_bytes = private_fetcher(PRIVATE_AUDIT_BUCKET, archive_path)
+    except ReadinessError:
+        raise
+    except Exception as error:
+        raise ReadinessError(f"能力證據私有 Storage 即時回讀失敗：{error}") from error
+    if (not isinstance(remote_bytes, bytes) or len(remote_bytes) != archive.get("bytes")
+            or hashlib.sha256(remote_bytes).hexdigest() != archive_hash):
+        raise ReadinessError("私有能力證據實際位元與 serverArchive 不一致")
+    try:
+        remote = json.loads(remote_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReadinessError("私有能力證據不是有效 JSON") from error
+    local_core = {key: item for key, item in value.items() if key != "serverArchive"}
+    if remote != local_core:
+        raise ReadinessError("私有能力證據與本機匯出內容不一致")
+    return [f"privateCapabilityArchive:{archive_path}:{archive_hash}"]
+
+
+def validate_capability_goal_evidence(path: Path,
+                                      private_fetcher: Any | None = None) -> list[str]:
+    value, generated_at, submitted_times, _ = _load_capability_goal_evidence(path)
+    if (value.get("status") != "stable" or value.get("stable") is not True
+            or value.get("blockers") != [] or len(value.get("runs") or []) != 3
+            or any(float(row.get("score") or 0) < 72 for row in value.get("runs") or [])):
+        raise ReadinessError("能力證據未證明最近三回正式新鮮卷皆達 72 分")
+    generated_ms = generated_at.timestamp() * 1000
     if (generated_ms - submitted_times[-1] > 90 * 86400000
             or generated_ms - submitted_times[0] > 180 * 86400000):
         raise ReadinessError("最近三回距能力證據產生時間過久，不能代表目前程度")
-    canonical_payload = {key: value.get(key) for key in (
-        "kind", "schemaVersion", "generatedAt", "appVersion", "baselineResetAt",
-        "status", "stable", "blockers", "goal", "calibration", "digest", "runs",
-    )}
-    if value.get("canonicalDigest") != canonical_sha(canonical_payload):
-        raise ReadinessError("能力證據總 canonical digest 不符")
+    server_evidence = validate_capability_server_archive(value, private_fetcher)
     return [
         f"capability:{sha256(path)}", "formalRuns:3", "minimumScore:72",
         "freshness:confirmed", "gradePoints:recomputed",
+        *server_evidence,
     ]
 
 
-def audit_score_stability(roots: list[Path], explicit: list[Path] | None = None) -> dict[str, Any]:
+def validate_fresh_calibration_evidence(path: Path,
+                                        private_fetcher: Any | None = None) -> list[str]:
+    value, _, _, fresh_times = _load_capability_goal_evidence(path)
+    if value.get("kind") != "matha-capability-goal-evidence-v2":
+        raise ReadinessError("六回新鮮校準只接受 App 匯出的 v2 真實證據")
+    fresh = value.get("freshCalibration") or {}
+    if (fresh.get("complete") is not True or fresh.get("count") != 6
+            or len(fresh_times) != 6):
+        raise ReadinessError(f"本人正式新鮮校準證據為 {len(fresh_times)} / 6 回")
+    server_evidence = validate_capability_server_archive(value, private_fetcher)
+    return [
+        f"freshCalibration:{sha256(path)}", "formalRuns:6",
+        "distinctRuns:6", "distinctSources:6", "freshness:confirmed",
+        "gradePoints:recomputed", *server_evidence,
+    ]
+
+
+def audit_fresh_calibration(
+    roots: list[Path], explicit: list[Path] | None = None,
+    private_fetcher: Any | None = None,
+) -> dict[str, Any]:
+    candidates = list(explicit or [])
+    candidates.extend(find_json_files(
+        roots, ["數A能力目標證據-*.json", "*capability*goal*evidence*.json"],
+    ))
+    unique = list(dict.fromkeys(path.resolve() for path in candidates if path.is_file()))
+    if not unique:
+        return gate(
+            "fresh-calibration", "正式新鮮校準證據", "blocked",
+            "尚無 App 匯出的 v2 真實作答證據；清冊文字不算作答",
+            blockers=["完成六回本人確認未看過的 20 題／100 分鐘正式卷並匯出證據"],
+            phase="post-delivery",
+        )
+    valid: list[tuple[datetime, Path, list[str]]] = []
+    errors: list[str] = []
+    live_fetcher = private_fetcher or private_storage_fetcher_from_env()
+    for path in unique:
+        try:
+            evidence = validate_fresh_calibration_evidence(path, live_fetcher)
+            value = load_json(path, "能力目標證據")
+            valid.append((parse_timestamp(value.get("generatedAt"), "能力目標證據"), path, evidence))
+        except ReadinessError as error:
+            errors.append(str(error))
+    if not valid:
+        return gate(
+            "fresh-calibration", "正式新鮮校準證據", "blocked",
+            errors[0] if errors else "六回正式新鮮校準證據尚未達標",
+            blockers=["需六回 distinct run/source、freshness-confirmed、20 題／100 分鐘真實正式卷"],
+            phase="post-delivery",
+        )
+    _, path, evidence = max(valid, key=lambda row: row[0])
+    return gate(
+        "fresh-calibration", "正式新鮮校準證據", "pass",
+        "已有六回不同來源、題分與 digest 可重算的真實新鮮正式卷",
+        evidence=[str(path), *evidence], phase="post-delivery",
+    )
+
+
+def audit_score_stability(
+    roots: list[Path], explicit: list[Path] | None = None,
+    private_fetcher: Any | None = None,
+) -> dict[str, Any]:
     candidates = list(explicit or [])
     candidates.extend(find_json_files(
         roots, ["數A能力目標證據-*.json", "*capability*goal*evidence*.json"],
@@ -718,9 +1014,10 @@ def audit_score_stability(roots: list[Path], explicit: list[Path] | None = None)
         )
     valid: list[tuple[datetime, Path, list[str]]] = []
     errors: list[str] = []
+    live_fetcher = private_fetcher or private_storage_fetcher_from_env()
     for path in unique:
         try:
-            evidence = validate_capability_goal_evidence(path)
+            evidence = validate_capability_goal_evidence(path, live_fetcher)
             value = load_json(path, "能力目標證據")
             valid.append((parse_timestamp(value.get("generatedAt"), "能力目標證據"), path, evidence))
         except ReadinessError as error:
@@ -884,24 +1181,46 @@ def audit_github_delivery(roots: list[Path], explicit: list[Path] | None = None)
     )
 
 
-def validate_device_audit(path: Path, selected_paper: str, app_version: str) -> list[str]:
+def validate_device_audit(path: Path, selected_paper: str, app_version: str,
+                          private_fetcher: Any | None = None) -> list[str]:
     value = load_json(path, "真機驗收")
-    run, summary, audit = value.get("run") or {}, value.get("summary") or {}, value.get("audit") or {}
-    if value.get("kind") != "matha-paper-runtime-audit-v1" or int(audit.get("schema") or 0) != 1:
-        raise ReadinessError("真機驗收 kind/schema 不合法")
+    run, audit = value.get("run") or {}, value.get("audit") or {}
+    if (value.get("kind") != "matha-paper-runtime-audit-v2"
+            or value.get("schemaVersion") != 2 or audit.get("schema") != 2):
+        raise ReadinessError("正式真機驗收只接受 matha-paper-runtime-audit-v2/schema 2；舊 v1 僅供辨識")
     if value.get("appVersion") != app_version or audit.get("appVersion") != app_version:
         raise ReadinessError(f"真機驗收不是目前版本 {app_version}")
-    if run.get("sourceId") != selected_paper or run.get("status") in {None, "active", "paused", "discarded"}:
+    run_id = str(run.get("id") or "")
+    if (not re.fullmatch(r"paper-run-\d{10,20}", run_id)
+            or run.get("sourceId") != selected_paper
+            or audit.get("runId") != run_id or audit.get("sourceId") != selected_paper
+            or run.get("status") not in {"awaiting-correction", "completed"}
+            or run.get("paperLayoutVersion") != DEVICE_PAPER_LAYOUT_VERSION):
         raise ReadinessError("真機驗收不是指定第三回的已交卷紀錄")
+    expected_pages = DEVICE_ACCEPTANCE_PAGE_COUNTS.get(selected_paper)
+    if not expected_pages:
+        raise ReadinessError("真機驗收指定卷沒有固定頁數規格")
+
+    def finite_number(item: Any) -> bool:
+        return isinstance(item, (int, float)) and not isinstance(item, bool) \
+            and float("-inf") < float(item) < float("inf")
+
     attestation = value.get("deviceAttestation") or {}
+    nested_attestation = audit.get("deviceAttestation") or {}
     if (attestation.get("confirmed") is not True
             or attestation.get("model") != DEVICE_MODEL
-            or attestation.get("source") != "user-confirmation"):
+            or attestation.get("source") != "user-confirmation"
+            or any(nested_attestation.get(key) != attestation.get(key) for key in (
+                "confirmed", "model", "source", "confirmedAt", "browserReportedModel",
+            ))):
         raise ReadinessError("缺少 Galaxy Tab S10 Ultra 使用者裝置確認")
+    parse_timestamp(attestation.get("confirmedAt"), "Galaxy 裝置確認")
+    parse_timestamp(value.get("exportedAt"), "真機驗收匯出")
     device = audit.get("device") or {}
     user_agent = str(device.get("userAgent") or "")
     reported_model = str(attestation.get("browserReportedModel") or "")
-    width, height = float(device.get("screenWidth") or 0), float(device.get("screenHeight") or 0)
+    width = float(device.get("screenWidth")) if finite_number(device.get("screenWidth")) else 0
+    height = float(device.get("screenHeight")) if finite_number(device.get("screenHeight")) else 0
     if "Android" not in user_agent:
         raise ReadinessError("裝置 UA 不是 Android")
     if reported_model and not re.search(r"SM-X9", reported_model, re.I):
@@ -909,22 +1228,300 @@ def validate_device_audit(path: Path, selected_paper: str, app_version: str) -> 
     if not reported_model and not re.search(r"SM-X9", user_agent, re.I) \
             and (max(width, height) < 1100 or min(width, height) < 700):
         raise ReadinessError("瀏覽器未回報型號，螢幕資料也不能支持大型 Samsung 平板證據")
-    required_checks = {"duration", "page", "save", "canvas", "resume", "pdf"}
-    check_rows = {str(row.get("id")): row for row in summary.get("checks") or [] if isinstance(row, dict)}
-    if summary.get("passed") is not True or any((check_rows.get(key) or {}).get("status") != "pass" for key in required_checks):
-        raise ReadinessError("真機必要量測沒有全部通過")
-    elapsed = float(audit.get("activeElapsedMs") or 0)
-    switches = audit.get("pageSwitches") or []
-    if elapsed < 5_999_000 or int(audit.get("strokesCommitted") or 0) < 1:
+
+    elapsed_raw = audit.get("activeElapsedMs")
+    strokes = audit.get("strokesCommitted")
+    if (not finite_number(elapsed_raw) or not isinstance(strokes, int) or isinstance(strokes, bool)
+            or strokes < 1):
         raise ReadinessError("未證明完整 100 分鐘與實際手寫")
-    if int(audit.get("sessions") or 0) < 2 or not any(row.get("method") == "swipe" for row in switches if isinstance(row, dict)):
-        raise ReadinessError("未證明暫停恢復與手指滑動翻頁")
-    if int(audit.get("pendingAtSubmit") or 0) != 0 or int(audit.get("localSaveFailures") or 0) != 0:
-        raise ReadinessError("交卷仍有待保存筆跡或本機保存失敗")
+    elapsed = float(elapsed_raw)
+    if elapsed < 5_999_000 or elapsed > 6_001_000:
+        raise ReadinessError("未證明完整 100 分鐘與實際手寫")
+
+    visited = audit.get("visitedPages")
+    if (not isinstance(visited, list) or len(visited) != expected_pages
+            or any(not isinstance(page, int) or isinstance(page, bool) for page in visited)
+            or len(set(visited)) != expected_pages
+            or set(visited) != set(range(expected_pages))):
+        raise ReadinessError("真機驗收沒有 raw visitedPages 全部頁面證據")
+    switches = audit.get("pageSwitches")
+    if not isinstance(switches, list):
+        raise ReadinessError("真機驗收缺少 raw 翻頁資料")
+    swipe_rows = []
+    for row in switches:
+        if (not isinstance(row, dict) or row.get("method") not in {"swipe", "button"}
+                or row.get("painted") is not True
+                or not finite_number(row.get("at")) or float(row["at"]) <= 0
+                or not finite_number(row.get("ms")) or float(row["ms"]) < 0
+                or not isinstance(row.get("from"), int) or isinstance(row.get("from"), bool)
+                or not isinstance(row.get("to"), int) or isinstance(row.get("to"), bool)
+                or row["from"] == row["to"]
+                or row["from"] not in range(expected_pages)
+                or row["to"] not in range(expected_pages)):
+            raise ReadinessError("真機驗收含無效或未完成 painted 的翻頁事件")
+        if row["method"] == "swipe":
+            swipe_rows.append(row)
+    initial_page = audit.get("initialPage")
+    if not isinstance(initial_page, int) or isinstance(initial_page, bool) \
+            or initial_page not in range(expected_pages):
+        raise ReadinessError("真機驗收 initialPage 不合法")
+    swipe_pages = {initial_page}
+    for row in swipe_rows:
+        swipe_pages.update((row["from"], row["to"]))
+    if len(swipe_rows) < max(1, expected_pages - 1) or swipe_pages != set(range(expected_pages)):
+        raise ReadinessError("未證明以手指滑動並完成 painted 後翻遍全部頁面；button-only 不合格")
+    swipe_ms = sorted(float(row["ms"]) for row in swipe_rows)
+    page_p95 = swipe_ms[max(0, min(len(swipe_ms) - 1, (95 * len(swipe_ms) + 99) // 100 - 1))]
+    if page_p95 > 500:
+        raise ReadinessError("手指滑動 painted 後的 P95 超過 500 ms")
+
+    save_ms = audit.get("localSaveMs")
+    if (not isinstance(save_ms, list) or not save_ms
+            or any(not finite_number(item) or float(item) < 0 for item in save_ms)
+            or max(float(item) for item in save_ms) > 2000
+            or audit.get("localSaveFailures") != 0
+            or (audit.get("localSaveFailureIds") not in (None, []))):
+        raise ReadinessError("本機筆跡保存沒有 raw 成功量測或發生失敗")
+    sorted_saves = sorted(float(item) for item in save_ms)
+    save_p95 = sorted_saves[max(0, min(len(sorted_saves) - 1, (95 * len(sorted_saves) + 99) // 100 - 1))]
+    canvas_pixels = audit.get("maxSingleCanvasPixels")
+    canvas_count = audit.get("maxLiveCanvasCount")
+    if (not finite_number(canvas_pixels) or not finite_number(canvas_count)
+            or float(canvas_pixels) <= 0 or float(canvas_pixels) > 12_000_000
+            or int(canvas_count) != float(canvas_count) or int(canvas_count) < 1
+            or int(canvas_count) > 3):
+        raise ReadinessError("Canvas raw 資源量測未通過")
+
+    recoveries = audit.get("crashRecoveries")
+    events = audit.get("recoveryEvents")
+    sessions = audit.get("sessions")
+    if (not isinstance(recoveries, int) or isinstance(recoveries, bool) or recoveries < 1
+            or not isinstance(sessions, int) or isinstance(sessions, bool) or sessions < 2
+            or not isinstance(events, list) or len(events) != recoveries):
+        raise ReadinessError("sessions 次數不能代替真實當機恢復；缺少 crashRecoveries/recoveryEvents")
+    for row in events:
+        if (not isinstance(row, dict) or row.get("sourceId") != selected_paper
+                or not finite_number(row.get("checkpointUpdatedAt"))
+                or not finite_number(row.get("recoveredAt"))
+                or float(row["checkpointUpdatedAt"]) <= 0
+                or float(row["recoveredAt"]) < float(row["checkpointUpdatedAt"])
+                or not isinstance(row.get("page"), int) or isinstance(row.get("page"), bool)
+                or row["page"] not in range(expected_pages)
+                or not finite_number(row.get("remainingMs"))
+                or float(row["remainingMs"]) < 0 or float(row["remainingMs"]) > 6_000_000
+                or row.get("inkVerified") is not True
+                or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("checkpointInkSha256") or ""))
+                or row.get("checkpointInkSha256") != row.get("recoveredInkSha256")
+                or row.get("pageCount") != expected_pages
+                or not isinstance(row.get("strokeCount"), int) or isinstance(row.get("strokeCount"), bool)
+                or row["strokeCount"] < 0
+                or not isinstance(row.get("deletedCount"), int) or isinstance(row.get("deletedCount"), bool)
+                or row["deletedCount"] < 0):
+            raise ReadinessError("真實當機恢復事件內容不合法")
+
+    durability = audit.get("submitDurability") or {}
+    durability_pages = durability.get("pages")
+    submitted_at = audit.get("submittedAt")
+    if (durability.get("journalDrained") is not True
+            or durability.get("allPagesPersisted") is not True
+            or durability.get("cloudFlushed") is not True
+            or durability.get("pendingAtSubmit") != 0
+            or audit.get("pendingAtSubmit") != 0
+            or durability.get("expectedPages") != expected_pages
+            or durability.get("verifiedPages") != expected_pages
+            or not finite_number(submitted_at) or float(submitted_at) <= 0
+            or not finite_number(durability.get("readbackVerifiedAt"))
+            or float(durability.get("readbackVerifiedAt") or 0) < float(submitted_at or 0)
+            or not isinstance(durability_pages, list)
+            or len(durability_pages) != expected_pages):
+        raise ReadinessError("交卷 submitDurability 未證明全頁、零 pending 與雲端回讀")
+    seen_pages: set[int] = set()
+    hash_pattern = re.compile(r"[a-f0-9]{64}")
+    for row in durability_pages:
+        page = row.get("page") if isinstance(row, dict) else None
+        local_hash = str(row.get("localSha256") or "") if isinstance(row, dict) else ""
+        cloud_hash = str(row.get("cloudSha256") or "") if isinstance(row, dict) else ""
+        if (not isinstance(page, int) or isinstance(page, bool)
+                or page not in range(expected_pages) or page in seen_pages
+                or row.get("matched") is not True
+                or not hash_pattern.fullmatch(local_hash)
+                or not hash_pattern.fullmatch(cloud_hash)
+                or local_hash != cloud_hash
+                or row.get("qid") != f"paper:{run_id}:v{DEVICE_PAPER_LAYOUT_VERSION}:{page}"
+                or not isinstance(row.get("clientId"), str) or not row.get("clientId")):
+            raise ReadinessError("交卷逐頁本機／雲端雜湊不一致或頁碼綁定漂移")
+        seen_pages.add(page)
+    if seen_pages != set(range(expected_pages)):
+        raise ReadinessError("交卷 submitDurability 缺少頁面")
+
+    pdf = audit.get("pdfArtifact") or {}
+    pdf_hash = str(pdf.get("sha256") or "")
+    content_binding_hash = str(pdf.get("contentBindingSha256") or "")
+    pdf_path = str(pdf.get("path") or "").replace("\\", "/")
+    pdf_path_pattern = re.compile(
+        rf"runtime-audits/matha_[a-f0-9]{{32}}/pdf/{re.escape(run_id)}/"
+        rf"(graded|answer)-({hash_pattern.pattern})-({hash_pattern.pattern})\.pdf"
+    )
+    pdf_path_match = pdf_path_pattern.fullmatch(pdf_path)
+    if (pdf.get("magic") != "%PDF-" or pdf.get("eof") != "%%EOF"
+            or pdf.get("format") != "application/pdf"
+            or not hash_pattern.fullmatch(pdf_hash)
+            or not isinstance(pdf.get("bytes"), int) or isinstance(pdf.get("bytes"), bool)
+            or pdf.get("bytes") <= 1000 or pdf.get("bytes") > 14_000_000
+            or pdf.get("pageCount") != expected_pages
+            or pdf.get("kind") not in {"graded", "answer"}
+            or pdf.get("storageVerified") is not True
+            or pdf.get("bucket") != PRIVATE_AUDIT_BUCKET
+            or not pdf_path_match or pdf_path_match.group(1) != pdf.get("kind")
+            or pdf_path_match.group(2) != content_binding_hash
+            or pdf_path_match.group(3) != pdf_hash
+            or pdf.get("contentBindingVersion") != 1
+            or not hash_pattern.fullmatch(content_binding_hash)
+            or not re.fullmatch(r"private-scan-set-[a-z0-9-]+-\d{8}-v\d+",
+                                str(pdf.get("sourceAssetVersion") or ""))
+            or (pdf.get("kind") == "graded"
+                and not hash_pattern.fullmatch(str(pdf.get("gradeBindingSha256") or "")))
+            or (pdf.get("kind") == "answer" and pdf.get("gradeBindingSha256") is not None)
+            or pdf.get("runId") != run_id or pdf.get("sourceId") != selected_paper
+            or not finite_number(pdf.get("generatedAt"))
+            or float(pdf["generatedAt"]) < float(submitted_at)):
+        raise ReadinessError("PDF 必須是指定 run 的私有 hash-addressed 正式檔；列印 timestamp 或本機 metadata 不算")
+    parse_timestamp(pdf.get("serverVerifiedAt"), "PDF 伺服器回讀")
+
+    pixel_qa = audit.get("pdfPixelQa") or {}
+    pixel_qa_at = parse_timestamp(pixel_qa.get("confirmedAt"), "PDF 真人像素核對")
+    pdf_verified_at = parse_timestamp(pdf.get("serverVerifiedAt"), "PDF 伺服器回讀")
+    if (pixel_qa.get("confirmed") is not True
+            or pixel_qa.get("source") != "owner-visual-review"
+            or pixel_qa.get("reviewer") != "authenticated-owner"
+            or pixel_qa.get("pdfSha256") != pdf_hash
+            or pixel_qa.get("contentBindingSha256") != content_binding_hash
+            or pixel_qa_at < pdf_verified_at):
+        raise ReadinessError("PDF 內容正確性仍缺本人逐頁像素核對；雜湊不能冒充視覺驗證")
+
+    archive = audit.get("archive") or {}
+    archive_hash = str(archive.get("sha256") or "")
+    archive_path = str(archive.get("path") or "").replace("\\", "/")
+    archive_pattern = re.compile(
+        rf"runtime-audits/matha_[a-f0-9]{{32}}/matha-paper-runtime-audit-{re.escape(run_id)}-([a-f0-9]{{16}})\.json"
+    )
+    archive_match = archive_pattern.fullmatch(archive_path)
+    if (archive.get("authority") != "supabase-service-role-storage-readback"
+            or archive.get("bucket") != PRIVATE_AUDIT_BUCKET
+            or not hash_pattern.fullmatch(archive_hash)
+            or not archive_match or archive_match.group(1) != archive_hash[:16]
+            or archive.get("appVersion") != app_version
+            or archive.get("sourceId") != selected_paper
+            or archive.get("contentBindingSha256") != content_binding_hash
+            or archive.get("pdfSha256") != pdf_hash
+            or not isinstance(archive.get("bytes"), int) or isinstance(archive.get("bytes"), bool)
+            or archive.get("bytes") <= 0 or archive.get("bytes") > MAX_PRIVATE_AUDIT_BYTES
+            or not finite_number(archive.get("archivedAt"))):
+        raise ReadinessError("缺少私有 hash-addressed 真機驗收封存或封存雜湊漂移")
+    parse_timestamp(archive.get("readbackVerifiedAt"), "真機驗收私有回讀")
+
+    # 本機 JSON 與公開 SHA 都可被重算，不能自行證明真機或 100 分鐘。正式通過前必須
+    # 以私有權限讀回 Edge 產生的封存與 PDF，並核對實際位元。這條路徑只讀取，不寫入。
+    if private_fetcher is None:
+        raise ReadinessError("缺少私有 Storage 即時回讀；本機 JSON／SHA 不能自行證明真機驗收")
+    try:
+        archive_bytes = private_fetcher(PRIVATE_AUDIT_BUCKET, archive_path)
+        pdf_bytes = private_fetcher(PRIVATE_AUDIT_BUCKET, pdf_path)
+    except ReadinessError:
+        raise
+    except Exception as error:
+        raise ReadinessError(f"私有 Storage 即時回讀失敗：{error}") from error
+    if (not isinstance(archive_bytes, bytes) or len(archive_bytes) > MAX_PRIVATE_AUDIT_BYTES
+            or hashlib.sha256(archive_bytes).hexdigest() != archive_hash):
+        raise ReadinessError("私有真機封存實際位元與 archive SHA 不一致")
+    try:
+        server = json.loads(archive_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReadinessError("私有真機封存不是有效的伺服器 JSON") from error
+    server_run = server.get("run") or {}
+    server_audit = server.get("audit") or {}
+    server_summary = server.get("summary") or {}
+    if (server.get("kind") != "matha-paper-runtime-audit-v2"
+            or server.get("schemaVersion") != 2
+            or server.get("appVersion") != app_version
+            or server_run.get("id") != run_id
+            or server_run.get("sourceId") != selected_paper
+            or server_run.get("pageCount") != expected_pages
+            or server_run.get("paperLayoutVersion") != DEVICE_PAPER_LAYOUT_VERSION
+            or server_run.get("status") not in {"awaiting-correction", "completed"}
+            or server_audit.get("schema") != 2
+            or server_audit.get("appVersion") != app_version
+            or server_audit.get("runId") != run_id
+            or server_audit.get("sourceId") != selected_paper
+            or server_summary.get("passed") is not True):
+        raise ReadinessError("私有真機封存未綁定目前 App、題本、run 與頁數")
+    parse_timestamp(server.get("exportedAt"), "私有真機封存")
+    server_checks = {
+        str(row.get("id")): row.get("status")
+        for row in server_summary.get("checks") or [] if isinstance(row, dict)
+    }
+    required_server_checks = {"duration", "page", "save", "canvas", "resume", "pdf", "pdf-visual", "durability"}
+    if any(server_checks.get(check) != "pass" for check in required_server_checks):
+        raise ReadinessError("私有真機封存沒有通過全部伺服器必要檢查")
+    for field in (
+        "activeElapsedMs", "sessions", "crashRecoveries", "recoveryEvents",
+        "strokesCommitted", "initialPage", "visitedPages", "pageSwitches",
+        "localSaveMs", "localSaveFailures", "pendingAtSubmit",
+        "maxSingleCanvasPixels", "maxLiveCanvasCount", "deviceAttestation", "device",
+    ):
+        if server_audit.get(field) != audit.get(field):
+            raise ReadinessError(f"私有真機封存的 {field} 與匯出檔不一致")
+    server_durability = server_audit.get("submitDurability") or {}
+    for field in (
+        "journalDrained", "allPagesPersisted", "cloudFlushed", "pendingAtSubmit",
+        "readbackVerifiedAt", "expectedPages", "verifiedPages",
+    ):
+        if server_durability.get(field) != durability.get(field):
+            raise ReadinessError("私有真機封存的交卷回讀證據與匯出檔不一致")
+    server_pdf = server_audit.get("pdfArtifact") or {}
+    for field in (
+        "format", "magic", "eof", "sha256", "bytes", "pageCount", "kind",
+        "generatedAt", "storageVerified", "bucket", "path", "serverVerifiedAt",
+        "contentBindingVersion", "contentBindingSha256", "sourceAssetVersion",
+        "gradeBindingSha256",
+    ):
+        if server_pdf.get(field) != pdf.get(field):
+            raise ReadinessError("私有真機封存的 PDF 證據與匯出檔不一致")
+    if server_audit.get("pdfPixelQa") != pixel_qa:
+        raise ReadinessError("私有真機封存的本人 PDF 像素核對與匯出檔不一致")
+    ink_readback = server.get("inkReadback") or {}
+    server_pages = ink_readback.get("pages")
+    if (ink_readback.get("route") != "service-role-postgrest"
+            or ink_readback.get("expectedPages") != expected_pages
+            or ink_readback.get("verifiedPages") != expected_pages
+            or not isinstance(server_pages, list) or len(server_pages) != expected_pages):
+        raise ReadinessError("私有真機封存缺少逐頁伺服器筆跡回讀")
+    local_pages = {row["page"]: row for row in durability_pages}
+    seen_server_pages: set[int] = set()
+    for row in server_pages:
+        page = row.get("page") if isinstance(row, dict) else None
+        local = local_pages.get(page)
+        if (not isinstance(page, int) or isinstance(page, bool) or page in seen_server_pages
+                or local is None or row.get("matched") is not True
+                or row.get("qid") != local.get("qid")
+                or row.get("clientId") != local.get("clientId")
+                or row.get("sha256") != local.get("cloudSha256")):
+            raise ReadinessError("私有真機封存逐頁筆跡與匯出檔不一致")
+        seen_server_pages.add(page)
+    if seen_server_pages != set(range(expected_pages)):
+        raise ReadinessError("私有真機封存逐頁筆跡不完整")
+    if (not isinstance(pdf_bytes, bytes) or len(pdf_bytes) != pdf.get("bytes")
+            or hashlib.sha256(pdf_bytes).hexdigest() != pdf_hash
+            or not pdf_bytes.startswith(b"%PDF-")
+            or not pdf_bytes.rstrip().endswith(b"%%EOF")
+            or len(re.findall(rb"/Type\s*/Page\b", pdf_bytes)) != expected_pages):
+        raise ReadinessError("私有正式 PDF 實際位元、雜湊或頁數不一致")
     return [
         f"file:{path}", f"sha256:{sha256(path)}", f"run:{run.get('id')}",
-        f"pageP95Ms:{summary.get('pageP95Ms')}",
-        f"localSaveP95Ms:{summary.get('localSaveP95Ms')}",
+        f"pageP95Ms:{round(page_p95, 2)}",
+        f"localSaveP95Ms:{round(save_p95, 2)}",
+        f"privateArchive:{archive_path}:{archive_hash}",
+        f"privatePdf:{pdf_path}:{pdf_hash}",
     ]
 
 
@@ -942,9 +1539,10 @@ def audit_device(roots: list[Path], selected_paper: str,
         )
     errors = []
     version = current_app_version()
+    private_fetcher = private_storage_fetcher_from_env()
     for path in candidates:
         try:
-            evidence = validate_device_audit(path, selected_paper, version)
+            evidence = validate_device_audit(path, selected_paper, version, private_fetcher)
             return gate("galaxy-tab", "Galaxy Tab 100 分鐘真機驗收", "pass", "真機必要證據全部通過", evidence=evidence, phase="post-delivery")
         except ReadinessError as error:
             errors.append(f"{path.name}: {error}")
@@ -1863,12 +2461,15 @@ def audit_starter(work_root: Path) -> tuple[
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     inventory = load_json(args.inventory, "完整卷清冊")
     selected_paper = str(inventory.get("selectedNextPaperId") or "paper-mock-3")
-    paper_engineering, calibration = audit_full_papers(args.inventory, args.private_root)
+    evidence_roots = [args.downloads, args.private_root]
+    paper_engineering, calibration = audit_full_papers(
+        args.inventory, args.private_root, evidence_roots, args.capability_evidence,
+    )
     gates = [paper_engineering]
     gates.append(audit_device([args.downloads, args.private_root], selected_paper, args.device_audit))
     gates.append(calibration)
     gates.append(audit_score_stability(
-        [args.downloads, args.private_root], args.capability_evidence,
+        evidence_roots, args.capability_evidence,
     ))
     detail, scale = audit_detail(args.private_eval_root, args.detail_gold, args.detail_prediction)
     gates.extend([detail, scale])

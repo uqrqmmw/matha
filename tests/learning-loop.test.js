@@ -98,14 +98,14 @@ test('首頁直接續寫保留中的原卷；沒有新基準時一步開啟未�
     const grading = nextBestAction();
     return { sourceId:source.id, solution:source.officialSolutionCoverage, fresh, resume, grading };
   })()`));
-  assert.equal(result.sourceId, 'paper-regional-ra4109');
-  assert.equal(result.solution, 'full');
+  assert.equal(result.sourceId, 'paper-mock-3');
+  assert.equal(result.solution, 'none');
   assert.equal(result.fresh.kind, 'mock');
-  assert.match(result.fresh.onclick, /startPaperSource\('paper-regional-ra4109'\)/);
+  assert.match(result.fresh.onclick, /startPaperSource\('paper-mock-3'\)/);
   assert.match(result.fresh.button, /檢查並開啟/);
   assert.equal(result.resume.kind, 'paper-resume');
   assert.match(result.resume.time, /37:00/);
-  assert.match(result.resume.onclick, /startPaperSource\('paper-regional-ra4109'\)/);
+  assert.match(result.resume.onclick, /startPaperSource\('paper-mock-3'\)/);
   assert.equal(result.grading.kind, 'paper-resume');
   assert.match(result.grading.button, /繼續批改/);
 });
@@ -246,12 +246,12 @@ test('教材選題理由會引用跨題流程斷點，但同一題重複錯不�
 test('教材精選只有跨兩題正式卷失分才啟用配分／時間排序，單題失誤仍不宣布單元弱點', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
-    const source = PAPER_SOURCES.find((item) => item.questions === 20 && item.calibrationEligible !== false && Array.isArray(item.key));
+    const source = PAPER_SOURCES.find((item) => item.questions === 20 && item.calibrationEligible !== false);
     const q = BANK.find((item) => item.topic === 'num');
-    const grade = source.key.map((key, index) => ({
+    const grade = Array.from({ length:20 }, (_, index) => ({
       no:index + 1, topic:index < 2 ? 'num' : 'prob',
-      status:index === 0 ? 'incorrect' : 'correct', points:index === 0 ? 0 : key.points,
-      maxPoints:key.points, marks:[],
+      topicSource:'official-key', status:index === 0 ? 'incorrect' : 'correct',
+      points:index === 0 ? 0 : 5, maxPoints:5, marks:[],
     }));
     S.paperRuns = [{ id:'value-paper', sourceId:source.id, submittedAt:1, status:'completed', aiGrade:{ score:95, questions:grade }, review:{} }];
     const oneSignals = learningSignalIndex();
@@ -499,13 +499,13 @@ test('私有原版模考保留三回舊卷，並加入十四回完整單頁卷',
   const { run } = loadApp();
   const result = plain(run(`(() => {
     const scans = PAPER_SOURCES.flatMap((source) => source.scans.map((scan) => scan.file));
-    return { bucket:PAPER_SOURCE_BUCKET, papers:PAPER_SOURCES.map((source) => ({ q:source.questions, min:source.minutes, pages:source.pages, scans:source.scans.length, sides:source.scans.map((scan) => scan.side) })), scans, unique:new Set(scans).size };
+    return { bucket:PAPER_SOURCE_BUCKET, papers:PAPER_SOURCES.map((source) => ({ q:source.questions, min:source.minutes, pages:source.pages, scans:source.scans.length, sides:source.scans.map((scan) => scan.side), calibrationEligible:source.calibrationEligible, practiceReason:source.practiceReason || '' })), scans, unique:new Set(scans).size };
   })()`));
   assert.equal(result.bucket, 'matha-papers');
   assert.deepEqual(result.papers.slice(0, 3), [
-    { q:20, min:100, pages:6, scans:6, sides:['left','right','left','right','left','right'] },
-    { q:19, min:100, pages:6, scans:6, sides:['left','right','left','right','left','right'] },
-    { q:20, min:100, pages:4, scans:4, sides:['left','right','left','right'] },
+    { q:20, min:100, pages:6, scans:6, sides:['left','right','left','right','left','right'], calibrationEligible:false, practiceReason:'答案已公開且曾作答，只保留歷史練習與訂正，不列入目前級分、正式能力或弱點基準' },
+    { q:19, min:100, pages:6, scans:6, sides:['left','right','left','right','left','right'], calibrationEligible:false, practiceReason:'原始題本只有 19 題，不符合正式學測 20 題結構' },
+    { q:20, min:100, pages:4, scans:4, sides:['left','right','left','right'], calibrationEligible:true, practiceReason:'' },
   ]);
   assert.equal(result.papers.length, 17);
   assert.equal(result.papers.slice(3).every((paper) => paper.q === 20 && paper.min === 100 && paper.pages === paper.scans && [3,4,8].includes(paper.pages) && paper.sides.every((side) => side === 'full')), true);
@@ -925,29 +925,54 @@ test('AI 沒有回傳可信座標時不在卷面假猜紅筆位置', () => {
   assert.equal(result.unlocalized, true);
 });
 
-test('交卷會合成全部單頁、呼叫一次整卷批改並直接進入紅筆唯讀結果', async () => {
+test('交卷不由瀏覽器合成批改影像，伺服器重建卷面後直接進入紅筆唯讀結果', async () => {
   const { context, run } = loadApp();
   context.__app = { innerHTML: '' };
   context.document.querySelector = (selector) => selector === '#app' ? context.__app : null;
   const result = plain(await run(`(async () => {
     save = () => {}; sessionChrome = () => {}; stopTicker = () => {};
     paperInkPersist = async () => true;
+    paperInkJournalDrain = async () => true;
+    paperInkPersistAll = async () => true;
+    paperInkCloudFlushBarrier = async () => true;
+    paperInkPendingCount = () => 0;
+    paperInkCloudReadbackVerify = async (session) => ({
+      passed:true, readbackVerifiedAt:Date.now() + 1,
+      expectedPages:session.source.scans.length, verifiedPages:session.source.scans.length,
+       pages:session.source.scans.map((_, page) => ({page, matched:true,
+         qid:'paper:' + session.run.id + ':v' + PAPER_LAYOUT_VERSION + ':' + page,
+         clientId:'client-' + page, revision:0,
+         localSha256:'a'.repeat(64), cloudSha256:'a'.repeat(64),
+         updatedAt:'2026-08-30T00:00:00.000Z'})),
+    });
+    paperSubmitAttemptSettle = async (attempt) => ({ outcome:'accepted', row:{ ...attempt,
+      status:'accepted', decisionReason:'accepted-first-for-run', acceptedAt:Date.now(), updatedAt:Date.now() } });
+     paperSubmitAcceptedRemoteDurable = async () => true;
+     paperAcceptedInkLoadAll = async (run, source) => Object.fromEntries(
+       source.scans.map((_, page) => [page, {s:[],deleted:new Set(),revision:0,persistedRevision:0,dirty:false}]));
+    paperAcceptedGradeSnapshotPreflight = async () => ({ canonicalDigest:'a'.repeat(64) });
     const composed = [];
     paperPageComposite = async (page) => { composed.push(page); return 'page-' + page; };
-    paperAiGradeCall = async (source, pages) => ({ model:'gpt-5.5', json:{ questions:source.key.map((q, i) => ({
+    paperAiGradeCall = async (source, run, answerKey) => ({ model:'gpt-5.5', serverGradeReceipt:{}, json:{ questions:answerKey.map((q, i) => ({
       no:i + 1, page:paperQuestionScanIndex(source, i + 1) + 1, read:'作答', status:'correct', hasFinalAnswer:true,
       finalAnswer:q.type === 'fill' ? String(q.ans[0]) : '',
       selectedOptions:q.type === 'fill' ? [] : q.ans.map((option) => option + 1), points:q.points, marks:[],
     })), note:'' } });
+    paperApplyServerGradeReceipt = (grade) => grade;
     let rendered = 0; renderPaperGradeResult = () => { rendered++; };
-    const source = PAPER_SOURCES[0], row = { id:'grade-flow', sourceId:source.id, name:source.title, d:today(), createdAt:1, mt:1, status:'active', remainingMs:6000000, resumeAt:Date.now(), wrongNos:[] };
+    const source = PAPER_SOURCES[0], row = { id:'paper-run-1700000000000', sourceId:source.id,
+      name:source.title, d:today(), createdAt:1700000000000, mt:1700000000000,
+      runCreatedAppVersion:APP_VER, paperLayoutVersion:PAPER_LAYOUT_VERSION,
+      status:'active', remainingMs:6000000, resumeAt:Date.now(), wrongNos:[] };
     S.paperRuns = [row]; S.extMocks = [];
-    paperSourceSession = { source, run:row, urls:source.scans.map((_, i) => 'blob:' + i), inkPages:{}, page:3, zoom:2, inkMode:'pen', inkWidth:1, inkColor:'black' };
+    paperSourceSession = { source, run:row, urls:source.scans.map((_, i) => 'blob:' + i),
+      inkPages:Object.fromEntries(source.scans.map((_, page) => [page, {s:[],deleted:new Set(),revision:0,persistedRevision:0,dirty:false}])),
+      page:3, zoom:2, inkMode:'pen', inkWidth:1, inkColor:'black' };
     sessionActive = true; sessionMode = 'paper-source';
     await paperSourceGrade('主動交卷');
     return { composed, status:row.status, score:row.score, due:row.due, today:today(), readOnly:paperSourceSession.readOnly, page:paperSourceSession.page, zoom:paperSourceSession.zoom, mode:sessionMode, active:sessionActive, rendered, ext:S.extMocks.length };
   })()`));
-  assert.deepEqual(result.composed, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(result.composed, []);
   assert.equal(result.status, 'awaiting-correction');
   assert.equal(result.score, 100);
   assert.notEqual(result.due, result.today);
@@ -1010,15 +1035,31 @@ test('第三回只有在交卷狀態成立時才向後端取正式答案', async
     const key = Array.from({length:source.questions}, () => ({type:'single', ans:[0], points:5}));
     openAiInvoke = async (payload) => { calls.push(payload); return {paperKey:key}; };
     let locked = '';
-    try { await paperAnswerKeyAfterSubmit(source, {id:'r3', sourceId:source.id, status:'active'}); }
+    try { await paperAnswerKeyAfterSubmit(source, {id:'paper-run-1700000000000', sourceId:source.id, status:'active'}); }
     catch (error) { locked = error.message; }
-    const unlocked = await paperAnswerKeyAfterSubmit(source, {id:'r3', sourceId:source.id, status:'grading', submittedAt:123});
+    const runId = 'paper-run-1700000000000', submittedAt = 1700000001000;
+    const attempt = { schema:PAPER_SUBMIT_ATTEMPT_SCHEMA,
+      attemptId:'paper-submit-answer-key-1234567890abcdef', runId, sourceId:source.id,
+      status:'accepted', remainingMs:500000, inkSnapshotSha256:'a'.repeat(64),
+      submittedAt, acceptedAt:submittedAt + 1, canceledAt:null,
+      runCreatedAppVersion:APP_VER, decisionReason:'accepted-first-for-run', winnerAttemptId:'',
+      runCreatedAt:1700000000000, paperLayoutVersion:PAPER_LAYOUT_VERSION,
+      sourcePageCount:source.scans.length,
+      pageManifest:source.scans.map((_, page) => ({ page,
+        qid:'paper:' + runId + ':v' + PAPER_LAYOUT_VERSION + ':' + page,
+        clientId:'accepted-client-' + page, revision:page + 1,
+        cloudSha256:'b'.repeat(64), updatedAt:'2026-08-30T00:00:00.000Z' })) };
+    const unlocked = await paperAnswerKeyAfterSubmit(source, {id:runId, sourceId:source.id,
+      status:'grading', submittedAt, submitAttempt:attempt});
     return {locked, calls, length:unlocked.length};
   })()`));
   assert.match(result.locked, /答案仍保持鎖定/);
   assert.equal(result.calls.length, 1);
   assert.equal(result.calls[0].responseType, 'paper_key');
-  assert.deepEqual(result.calls[0].context, {paperRunId:'r3', sourceId:'paper-mock-3'});
+  assert.deepEqual(result.calls[0].context, {paperRunId:'paper-run-1700000000000',
+    sourceId:'paper-mock-3', submitAttemptId:'paper-submit-answer-key-1234567890abcdef',
+    submitAttemptInkSnapshotSha256:'a'.repeat(64), submittedAt:1700000001000,
+    runCreatedAppVersion:'0830b'});
   assert.equal(result.length, 20);
 });
 
@@ -1210,19 +1251,36 @@ test('圈住印刷題號並寫不會必須視為未答，不能誤當成同號�
   assert.deepEqual(result, { status:'unanswered', points:0, kind:'unanswered', answer:'(4)', score:95 });
 });
 
-test('整卷視覺提示明定圈題號不是答案、逐項複選與第一次禁止詳解', async () => {
+test('整卷批改請求不含瀏覽器訊息或合成圖，只有 accepted 識別交給伺服器', async () => {
   const { run } = loadApp();
   const prompt = await run(`(async () => {
     let request = null;
-    openAiInvoke = async (payload) => { request = payload; return { model:'gpt-5.5', json:{} }; };
-    await paperAiGradeCall(PAPER_SOURCES[0], []);
-    return request.messages[0].content[0].text;
+    openAiInvoke = async (payload) => { request = payload; return { model:'gpt-5.5', json:{},
+      serverGradeReceipt:{ gradeGeneration:0 }, gradeJob:{ status:'completed', generation:0,
+        modelInputBindingSha256:'a'.repeat(64) } }; };
+    const source = PAPER_SOURCES[0], submittedAt = 1700000001000;
+    const attempt = { schema:1, attemptId:'paper-submit-1234567890abcdef',
+      runId:'paper-run-1700000000000', sourceId:source.id, status:'accepted',
+      remainingMs:5000000, inkSnapshotSha256:'a'.repeat(64), submittedAt,
+       acceptedAt:submittedAt + 1, canceledAt:null, runCreatedAppVersion:APP_VER,
+       runCreatedAt:1700000000000, paperLayoutVersion:PAPER_LAYOUT_VERSION,
+       sourcePageCount:source.scans.length,
+       decisionReason:'accepted-first-for-run', winnerAttemptId:'',
+       pageManifest:source.scans.map((_, page) => ({ page,
+         qid:'paper:paper-run-1700000000000:v' + PAPER_LAYOUT_VERSION + ':' + page,
+         clientId:'accepted-client-' + page, revision:page + 1,
+         cloudSha256:'b'.repeat(64), updatedAt:'2026-08-30T00:00:00.000Z' })) };
+    const paperRun = { id:attempt.runId, sourceId:source.id, status:'grading',
+      createdAt:1700000000000, submittedAt, runCreatedAppVersion:APP_VER,
+      paperLayoutVersion:PAPER_LAYOUT_VERSION, submitAttempt:attempt };
+    await paperAiGradeCall(source, paperRun, source.key);
+    return { responseType:request.responseType, hasMessages:Object.hasOwn(request, 'messages'),
+      runId:request.context.paperRunId, attemptId:request.context.submitAttemptId };
   })()`);
-  assert.match(prompt, /圈住「印刷的題號」[\s\S]*絕對不是選了同號選項/);
-  assert.match(prompt, /kind=strike/);
-  assert.match(prompt, /kind=add/);
-  assert.match(prompt, /系統會在紅叉或部分得分旁強制寫出完整正解/);
-  assert.match(prompt, /禁止輸出詳解、提示、破題方向、錯誤類型/);
+  assert.equal(prompt.responseType, 'paper_grade');
+  assert.equal(prompt.hasMessages, false);
+  assert.equal(prompt.runId, 'paper-run-1700000000000');
+  assert.equal(prompt.attemptId, 'paper-submit-1234567890abcdef');
 });
 
 test('真人式紅筆會在錯答旁畫叉並直接寫正解，不再用整框標籤', () => {
@@ -1305,6 +1363,9 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
     let calls = 0, officialCalls = 0;
     paperReviewPageComposite = async () => 'composite';
     paperReviewQuestionFocusImage = async () => 'focus';
+    paperCorrectionRetryReceiptReadback = async (receiptId) => ({
+      receiptId, canonicalDigest:'a'.repeat(64), correctionNewStrokes:[],
+    });
     paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
       calls++;
       return { model:'gpt-5.5', json:{
@@ -1319,6 +1380,7 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
     await paperReviewDetailed();
     const lockedCalls = calls, lockedOfficialCalls = officialCalls, lockedError = paperReview.detailError;
     state.attempts = 1; state.logs.push({ ts:Date.now(), kind:'retry', direction:'先把條件改寫成內積再建式' });
+    state.correctionRetryReceipt = { receiptId:'paper-correction-retry-detail-1234567890abcdef', canonicalDigest:'a'.repeat(64) };
     paperReview.detailError = '';
     await paperReviewDetailed();
     const firstCalls = calls;
@@ -1340,7 +1402,7 @@ test('原版隔日每題先保存一次真實重想才可查看詳解，內容�
   })()`));
   assert.equal(result.lockedCalls, 0, '沒有重想紀錄時不得呼叫詳解 API');
   assert.equal(result.lockedOfficialCalls, 0, '沒有重想紀錄時也不得請求官方詳解像素');
-  assert.match(result.lockedError, /先在卷面留下新的重算|真實重想/);
+  assert.match(result.lockedError, /隔日訂正收據/);
   assert.equal(result.firstCalls, 1, '保存一次真實重想後才產生本題詳解');
   assert.equal(result.cachedCalls, 1, '再次打開沿用已保存詳解，不重複花 API');
   assert.equal(result.officialCalls, 2, '短效網址到期前沿用，接近到期後安全刷新');
@@ -1363,11 +1425,15 @@ test('後端拒絕詳解時不再製造假的 detail-gate 繞過老師流程', a
     paperInkJournalDrain = async () => true; paperInkPersist = async () => true;
     let syncCalls = 0; syncPush = async () => { syncCalls++; };
     const source = PAPER_SOURCES[0], no = 2;
-    const state = { done:false, attempts:1, logs:[{ ts:Date.now(), kind:'retry', direction:'先把條件拆成兩段再建式' }] };
+    const state = { done:false, attempts:1, logs:[{ ts:Date.now(), kind:'retry', direction:'先把條件拆成兩段再建式' }],
+      correctionRetryReceipt:{ receiptId:'paper-correction-retry-reject-1234567890abcdef', canonicalDigest:'a'.repeat(64) } };
     const row = { id:'legacy-detail-gate', sourceId:source.id, due:today(), mt:1, review:{ [no]:state } };
     paperReview = { source, run:row, urls:[], inkPages:{}, nos:[no], i:0, detailLoading:false, detailError:'' };
     paperReviewPageComposite = async () => 'composite';
     paperReviewQuestionFocusImage = async () => 'focus';
+    paperCorrectionRetryReceiptReadback = async (receiptId) => ({
+      receiptId, canonicalDigest:'a'.repeat(64), correctionNewStrokes:[],
+    });
     const receivedLogs = []; let calls = 0;
     paperAiDetailCall = async (givenSource, givenNo, image, logs) => {
       calls++; receivedLogs.push(logs.length);
@@ -1439,7 +1505,9 @@ test('逐題詳批同時送整頁與本題焦點，並強制列出正確前綴�
   const { run } = loadApp();
   const result = plain(await run(`(async () => {
     const source = PAPER_SOURCES[0], no = 3;
-    paperReview = { run:{ id:'quality', aiGrade:{ questions:[{ no, topic:'comb', answer:'(2)', answerType:'single', maxPoints:5 }] }, review:{ [no]:{ topic:'comb' } } } };
+    paperReview = { source, run:{ id:'quality', aiGrade:{ questions:[{ no, topic:'comb', answer:'(2)', answerType:'single', maxPoints:5 }] },
+      review:{ [no]:{ topic:'comb', correctionRetryReceipt:{
+        receiptId:'paper-correction-retry-quality-1234567890abcdef', canonicalDigest:'a'.repeat(64) } } } } };
     let request = null;
     openAiInvoke = async (payload) => { request = payload; return { json:{}, model:'gpt-5.5' }; };
     await paperAiDetailCall(source, no, 'full-page', [{ direction:'先分組' }], 'focus-crop', '分母其實寫 3!');
@@ -1498,7 +1566,7 @@ test('隔日訂正入口明確說明在紅筆卷上作答，不再沿用唯讀�
   assert.doesNotMatch(source, /開始原卷盲訂正/);
 });
 
-test('空白訂正不能灌水解鎖詳解，單元與具體卡點可保存成一次真實重想', async () => {
+test('空白或只填文字不能灌水解鎖，必須有本題頁新筆跡與伺服器收據', async () => {
   const { context, run } = loadApp();
   context.__reviewDirection = { value:'' };
   context.__reviewTopic = { value:'' };
@@ -1521,16 +1589,89 @@ test('空白訂正不能灌水解鎖詳解，單元與具體卡點可保存成�
     const blank = { attempts:state.attempts, logs:state.logs.length, error:paperReview.gradeError };
     __reviewTopic.value = 'prob'; __reviewConcept.value = '不知道如何判斷事件是否獨立';
     await paperReviewStuckWorkspace();
-    return { blank, saved:{ attempts:state.attempts, log:state.logs[0], error:paperReview.gradeError } };
+    const textOnly = { attempts:state.attempts, logs:state.logs.length, error:paperReview.gradeError };
+    paperReview.inkPages[0].s.push({ id:'new-correction-stroke', qno:no, pts:[[.1,.1,.5],[.2,.2,.5]] });
+    paperCorrectionRetryReceiptAcquire = async () => {
+      state.correctionRetryReceipt = { receiptId:'paper-correction-retry-effort-1234567890abcdef', canonicalDigest:'a'.repeat(64) };
+      return state.correctionRetryReceipt;
+    };
+    await paperReviewStuckWorkspace();
+    return { blank, textOnly, saved:{ attempts:state.attempts, log:state.logs[0], error:paperReview.gradeError } };
   })()`));
   assert.deepEqual(result.blank.attempts, 0);
   assert.deepEqual(result.blank.logs, 0);
-  assert.match(result.blank.error, /真實重想/);
+  assert.match(result.blank.error, /至少一筆|不能單獨解鎖/);
+  assert.equal(result.textOnly.attempts, 0);
+  assert.match(result.textOnly.error, /至少一筆|不能單獨解鎖/);
   assert.equal(result.saved.attempts, 1);
   assert.equal(result.saved.log.kind, 'retry');
   assert.equal(result.saved.log.topic, 'prob');
   assert.match(result.saved.log.concept, /事件是否獨立/);
   assert.equal(result.saved.error, '');
+});
+
+test('同頁另一題與舊版無題號筆跡不能算成本題 effort，checkpoint 保留不可變 qno', async () => {
+  const { run } = loadApp();
+  const result = plain(await run(`(async () => {
+    const source = { id:'paper-mock-1', scans:Array.from({length:6}, (_, i) => ({label:String(i)})), questions:20 };
+    const row = { id:'question-isolation', sourceId:source.id, review:{} };
+    const inkRun = paperReviewInkRun(row), qA = 1, qB = 2;
+    const pageData = { s:[
+      { id:'question-b', qno:qB, t0:1, pts:[[.1,.1,.5],[.2,.2,.5]] },
+      { id:'legacy-no-qno', t0:2, pts:[[.2,.2,.5],[.3,.3,.5]] },
+    ], deleted:new Set(), revision:3, dirty:true };
+    paperReview = { source, run:row, inkRun, nos:[qA,qB], i:0, effortBaseline:new Set(), inkPages:{0:pageData} };
+    paperSourceSession = { source, run:row, inkRun, reviewMode:true, page:0,
+      inkPages:paperReview.inkPages, inkClientIds:{0:'question-isolation-client'} };
+    const wrongQuestionOnly = paperReviewCurrentEffort().strokes;
+    pageData.s.push({ id:'question-a-1', qno:qA, t0:3, pts:[[.3,.3,.5],[.4,.4,.5]] });
+    const ownQuestion = paperReviewCurrentEffort().strokes;
+    paperReviewResetEffortBaseline();
+    pageData.s.push({ id:'question-b-2', qno:qB, t0:4, pts:[[.4,.4,.5],[.5,.5,.5]] });
+    const otherAfterBaseline = paperReviewCurrentEffort().strokes;
+    pageData.s.push({ id:'question-a-2', qno:qA, t0:5, pts:[[.5,.5,.5],[.6,.6,.5]] });
+    const ownAfterBaseline = paperReviewCurrentEffort().strokes;
+    const checkpoint = paperInkCheckpointRecord(0, pageData, paperSourceSession);
+    const clone = paperInkCloneStroke(pageData.s[2]);
+    paperInkPoint = () => [.7,.7,.5];
+    const created = paperInkCreateStroke({}, {}, paperSourceSession);
+    const wrongJournal = await paperInkJournalStroke(pageData.s[0], true, paperSourceSession);
+    return { wrongQuestionOnly, ownQuestion, otherAfterBaseline, ownAfterBaseline,
+      cloneQno:clone.qno, createdQno:created.qno, checkpointSchema:checkpoint.strokes.questionTagSchema,
+      checkpointQnos:checkpoint.strokes.s.map((stroke) => stroke.qno == null ? null : stroke.qno),
+      wrongJournal };
+  })()`));
+  assert.deepEqual(result, {
+    wrongQuestionOnly:0, ownQuestion:1, otherAfterBaseline:0, ownAfterBaseline:1,
+    cloneQno:1, createdQno:1, checkpointSchema:1, checkpointQnos:[2,1,2,1], wrongJournal:false,
+  });
+});
+
+test('訂正模型合成只繪製不可變收據證明的本題完整幾何', async () => {
+  const { run } = loadApp();
+  const result = plain(await run(`(async () => {
+    const source = { id:'paper-mock-1', scans:[{label:'1'}], questions:20 };
+    paperReview = { source, urls:['scan'], baseInkPages:{},
+      inkPages:{ 0:{ s:[
+        { id:'mutable-other-question', qno:2, t0:1, t1:2, c:'black', w:1, pts:[[.1,.1,.5],[.2,.2,.5]] },
+        { id:'mutable-after-receipt', qno:1, t0:3, t1:4, c:'green', w:1, pts:[[.3,.3,.5],[.4,.4,.5]] },
+      ], deleted:new Set() } } };
+    let rendered = null;
+    paperCompositeImage = async (_source, _urls, _base, page, _marks, correction) => {
+      rendered = correction[page].s;
+      return 'receipt-only-image';
+    };
+    const receipt = { correctionLiveStrokes:[{
+      id:'immutable-receipt-stroke', qno:1, t0:10, t1:20, c:'blue', w:1.25,
+      pts:[[.1234567,.2,.5],[.3,.4,.6]], geometryDigest:'a'.repeat(64),
+    }] };
+    const image = await paperReviewPageComposite(0, receipt);
+    return { image, ids:rendered.map((stroke) => stroke.id), qnos:rendered.map((stroke) => stroke.qno),
+      firstX:rendered[0].pts[0][0] };
+  })()`));
+  assert.deepEqual(result, {
+    image:'receipt-only-image', ids:['immutable-receipt-stroke'], qnos:[1], firstX:.123457,
+  });
 });
 
 test('隔日訂正筆跡使用獨立 namespace，不會覆蓋考試原稿', () => {
@@ -1551,14 +1692,25 @@ test('隔日卷面重算通過 AI 再批改後，才列為第二級並進下一�
   const result = plain(await run(`(async () => {
     save = () => {}; renderPaperAnswerReview = () => {}; paperSourceUpdateExtMock = () => {};
     paperInkCommitCurrent = () => false; paperInkJournalDrain = async () => true; paperInkPersist = async () => true;
-    paperReviewPageComposite = async () => 'review-page';
-    paperAiCorrectionCall = async () => ({ read:'紫色訂正得到正確答案', correct:true, firstError:null, errKind:null, praise:'', nextTime:'', marks:[{box:[.7,.4,.8,.45],label:'ok'}], stuck:[] });
+    paperCorrectionRetryReceiptAcquire = async (review, no, state) => {
+      state.correctionRetryReceipt = { receiptId:'paper-correction-retry-grade-1234567890abcdef', canonicalDigest:'a'.repeat(64) };
+      return state.correctionRetryReceipt;
+    };
+    paperAiCorrectionCall = async (source, no, retry) => {
+      const job = { jobId:'00000000-0000-4000-8000-000000000001', status:'completed',
+        modelInputBindingSha256:'b'.repeat(64) };
+      const receipt = { authority:'supabase-immutable-paper-correction-grade-result-v1', jobId:job.jobId,
+        runId:paperReview.run.id, sourceId:source.id, questionNo:no,
+        retryReceiptId:retry.receiptId, retryReceiptDigest:retry.canonicalDigest,
+        modelInputBindingSha256:job.modelInputBindingSha256, canonicalDigest:'c'.repeat(64) };
+      return { json:{status:'correct',read:'紫色訂正得到正確答案'}, receipt, job };
+    };
     const source = PAPER_SOURCES[0], no = 2, nextNo = 3;
     const state = { done:false, attempts:0, logs:[] };
     const row = { id:'verify-flow', sourceId:source.id, due:today(), mt:1, review:{ [no]:state, [nextNo]:{done:false,attempts:0,logs:[]} } };
     const inkRun = paperReviewInkRun(row);
     paperReview = { source, run:row, urls:[], baseInkPages:{}, inkPages:{}, inkRun, nos:[no,nextNo], i:0, grading:false, gradeError:'' };
-    paperSourceSession = { source, run:row, inkRun, inkPages:{0:{s:[{id:'new-work',t0:2,pts:[[.1,.1,.5],[.2,.2,.5]]}],deleted:new Set(),dirty:false}}, page:0, reviewMode:true };
+    paperSourceSession = { source, run:row, inkRun, inkPages:{0:{s:[{id:'new-work',qno:no,t0:2,pts:[[.1,.1,.5],[.2,.2,.5]]}],deleted:new Set(),dirty:false}}, page:0, reviewMode:true };
     await paperReviewGrade(2);
     const before = { done:state.done, pending:state.pendingLevel, correct:state.correctionGrade.correct, i:paperReview.i };
     paperReviewAcceptCorrection();
@@ -1568,17 +1720,20 @@ test('隔日卷面重算通過 AI 再批改後，才列為第二級並進下一�
   assert.deepEqual(result.after, { done:true, level:2, outcome:'answer-only-verified', i:1 });
 });
 
-test('訂正再批改失敗只顯示對錯，不提前洩漏模型的步驟診斷', () => {
+test('訂正再批改只接受專用四態結果，不提前取得或洩漏步驟診斷', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
     const source = PAPER_SOURCES[0], no = 2;
-    const grade = paperNormalizeCorrectionGrade(source, no, { read:'紫色寫到一半', correct:false, firstError:'秘密：第二行先錯', errKind:'移項', marks:[], stuck:[] });
+    const grade = paperNormalizeCorrectionGrade(source, no, {
+      json:{ status:'incorrect', read:'紫色寫到一半' },
+      receipt:{}, job:{},
+    });
     paperReview = { grading:false, gradeError:'' };
     return { hidden:grade.hiddenFirstError, html:paperReviewStatusHTML({ correctionGrade:grade }) };
   })()`));
-  assert.match(result.hidden, /第二行先錯/);
+  assert.equal(result.hidden, null);
   assert.match(result.html, /還沒完整成立/);
-  assert.doesNotMatch(result.html, /第二行先錯|移項/);
+  assert.doesNotMatch(result.html, /第一個錯誤|移項/);
 });
 
 test('隔日訂正保存失敗時不呼叫逐題詳解，也不離開可寫卷面', async () => {
@@ -1587,7 +1742,8 @@ test('隔日訂正保存失敗時不呼叫逐題詳解，也不離開可寫卷�
     save = () => {}; renderPaperAnswerReview = () => {}; paperInkCommitCurrent = () => false;
     paperInkJournalDrain = async () => false; paperInkPersist = async () => false;
     const source = PAPER_SOURCES[0], no = 2;
-    const state = { done:false, attempts:1, logs:[{ ts:Date.now(), kind:'retry', direction:'先整理條件再建式' }] };
+    const state = { done:false, attempts:1, logs:[{ ts:Date.now(), kind:'retry', direction:'先整理條件再建式' }],
+      correctionRetryReceipt:{ receiptId:'paper-correction-retry-save-1234567890abcdef', canonicalDigest:'a'.repeat(64) } };
     const row = { id:'save-failure', sourceId:source.id, due:today(), mt:1, review:{ [no]:state } };
     const inkRun = paperReviewInkRun(row);
     paperReview = { source, run:row, urls:[], baseInkPages:{}, inkPages:{0:{s:[],deleted:new Set(),dirty:true}}, inkRun, nos:[no], i:0, grading:false, gradeError:'' };
@@ -1611,20 +1767,25 @@ test('隔日訂正保存失敗時不呼叫逐題詳解，也不離開可寫卷�
   assert.equal(result.stillOpen, true);
 });
 
-test('原版模考暫停會凍結剩餘時間並可跨頁面續寫', () => {
+test('原版模考暫停會凍結剩餘時間並先完成整份全頁快照', async () => {
   const { run } = loadApp();
-  const result = plain(run(`(() => {
+  const result = plain(await run(`(async () => {
     save = () => {};
+    paperInkJournalDrain = async () => true;
+    let persisted = 0;
+    paperInkPersistAll = async (force, session) => { persisted++; return force === true && session === paperSourceSession; };
     const row = { id:'pause-1', status:'active', remainingMs:100000, resumeAt:Date.now() - 2000, mt:1 };
-    paperSourceSession = { source:PAPER_SOURCES[0], run:row, urls:[] };
-    paperSourcePause();
+    paperSourceSession = { source:PAPER_SOURCES[0], run:row, urls:[], inkPages:{}, page:3 };
+    const safe = await paperSourcePause();
     const frozen = paperRunLeft(row);
-    return { status:row.status, resumeAt:row.resumeAt, remaining:row.remainingMs, frozen };
+    return { status:row.status, resumeAt:row.resumeAt, remaining:row.remainingMs, frozen, persisted, safe };
   })()`));
   assert.equal(result.status, 'paused');
   assert.equal(result.resumeAt, null);
   assert.equal(result.remaining >= 97000 && result.remaining <= 99000, true);
   assert.equal(Math.abs(result.frozen - result.remaining) < 20, true);
+  assert.equal(result.persisted, 1);
+  assert.equal(result.safe, true);
 });
 
 test('捨棄原版模考會留下同步墓碑並清掉關聯成績', () => {
@@ -1798,12 +1959,18 @@ test('原版模考隔日訂正會累積單元、卡點與老師逐題報告', ()
       no:index + 1, status:index === 0 ? 'incorrect' : 'correct',
       points:index === 0 ? 0 : key.points, read:index === 0 ? '(2)' : '正確', marks:[],
     }));
+    const reviewState = { done:true, level:3,
+      logs:[{ direction:'先縮小樣本空間', topic:'prob', concept:'條件機率',
+        errorKind:'條件翻譯不完整', confidence:'verified' }],
+      aiDetail:{ confidence:'high', errorKind:'推理缺口', firstError:'分母仍使用原樣本空間', nextTime:'先重畫樣本空間' } };
+    paperTeacherOverrideAppend(reviewState, {
+      at:100, reviewer:'王老師', source:'老師面談', reason:'推理中間有缺口',
+      topic:'prob', processStage:'execution',
+    }, { topic:'prob', errorKind:'推理中間有缺口' });
     const row = {
       id:'teacher-paper', sourceId:source.id, name:source.title, d:'2026-07-18',
       status:'completed', score:95, aiGrade:{ score:95, questions },
-      review:{ 1:{ done:true, level:3, topic:'prob', errorKind:'條件翻譯不完整',
-        aiErrorKind:'推理缺口', logs:[{ direction:'先縮小樣本空間', topic:'prob', concept:'條件機率', errorKind:'條件翻譯不完整' }],
-        aiDetail:{ errorKind:'推理缺口', firstError:'分母仍使用原樣本空間', nextTime:'先重畫樣本空間' } } },
+      review:{ 1:reviewState },
     };
     S.paperRuns = [row];
     const tags = paperRunRefreshLearningTags(row);
@@ -1811,7 +1978,7 @@ test('原版模考隔日訂正會累積單元、卡點與老師逐題報告', ()
     return { tags, html:__app.innerHTML, card:paperLearningSummaryCard(), levels:paperRunLevelCounts(row), recovery:paperRunRecoveryPoints(row) };
   })()`));
   assert.deepEqual(result.tags.topics, ['prob']);
-  assert.deepEqual(result.tags.errors.sort(), ['推理缺口', '條件翻譯不完整'].sort());
+  assert.deepEqual(result.tags.errors.sort(), ['推理中間有缺口', '條件翻譯不完整'].sort());
   assert.deepEqual(result.levels, { l1:19, l2:0, l3:1, open:0 });
   assert.deepEqual(result.recovery, { lost:5, reconstructed:5, answerOnly:0, solution:5, retained:0, open:0 });
   assert.match(result.html, /老師檢視版/);
@@ -1822,13 +1989,13 @@ test('原版模考隔日訂正會累積單元、卡點與老師逐題報告', ()
   assert.match(result.card, /較常失分的單元/);
   assert.match(result.card, /看詳解後已重建<\/span><b>5 分/);
   assert.match(result.card, /不冒充下次考試已能拿回/);
-  assert.match(result.card, /條件翻譯不完整|推理缺口/);
+  assert.match(result.card, /推理執行/);
 });
 
 test('老師單頁顯示三回趨勢、明確無方向題，且兩道後續新題才算修正已驗證', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
-    const source = PAPER_SOURCES[0];
+    const source = PAPER_SOURCES.find((item) => item.questions === 20 && item.calibrationEligible !== false);
     const prob = BANK.filter((q) => q.topic === 'prob').slice(0, 3);
     const grade = { score:70, questions:[
       { no:1, status:'unanswered', points:0, maxPoints:5, topic:'prob' },

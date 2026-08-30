@@ -507,7 +507,11 @@ async function inkRecordMarkUploaded(clientId, sentUpdatedAt, userId) {
     let marked = false;
     request.onsuccess = () => {
       const current = request.result;
-      if (!current || Number(current.updatedAt || 0) > Number(sentUpdatedAt || 0)) return;
+      // A 55000 response means this local version was created after the immutable
+      // accepted snapshot. A late success from another tab must not relabel it as
+      // part of the official cloud copy.
+      if (!current || current.upload_state === 'cloud-rejected'
+        || Number(current.updatedAt || 0) > Number(sentUpdatedAt || 0)) return;
       store.put({
         ...current,
         user_id: userId || current.user_id || null,
@@ -523,33 +527,70 @@ async function inkRecordMarkUploaded(clientId, sentUpdatedAt, userId) {
     tx.onabort = () => rej(tx.error || new Error('筆跡同步狀態更新中止'));
   });
 }
+async function inkRecordMarkCloudRejected(records, reason, userId) {
+  const sentById = new Map();
+  for (const record of records || []) {
+    const clientId = String(record && typeof record === 'object'
+      ? (record.clientId || record.client_id || '') : '');
+    const sentUpdatedAt = Number(record && typeof record === 'object'
+      ? (record.sentUpdatedAt == null ? record.updatedAt : record.sentUpdatedAt) : NaN);
+    if (clientId && Number.isFinite(sentUpdatedAt)) sentById.set(clientId, sentUpdatedAt);
+  }
+  if (!sentById.size) return [];
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('inkrecords', 'readwrite');
+    const store = tx.objectStore('inkrecords');
+    const marked = [];
+    for (const [id, sentUpdatedAt] of sentById) {
+      const request = store.get(id);
+      request.onsuccess = () => {
+        const current = request.result;
+        // The rejection belongs to the exact version sent in this request. A newer
+        // checkpoint with the same client id must remain pending for its own reply.
+        if (!current || Number(current.updatedAt || 0) > sentUpdatedAt) return;
+        store.put({
+          ...current,
+          user_id:userId || current.user_id || null,
+          uploaded:false,
+          upload_state:'cloud-rejected',
+          cloudRejectedAt:Date.now(),
+          cloudRejectedReason:String(reason || 'server-rejected').slice(0, 240),
+        });
+        marked.push(id);
+      };
+      request.onerror = () => rej(request.error);
+    }
+    tx.oncomplete = () => res(marked);
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error || new Error('筆跡隔離中止'));
+  });
+}
 async function inkRecordStats() {
   try {
     const db = await idbOpen();
-    const uid = syncState && syncState.user && syncState.user.id;
-    const total = await new Promise((res, rej) => {
+    return await new Promise((res, rej) => {
       const store = db.transaction('inkrecords').objectStore('inkrecords');
-      const request = uid && store.indexNames.contains('user_id') ? store.index('user_id').count(uid) : store.count();
-      request.onsuccess = () => res(Number(request.result) || 0);
-      request.onerror = () => rej(request.error);
-    });
-    const pending = await new Promise((res, rej) => {
-      const store = db.transaction('inkrecords').objectStore('inkrecords');
-      if (!store.indexNames.contains('upload_state')) { res(0); return; }
-      let count = 0;
-      const request = store.index('upload_state').openCursor('pending');
+      const stats = { total:0, uploaded:0, pending:0, rejected:0 };
+      const request = store.openCursor();
       request.onsuccess = () => {
         const cursor = request.result;
-        if (!cursor) { res(count); return; }
-        if (inkRecordVisibleToCurrentUser(cursor.value)) count++;
+        if (!cursor) { res(stats); return; }
+        const row = cursor.value;
+        if (inkRecordVisibleToCurrentUser(row)) {
+          stats.total++;
+          const state = String(row.upload_state || (row.uploaded ? 'uploaded' : 'pending'));
+          if (state === 'cloud-rejected') stats.rejected++;
+          else if (state === 'uploaded' || row.uploaded) stats.uploaded++;
+          else stats.pending++;
+        }
         cursor.continue();
       };
       request.onerror = () => rej(request.error);
     });
-    return { total, pending };
-  } catch (_) { return { total: 0, pending: 0 }; }
+  } catch (_) { return { total:0, uploaded:0, pending:0, rejected:0 }; }
 }
-let inkLocalStatus = { total: 0, pending: 0 };
+let inkLocalStatus = { total:0, uploaded:0, pending:0, rejected:0 };
 async function refreshInkLocalStatus() {
   inkLocalStatus = await inkRecordStats();
   return inkLocalStatus;
@@ -717,6 +758,7 @@ async function pullContent() {
 }
 
 const CURATED_BUCKET = 'matha-content';
+const PAPER_AUDIT_PRIVATE_BUCKET = 'matha-audit-private';
 const FIGURE_BUCKET = 'matha-figures';
 const CURATED_TRUST = (TEXTBOOK_LIBRARY && TEXTBOOK_LIBRARY.trustedCorpus) || Object.freeze({
   generation: 'disabled-missing-trust-catalog', manifestAlias: 'manifest-disabled.json',
@@ -2825,6 +2867,7 @@ n 元一次聯立方程：代入消去、加減消去與高斯消去；以增廣
    第三回開始，正式答案不再打包進公開前端；交卷狀態先同步，再由 Edge Function 解鎖。
    第一、二回的 key 只為既有歷史批改相容，兩回均視為已公開／不再作新鮮校準。選項索引採 0 起算。 */
 const PAPER_SOURCE_BUCKET = 'matha-papers';
+const PAPER_DEVICE_ACCEPTANCE_SOURCE_ID = 'paper-mock-3';
 function privatePaperSource(year, questionPageMap, files, options = {}) {
   return {
     id: options.id || `paper-official-${year}`,
@@ -2950,6 +2993,8 @@ const PAPER_SOURCE_CATALOG = [
     ],
     { id: 'paper-official-110-trial', title: '110 年試辦考試數學 A', officialSolutionCoverage:'full' }),
   { id: 'paper-mock-1', title: '第一次模考', questions: 20, minutes: 100, pages: 6,
+    calibrationEligible: false,
+    practiceReason: '答案已公開且曾作答，只保留歷史練習與訂正，不列入目前級分、正式能力或弱點基準',
     key: [
       { type: 'single', ans: [4], points: 5 }, { type: 'single', ans: [4], points: 5 },
       { type: 'single', ans: [2], points: 5 }, { type: 'single', ans: [3], points: 5 },
@@ -3001,6 +3046,8 @@ const PAPER_SOURCE_CATALOG = [
     ] },
   { id: 'paper-mock-3', title: '第三次模考', questions: 20, minutes: 100, pages: 4,
     answerAccess: 'post-submit-server', answerBackendReady: true,
+    freshnessRequired: true, calibrationEligible: true,
+    paperClass: 'regional-mock', officialSolutionCoverage: 'none', acceptancePriority: true,
     scans: [
       { file: 'mock-3-page-1-2.png', label: '題本第 1 頁', side: 'left' },
       { file: 'mock-3-page-1-2.png', label: '題本第 2 頁', side: 'right' },
@@ -3468,14 +3515,26 @@ function wilsonBounds(ok, n, z) {
 }
 /* 級分只由完整系統模擬校準。弱項刷題是刻意抽難點，不能拿它直接預測級分。 */
 function mockCalibration() {
-  const external = (S.extMocks || []).filter((m) =>
-    m && m.total > 0 && Number.isFinite(Number(m.score)) &&
-    /* mt 會因隔日訂正、人工覆核或跨裝置同步而更新；級分基準只能看真正交卷時間，
-       否則重置前舊卷會被一次新的訂正動作錯誤復活。 */
-    learningRecordCurrent(Number(m.ts || m.mockTs || m.createdAt || m.mt)) &&
-    extMockCalibrationEligible(m))
-    .slice().sort((a, b) => String(a.d || '').localeCompare(String(b.d || '')) || Number(a.ts || 0) - Number(b.ts || 0)).slice(-3)
-    .map((m) => ({ d: m.d, ok: Number(m.score), n: Number(m.total), acc: Number(m.score) / Number(m.total), name: m.name }));
+  /* 正式原卷與能力證據必須共用同一組「最近三個不同來源」紀錄。以前這裡只取
+     extMocks 最後三列，能力證據卻另行去重來源，會出現畫面 3/3、證據仍 blocked
+     的矛盾。沒有新版 hash-bound run 的舊資料仍保留只讀相容，不會被冒充嚴格證據。 */
+  const strictRows = typeof capabilityDistinctFormalRuns === 'function' ? capabilityDistinctFormalRuns(3) : [];
+  const external = strictRows.length
+    ? strictRows.map((m) => ({
+      d:new Date(m.submittedAt + 8 * 3600000).toISOString().slice(0, 10),
+      ok:Number(m.score), n:Number(m.total), acc:Number(m.score) / Number(m.total),
+      name:(paperSourceById(m.sourceId) || {}).title || m.sourceId,
+      runId:m.runId, sourceId:m.sourceId, submittedAt:m.submittedAt, strictEvidence:true,
+    }))
+    : (S.extMocks || []).filter((m) =>
+      m && m.total > 0 && Number.isFinite(Number(m.score)) &&
+      /* mt 會因隔日訂正、人工覆核或跨裝置同步而更新；級分基準只能看真正交卷時間，
+         否則重置前舊卷會被一次新的訂正動作錯誤復活。 */
+      learningRecordCurrent(Number(m.ts || m.mockTs || m.createdAt || m.mt)) &&
+      extMockCalibrationEligible(m))
+      .slice().sort((a, b) => String(a.d || '').localeCompare(String(b.d || '')) || Number(a.ts || 0) - Number(b.ts || 0)).slice(-3)
+      .map((m) => ({ d:m.d, ok:Number(m.score), n:Number(m.total), acc:Number(m.score) / Number(m.total), name:m.name,
+        runId:String(m.paperRunId || ''), sourceId:String(m.sourceId || ''), submittedAt:Number(m.ts) || 0, strictEvidence:false }));
   const system = (S.mocks || []).filter((m) => m && m.n > 0 && Number.isFinite(Number(m.acc)) && learningRecordCurrent(m.mt, m.ts)).slice(-3);
   const source = external.length ? 'external' : 'system';
   const recent = external.length ? external : system;
@@ -3490,13 +3549,15 @@ function mockCalibration() {
   const last = recent[recent.length - 1];
   const staleDays = Math.max(0, Math.round((new Date(today() + 'T00:00:00Z') - new Date(last.d + 'T00:00:00Z')) / 86400000));
   const passes = recent.filter((m) => Number(m.acc) >= SCORE_GOAL.targetAcc).length;
-  return { count: recent.length, recent, source, ok, n, acc, low, high, grade: gradeOf(acc), passes, stable: recent.length === 3 && passes === 3, staleDays };
+  return { count: recent.length, recent, source, ok, n, acc, low, high, grade: gradeOf(acc), passes,
+    stable:recent.length === 3 && passes === 3, strictEvidence:source === 'external' && recent.every((row) => row.strictEvidence === true), staleDays };
 }
 
 /* 能力目標證據只取可回查的正式原卷紀錄；不複製筆跡、作答文字、帳號或供應商資料。
    stable 是給工程驗收看的窄門檻，不會因一般練習或一筆鬆散的 extMock 被誤判達標。 */
-const CAPABILITY_EVIDENCE_KIND = 'matha-capability-goal-evidence-v1';
+const CAPABILITY_EVIDENCE_KIND = 'matha-capability-goal-evidence-v2';
 const CAPABILITY_EVIDENCE_REQUIRED_RUNS = 3;
+const FRESH_CALIBRATION_REQUIRED_RUNS = 6;
 const CAPABILITY_EVIDENCE_MIN_SCORE = 72;
 const CAPABILITY_EVIDENCE_MAX_AGE_MS = 180 * 86400000;
 const CAPABILITY_EVIDENCE_LATEST_MAX_AGE_MS = 90 * 86400000;
@@ -3567,26 +3628,46 @@ function capabilityEvidenceCandidate(run, extMocks) {
   if (!gradeSummary || gradeSummary.awardedPoints !== score) return null;
   return { runId, sourceId, submittedAt, gradedAt, score, total:100, freshnessConfirmedAt, appVersion:APP_VER, gradeSummary };
 }
+function capabilityFormalCandidates() {
+  const extMocks = Array.isArray(S.extMocks) ? S.extMocks : [];
+  const rows = (S.paperRuns || []).map((run) => capabilityEvidenceCandidate(run, extMocks)).filter(Boolean)
+    .sort((a, b) => b.submittedAt - a.submittedAt || b.gradedAt - a.gradedAt || b.runId.localeCompare(a.runId));
+  const unique = [], runIds = new Set();
+  for (const row of rows) {
+    if (runIds.has(row.runId)) continue;
+    runIds.add(row.runId); unique.push(row);
+  }
+  return unique;
+}
+function capabilityDistinctFormalRuns(limit = CAPABILITY_EVIDENCE_REQUIRED_RUNS) {
+  const selected = [], sourceIds = new Set();
+  for (const row of capabilityFormalCandidates()) {
+    if (sourceIds.has(row.sourceId)) continue;
+    sourceIds.add(row.sourceId); selected.push(row);
+    if (selected.length === limit) break;
+  }
+  return selected.sort((a, b) => a.submittedAt - b.submittedAt || a.gradedAt - b.gradedAt || a.runId.localeCompare(b.runId));
+}
 function capabilityCalibrationMatches(runs, calibration) {
   if (!calibration || calibration.source !== 'external' || calibration.count !== 3
-    || calibration.passes !== 3 || calibration.stable !== true || !Array.isArray(calibration.recent)) return false;
-  const signature = (score, total) => `${Math.round(Number(score) * 100) / 100}/${Number(total)}`;
-  const expected = runs.map((run) => signature(run.score, run.total)).sort();
-  const actual = calibration.recent.map((row) => signature(row.ok, row.n)).sort();
+    || calibration.passes !== 3 || calibration.stable !== true || calibration.strictEvidence !== true
+    || !Array.isArray(calibration.recent)) return false;
+  const signature = (runId, sourceId, score, total) => `${runId}|${sourceId}|${Math.round(Number(score) * 100) / 100}/${Number(total)}`;
+  const expected = runs.map((run) => signature(run.runId, run.sourceId, run.score, run.total)).sort();
+  const actual = calibration.recent.map((row) => signature(row.runId, row.sourceId, row.ok, row.n)).sort();
   return expected.length === actual.length && expected.every((value, index) => value === actual[index]);
 }
 function capabilityGoalSnapshot(now = Date.now()) {
   const evidenceNow = Number(now) || Date.now();
-  const extMocks = Array.isArray(S.extMocks) ? S.extMocks : [];
-  const candidates = (S.paperRuns || []).map((run) => capabilityEvidenceCandidate(run, extMocks)).filter(Boolean)
-    .sort((a, b) => b.submittedAt - a.submittedAt || b.gradedAt - a.gradedAt || b.runId.localeCompare(a.runId));
-  const runIds = new Set(), sourceIds = new Set(), selected = [];
-  for (const row of candidates) {
-    if (runIds.has(row.runId) || sourceIds.has(row.sourceId)) continue;
-    runIds.add(row.runId); sourceIds.add(row.sourceId); selected.push(row);
-    if (selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS) break;
-  }
-  selected.sort((a, b) => a.submittedAt - b.submittedAt || a.gradedAt - b.gradedAt || a.runId.localeCompare(b.runId));
+  const freshSelected = capabilityDistinctFormalRuns(FRESH_CALIBRATION_REQUIRED_RUNS);
+  /* 最近三回不是另一份可自行湊數的清單；它永遠是同一組六回依
+     submittedAt / gradedAt 排序後的最後三回。 */
+  const selected = freshSelected.slice(-CAPABILITY_EVIDENCE_REQUIRED_RUNS);
+  const freshCalibration = {
+    requiredRuns:FRESH_CALIBRATION_REQUIRED_RUNS, count:freshSelected.length,
+    complete:freshSelected.length === FRESH_CALIBRATION_REQUIRED_RUNS,
+    distinctRuns:true, distinctSources:true, questionsPerRun:20, minutesPerRun:100, totalPoints:100,
+  };
   const calibration = mockCalibration();
   const calibrationMatches = capabilityCalibrationMatches(selected, calibration);
   const latestSubmittedAt = selected.length ? Math.max(...selected.map((run) => run.submittedAt)) : 0;
@@ -3601,32 +3682,62 @@ function capabilityGoalSnapshot(now = Date.now()) {
   if (selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS && !timeWindowValid) blockers.push('formal-runs-too-old-or-future');
   const stable = selected.length === CAPABILITY_EVIDENCE_REQUIRED_RUNS
     && selected.every((run) => run.score >= CAPABILITY_EVIDENCE_MIN_SCORE) && calibrationMatches && timeWindowValid;
-  return { evidenceNow, selected, calibration, blockers, stable };
+  return { evidenceNow, selected, freshSelected, freshCalibration, calibration, blockers, stable };
+}
+function capabilityServerEnvelope(payload) {
+  const evidence = payload && payload.capabilityEvidence;
+  const archive = payload && payload.capabilityArchive;
+  const freshRuns = evidence && Array.isArray(evidence.freshRuns) ? evidence.freshRuns : [];
+  const runs = evidence && Array.isArray(evidence.runs) ? evidence.runs : [];
+  const sha256 = String(archive && archive.sha256 || '').toLowerCase();
+  const path = String(archive && archive.path || '').replace(/\\/g, '/');
+  const exactLatestThree = freshRuns.length === 6 && runs.length === 3
+    && JSON.stringify(runs) === JSON.stringify(freshRuns.slice(-3));
+  if (!evidence || evidence.kind !== CAPABILITY_EVIDENCE_KIND || Number(evidence.schemaVersion) !== 2
+    || evidence.appVersion !== APP_VER || !evidence.freshCalibration || evidence.freshCalibration.complete !== true
+    || Number(evidence.freshCalibration.count) !== 6 || !exactLatestThree
+    || !archive || archive.authority !== 'supabase-service-role-storage-readback'
+    || archive.bucket !== PAPER_AUDIT_PRIVATE_BUCKET || !/^[a-f0-9]{64}$/.test(sha256)
+    || !new RegExp(`^capability-evidence/matha_[a-f0-9]{32}/matha-capability-goal-${sha256.slice(0, 16)}\\.json$`).test(path)
+    || Number(archive.bytes) <= 0 || !Number.isFinite(Date.parse(String(archive.readbackVerifiedAt || '')))
+    || archive.evidenceCanonicalDigest !== evidence.canonicalDigest) return null;
+  return { ...evidence, serverArchive:{ ...archive, sha256, path } };
 }
 async function capabilityGoalEvidence(now = Date.now()) {
-  const { evidenceNow, selected, calibration, blockers, stable } = capabilityGoalSnapshot(now);
+  const { evidenceNow, selected, freshSelected, freshCalibration, calibration, blockers, stable } = capabilityGoalSnapshot(now);
   const runs = await Promise.all(selected.map(async (row) => ({ ...row, canonicalDigest:await capabilityCanonicalDigest(row) })));
+  const freshRuns = await Promise.all(freshSelected.map(async (row) => ({ ...row, canonicalDigest:await capabilityCanonicalDigest(row) })));
   const payload = {
-    kind:CAPABILITY_EVIDENCE_KIND, schemaVersion:1, generatedAt:new Date(evidenceNow).toISOString(), appVersion:APP_VER,
+    kind:CAPABILITY_EVIDENCE_KIND, schemaVersion:2, generatedAt:new Date(evidenceNow).toISOString(), appVersion:APP_VER,
     baselineResetAt:learningBaselineStart(), status:stable ? 'stable' : 'blocked', stable, blockers,
     goal:{ requiredRuns:3, distinctRuns:true, distinctSources:true, questionsPerRun:20, minutesPerRun:100, totalPoints:100, minimumScore:72 },
     calibration:{ source:calibration.source || null, count:Number(calibration.count) || 0, passes:Number(calibration.passes) || 0,
       stable:calibration.stable === true, scorePercent:Number.isFinite(Number(calibration.acc)) ? Math.round(Number(calibration.acc) * 10000) / 100 : null,
       grade:String(calibration.grade || '') },
+    freshCalibration,
     digest:{ algorithm:'SHA-256', canonicalization:'recursive-key-sorted-json-v1', runDigestFields:['runId','sourceId','submittedAt','gradedAt','score','total','freshnessConfirmedAt','appVersion','gradeSummary'] },
-    runs,
+    runs, freshRuns,
   };
   payload.canonicalDigest = await capabilityCanonicalDigest({
     kind:payload.kind, schemaVersion:payload.schemaVersion, generatedAt:payload.generatedAt,
     appVersion:payload.appVersion, baselineResetAt:payload.baselineResetAt,
     status:payload.status, stable:payload.stable, blockers:payload.blockers,
-    goal:payload.goal, calibration:payload.calibration, digest:payload.digest, runs:payload.runs,
+    goal:payload.goal, calibration:payload.calibration, freshCalibration:payload.freshCalibration,
+    digest:payload.digest, runs:payload.runs, freshRuns:payload.freshRuns,
   });
   return payload;
 }
 async function exportCapabilityGoalEvidence() {
   try {
-    const payload = await capabilityGoalEvidence();
+    if (!supa || !syncState.user) throw new Error('請先登入，才能建立可即時回讀的私有能力證據');
+    save();
+    await syncPush();
+    if (syncState.pushErr) throw new Error('正式卷尚未完整同步，沒有建立能力證據');
+    const response = await openAiInvoke({
+      responseType:'capability_evidence_archive', context:{ appVersion:APP_VER },
+    }, 30000);
+    const payload = capabilityServerEnvelope(response);
+    if (!payload) throw new Error('伺服器證據與同一組六回／最後三回合約不一致');
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -3770,13 +3881,17 @@ function diagnosticTopicSignals() {
     const graded = run.aiGrade && Array.isArray(run.aiGrade.questions) ? run.aiGrade.questions : [];
     for (const item of graded) {
       const no = Number(item && item.no), review = run.review && run.review[no];
-      const topicKey = paperReviewEffectiveTopic(review, item && item.topic || review && review.topic || '');
+      const topicKey = paperReviewEffectiveTopic(
+        review, paperTrustedQuestionTopic(run, source, no, item),
+      );
       if (!topicKey || !TOPICS[topicKey]) continue;
       const topic = row(topicKey); topic.n++; topic.ok += item.status === 'correct' ? 1 : 0;
     }
     for (const [noText, review] of Object.entries(run.review || {})) {
       const item = graded.find((gradedItem) => Number(gradedItem && gradedItem.no) === Number(noText));
-      const topicKey = paperReviewEffectiveTopic(review, review && review.topic || item && item.topic || '');
+      const topicKey = paperReviewEffectiveTopic(
+        review, paperTrustedQuestionTopic(run, source, Number(noText), item),
+      );
       if (!topicKey || !TOPICS[topicKey]) continue;
       const topic = row(topicKey), level = Number(review && review.level) || 0;
       if (!review || !review.done) topic.open++;
@@ -3858,7 +3973,9 @@ function learningSignalIndex() {
     const formal = source.questions === 20 && source.calibrationEligible !== false;
     for (const item of graded) {
       const no = Number(item && item.no), review = run.review && run.review[no];
-      const topicKey = item && item.topic || review && review.topic;
+      const topicKey = paperReviewEffectiveTopic(
+        review, paperTrustedQuestionTopic(run, source, no, item),
+      );
       if (!topicKey || !TOPICS[topicKey]) continue;
       const topic = trow(topicKey);
       topic.n++;
@@ -3879,7 +3996,9 @@ function learningSignalIndex() {
     }
     for (const [noText, review] of Object.entries(run.review || {})) {
       const item = graded.find((row) => Number(row && row.no) === Number(noText));
-      const topicKey = review && review.topic || item && item.topic;
+      const topicKey = paperReviewEffectiveTopic(
+        review, paperTrustedQuestionTopic(run, source, Number(noText), item),
+      );
       if (!topicKey || !TOPICS[topicKey]) continue;
       const topic = trow(topicKey), level = Number(review && review.level) || 0;
       if (!review || !review.done) topic.open++;
@@ -3930,7 +4049,12 @@ function processEvidenceEnsure(holder) {
   const current = holder.processEvidence && typeof holder.processEvidence === 'object'
     ? holder.processEvidence : processEvidenceBlank();
   current.version = 1;
-  for (const stage of PROCESS_EVIDENCE_STAGES) if (!Array.isArray(current[stage])) current[stage] = [];
+  for (const stage of PROCESS_EVIDENCE_STAGES) {
+    if (!Array.isArray(current[stage])) current[stage] = [];
+    // 舊版曾把「本人確認第一錯步位置」誤當成「本人也確認 AI 的錯因分類」。
+    // 兩者不是同一件事；這批資料不可進入長期弱點模型，也不可被舊裝置復活。
+    current[stage] = current[stage].filter((row) => row && row.source !== 'trusted-ai-detail');
+  }
   holder.processEvidence = current;
   return current;
 }
@@ -3944,9 +4068,10 @@ function processEvidenceAppend(holder, stage, event = {}) {
     confidence:['verified', 'high', 'medium', 'unverified'].includes(event.confidence) ? event.confidence : 'unverified',
     note:String(event.note || '').trim().slice(0, 500),
     evidence:String(event.evidence || '').trim().slice(0, 300),
+    predictionId:String(event.predictionId || '').slice(0, 120),
   };
-  const fingerprint = `${row.ts}|${row.status}|${row.source}|${row.note}|${row.evidence}`;
-  if (!evidence[stage].some((item) => `${item.ts}|${item.status}|${item.source}|${item.note}|${item.evidence}` === fingerprint)) {
+  const fingerprint = `${row.ts}|${row.status}|${row.source}|${row.note}|${row.evidence}|${row.predictionId}`;
+  if (!evidence[stage].some((item) => `${item.ts}|${item.status}|${item.source}|${item.note}|${item.evidence}|${item.predictionId || ''}` === fingerprint)) {
     evidence[stage].push(row);
     evidence[stage] = evidence[stage].slice(-20);
   }
@@ -3956,7 +4081,10 @@ function processEvidenceRows(holder) {
   const evidence = holder && holder.processEvidence;
   if (!evidence || typeof evidence !== 'object') return [];
   return PROCESS_EVIDENCE_STAGES.flatMap((stage) => (Array.isArray(evidence[stage]) ? evidence[stage] : [])
-    .filter((row) => row && typeof row === 'object').map((row) => ({ stage, ...row })));
+    .filter((row) => row && typeof row === 'object'
+      && row.source !== 'trusted-ai-detail'
+      && !(row.confidence === 'unverified' && /^ai(?:-|$)/.test(String(row.source || ''))))
+    .map((row) => ({ stage, ...row })));
 }
 function processEvidencePrimary(holder) {
   const rank = { blocked:4, attempted:3, identified:2, demonstrated:1 };
@@ -3980,23 +4108,19 @@ function processEvidenceRecordEffort(holder, effort, event = {}) {
   });
   return holder.processEvidence;
 }
-function processEvidenceRecordAiDetail(holder, detail) {
+function processEvidenceRecordAiDetail(holder, detail, metadata = {}) {
   processEvidenceEnsure(holder);
-  if (!detail || !detail.firstErrorEvidence || !detail.firstError || !['high', 'medium'].includes(detail.confidence)) return null;
-  const stage = learningProcessStage(detail.errorKind) || learningProcessStage(detail.firstError);
-  if (!stage) return null;
-  return processEvidenceAppend(holder, stage, {
-    ts:Number(detail.generatedAt) || Date.now(), status:'blocked', source:'trusted-ai-detail',
-    confidence:detail.confidence, note:detail.firstError, evidence:detail.firstErrorEvidence,
-  });
+  // Gold verdict 只評估「第一錯步位置」，沒有評估 errorKind。錯因／流程階段只能由
+  // 老師覆核或獨立的人類流程分類寫入；模型自己的 errorKind 永遠不能自我背書。
+  return null;
 }
 function mergeProcessEvidence(A, B) {
   const merged = processEvidenceBlank();
   for (const stage of PROCESS_EVIDENCE_STAGES) {
     const seen = new Set();
     for (const row of [...(A && A[stage] || []), ...(B && B[stage] || [])]) {
-      if (!row || typeof row !== 'object') continue;
-      const key = `${row.ts || ''}|${row.status || ''}|${row.source || ''}|${row.note || ''}|${row.evidence || ''}`;
+      if (!row || typeof row !== 'object' || row.source === 'trusted-ai-detail') continue;
+      const key = `${row.ts || ''}|${row.status || ''}|${row.source || ''}|${row.note || ''}|${row.evidence || ''}|${row.predictionId || ''}`;
       if (!seen.has(key)) { seen.add(key); merged[stage].push({ ...row }); }
     }
     merged[stage].sort((x, y) => Number(x.ts || 0) - Number(y.ts || 0));
@@ -4039,9 +4163,9 @@ function paperTeacherOverrideAppend(state, input, fallback = {}) {
     source:String(input.source || '老師面談').trim().slice(0, 80),
     reason:String(input.reason).trim().slice(0, 500),
     previous:{
-      topic:paperReviewEffectiveTopic(state, fallback.topic || state.topic || ''),
+      topic:paperReviewEffectiveTopic(state, fallback.topic || ''),
       processStage:paperReviewEffectiveProcess(state, fallback.processStage || fallback.errorKind || state.aiErrorKind || state.errorKind || ''),
-      aiTopic:String(fallback.topic || state.topic || ''),
+      aiTopic:String(fallback.aiTopic || state.aiTopic || state.topic || ''),
       aiProcessStage:learningProcessStage(fallback.errorKind || state.aiErrorKind || state.aiDetail && state.aiDetail.errorKind || state.errorKind || ''),
       priorOverrideId:String(paperTeacherOverrideLatest(state)?.id || ''),
     },
@@ -4105,8 +4229,9 @@ function learningEvidenceLedger() {
       source:attempt.mode || 'practice', stage:'solve', qid:q.id, topic:q.topic,
       score:attempt.ok ? (guessed ? .15 : 1) : 0, weight:1, independent:true,
       processEvidence:attempt.processEvidence,
-      processText:(attempt.ai && (attempt.ai.k || attempt.ai.firstError)) || attempt.err || (guessed ? '用猜的' : ''),
-      errorKind:learningErrorClass((attempt.ai && attempt.ai.k) || attempt.err || (guessed ? '用猜的' : '')),
+      // AI 即時摘要可留在 attempt.ai 供本題顯示，但未經人類確認不能進長期弱點。
+      processText:attempt.err || (guessed ? '用猜的' : ''),
+      errorKind:learningErrorClass(attempt.err || (guessed ? '用猜的' : '')),
     });
   }
   /* 類題支線過去刻意不灌入主成績；現在仍不冒充模考，但可作低權重的遷移證據。 */
@@ -4233,7 +4358,9 @@ function learningEvidenceLedger() {
     for (const item of grade.questions || []) {
       const no = Number(item.no), state = run.review && run.review[no] || {};
       const meta = paperQuestionMeta(run, source, no);
-      const topic = paperReviewEffectiveTopic(state, item.topic || state.topic || meta && meta.topic || '');
+      const topic = paperReviewEffectiveTopic(
+        state, paperTrustedQuestionTopic(run, source, no, item) || meta && meta.topic || '',
+      );
       if (!TOPICS[topic]) continue;
       const processOverride = paperTeacherOverrideField(state, 'processStage');
       const max = Math.max(1, Number(meta && meta.points) || 1), rawPoints = Number(item.points);
@@ -4255,8 +4382,7 @@ function learningEvidenceLedger() {
           topic:TOPICS[log.topic] ? log.topic : topic,
           score:log.kind === 'complete' ? 1 : log.direction ? .5 : .15, weight:.65, independent:false,
           processEvidence:log.processEvidence,
-          processText:log.errorKind || state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind,
-          errorKind:learningErrorClass(log.errorKind || state.aiErrorKind || state.errorKind),
+          processText:'', errorKind:'',
         });
         if (log.topic) push({
           id:`paper-review-recognition:${run.id}:${no}:${log.ts || index}`, ts:Number(log.ts) || 0,
@@ -4280,16 +4406,16 @@ function learningEvidenceLedger() {
         d:run.due || run.d || '', source:'paper-correction', stage:'correction', qid:`${run.id}:${no}`,
         topic, score:0, weight:.4, supportLevel:0,
         processStage:processOverride.value, processStageLocked:processOverride.found,
-        processText:state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind,
-        errorKind:learningErrorClass(state.aiErrorKind || state.errorKind),
+        processText:'', errorKind:'',
       });
       if (level >= 2) push({
         id:`paper-review:${run.id}:${no}`, ts:Number(state.completedAt || state.mt) || 0,
         d:run.due || run.d || '', source:'paper-correction', stage:'correction', qid:`${run.id}:${no}`,
         topic, score:level === 2 ? .7 : .35, weight:.75, supportLevel:level,
         processStage:processOverride.value, processStageLocked:processOverride.found,
-        processText:state.aiErrorKind || state.aiDetail && state.aiDetail.firstError || state.errorKind || (level === 3 ? '方法選錯' : ''),
-        errorKind:learningErrorClass(state.aiErrorKind || state.errorKind || (level === 3 ? '方法選錯' : '')),
+        // 第三級只證明「需要看詳解後才完成」，不等於方法一定選錯。
+        // 第一流程斷點必須來自本人／老師的獨立分類，不能由支援級別倒推。
+        processText:'', errorKind:'',
         detailViewed:!!state.detailFirstOpenedAt,
       });
     }
@@ -4613,10 +4739,12 @@ function questionIsUrgentForAdaptive(q, signals) {
 function nextCalibrationPaperSource() {
   const currentRuns = (S.paperRuns || []).filter((run) => run && run.status !== 'discarded' && paperRunInCurrentBaseline(run));
   const used = new Set(currentRuns.map((run) => run.sourceId));
-  const eligible = PAPER_SOURCES.filter((source) => source && source.fullPaperSource
+  const eligible = PAPER_SOURCES.filter((source) => source && (source.fullPaperSource || source.id === PAPER_DEVICE_ACCEPTANCE_SOURCE_ID)
     && source.questions === 20 && source.minutes === 100 && source.calibrationEligible !== false
     && source.answerBackendReady === true);
   return eligible.slice().sort((a, b) => Number(used.has(a.id)) - Number(used.has(b.id))
+    || Number(!used.has(b.id) && b.id === PAPER_DEVICE_ACCEPTANCE_SOURCE_ID)
+      - Number(!used.has(a.id) && a.id === PAPER_DEVICE_ACCEPTANCE_SOURCE_ID)
     || Number(b.officialSolutionCoverage === 'full') - Number(a.officialSolutionCoverage === 'full')
     || Number(b.paperClass === 'regional-mock') - Number(a.paperClass === 'regional-mock')
     || PAPER_SOURCES.indexOf(a) - PAPER_SOURCES.indexOf(b))[0] || null;
@@ -4808,10 +4936,9 @@ function recordAttempt(q, ok, ms, err, mode, proc, ai, opts) {
   if (proc) rec.p = proc;
   const adv = advFrom(ai);
   if (adv) rec.ai = adv;
-  const processText = ai && (ai.errKind || ai.firstError) || err || (ok ? '' : '找不到破題方向');
-  if (processText) processEvidenceRecordClassification(rec, processText, {
-    ts:rec.ts, source:ai && (ai.errKind || ai.firstError) ? 'ai-summary-unverified' : 'answer-result',
-    confidence:'unverified',
+  const processText = err || '';
+  if (processText && !/待隔日分類|尚未分類/.test(processText)) processEvidenceRecordClassification(rec, processText, {
+    ts:rec.ts, source:'learner-error-choice', confidence:'verified',
   });
   S.attempts.push(rec);
   updateRetentionCheckpoint(q, ok, mode);
@@ -4859,7 +4986,7 @@ const LEGACY_VIEWS = {
   stats: { label: '進度與設定', icon: 'chart', fn: renderStats },
 };
 let sessionActive = false;
-let sessionMode = null; // 'prac' | 'mock' | 'judging' | 'correction' | 'outline' | 'vision' | 'concept' | 'paper-source' | 'paper-grade' | 'paper-review'
+let sessionMode = null; // 'prac' | 'mock' | 'judging' | 'correction' | 'outline' | 'vision' | 'concept' | 'paper-source' | 'paper-submit' | 'paper-grade' | 'paper-review'
 let sessSnap = null;    // 進場快照，用於「不保留紀錄」離開時復原
 function snapSession() { sessSnap = { att: S.attempts.length, wrong: JSON.stringify(S.wrong), drills: JSON.stringify(S.drills || {}), daily: JSON.stringify(S.daily || {}) }; }
 function rollbackSession() {
@@ -4888,7 +5015,7 @@ function endSession() {
 /* 中途退出：讓飼主自己選「已作答的要不要留紀錄」，不預設丟掉 */
 function exitFlow(view) {
   // 誤觸離開後回到出發的入口頁，不要一律丟回首頁（想馬上重來一輪不用重新導航）
-  const backTo = { prac: 'home', correction: 'correct', outline: 'outline', concept: 'concept', vision: 'mock', 'paper-source': 'mock', 'paper-grade': 'mock', 'paper-review': 'correct' };
+  const backTo = { prac: 'home', correction: 'correct', outline: 'outline', concept: 'concept', vision: 'mock', 'paper-source': 'mock', 'paper-submit': 'mock', 'paper-grade': 'mock', 'paper-review': 'correct' };
   const goto = view || backTo[sessionMode] || 'home';
   if (!sessionActive) { nav(goto); return; }
   // 開著確認框的時間不算作答時間：按「繼續」時把計時起點往後平移
@@ -4916,12 +5043,17 @@ function exitFlow(view) {
     ]);
     return;
   }
+  if (sessionMode === 'paper-submit' && paperSourceSession) {
+    modal('<h2>正在安全交卷</h2><p>系統正把每一頁存到平板、補傳雲端並逐頁回讀。這段時間不能再寫字或離開；若網路逾時，會自動回到原卷讓你重試。</p>', [
+      ['留在這裡等候', null, 'primary'],
+    ]);
+    return;
+  }
   if (sessionMode === 'paper-grade' && paperSourceSession) {
     const { source, run } = paperSourceSession;
     modal(`<h2>AI 還在看這一整回</h2><p>${escH(source.title)}正在依題本上的筆跡批改。現在離開不會刪除筆跡；下次開啟會重新檢查尚未完成的批改。</p>`, [
       ['留在這裡等批改', null, 'primary'],
       ['先離開，稍後再試', () => { run.status = 'grading'; run.mt = Date.now(); save(); endSession(); nav(goto); }],
-      ['捨棄本回', () => { paperSourceDiscard(run.id); endSession(); nav(goto); }],
     ]);
     return;
   }
@@ -5004,6 +5136,11 @@ window.addEventListener('beforeunload', (e) => {
 // 真正離開／重載時才落盤；beforeunload 可能被使用者取消，不能在那裡把仍在畫面的倒數永久凍住。
 window.addEventListener('pagehide', () => {
   if (sessionMode === 'paper-source' && paperSourceSession) paperSourcePause();
+  else if (sessionMode === 'paper-submit' && paperSourceSession) {
+    paperRecoveryWrite(true, paperSourceSession);
+    paperSourceSession.run.mt = Date.now();
+    save();
+  }
   else if (sessionMode === 'paper-grade' && paperSourceSession) {
     paperSourceSession.run.status = 'grading';
     paperSourceSession.run.resumeAt = null;
@@ -5961,7 +6098,8 @@ function renderMockIntro() {
   app().innerHTML = `
     <div class="hero compact"><h1>模考與破題</h1><p>同一批混合題，分成兩種完全不同的訓練：完整模考建立真實成績；眼睛刷題只練從題目找到第一個切入點。</p></div>
     <section class="paper-library is-primary"><div class="paper-library-head"><div><span class="eyebrow">最常用｜完整原卷</span><h2>原版模考</h2></div><p>出版社三回、111–115 學測、110 試辦與八回地區模考都保留原版內容，可直接在題目與留白上寫。正式答案只在交卷後解鎖；第二次模考依原卷為 19 題，其餘十六回各 20 題。</p></div>
-      <div class="paper-source-grid">${[...PAPER_SOURCES].sort((a, b) => Number(!!b.fullPaperSource) - Number(!!a.fullPaperSource)).map(paperSourceCardHTML).join('')}</div>
+      <div class="paper-source-grid">${[...PAPER_SOURCES].sort((a, b) => Number(!!b.acceptancePriority) - Number(!!a.acceptancePriority)
+        || Number(!!b.fullPaperSource) - Number(!!a.fullPaperSource)).map(paperSourceCardHTML).join('')}</div>
       ${paperRunHistoryHTML()}
     </section>
     <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的題排在前面，再依目前證據混合打底、銜接與伸展題。</p><small>不顯示單題速度；正常情況同單元、同一本教材各最多 2 題，尚未安全匯入的單元由核心題補位。</small></div><button class="btn primary big" onclick="startAdaptiveTextbook(10)">開始今日精選</button></section>
@@ -6179,6 +6317,14 @@ function paperGradeQuestion(run, no) {
     ? run.aiGrade.questions.find((item) => Number(item && item.no) === Number(no)) || null
     : null;
 }
+/* 題目單元會直接影響弱點模型與選題，不能把 AI 首輪分類當教材真值。
+   新版核分只接受後端官方 key 寫入的 topicSource；舊資料只有仍可由
+   source.key 重建時才保留。具名老師覆寫另由 paperReviewEffectiveTopic 套用。 */
+function paperTrustedQuestionTopic(run, source, no, item = paperGradeQuestion(run, no)) {
+  const official = source && Array.isArray(source.key) ? source.key[Number(no) - 1] : null;
+  if (official && TOPICS[official.topic]) return official.topic;
+  return item && item.topicSource === 'official-key' && TOPICS[item.topic] ? item.topic : '';
+}
 function paperQuestionMeta(run, source, no) {
   const item = paperGradeQuestion(run, no);
   const legacy = source && Array.isArray(source.key) ? source.key[Number(no) - 1] : null;
@@ -6186,7 +6332,7 @@ function paperQuestionMeta(run, source, no) {
     type: String(item.answerType || legacy && legacy.type || ''),
     answer: String(item.answer || legacy && paperFinalAnswerText(legacy) || ''),
     points: Number(item.maxPoints) || Number(legacy && legacy.points) || 0,
-    topic: TOPICS[item.topic] ? item.topic : TOPICS[legacy && legacy.topic] ? legacy.topic : '',
+    topic: paperTrustedQuestionTopic(run, source, no, item),
   };
   return legacy ? {
     type: String(legacy.type || ''),
@@ -6236,7 +6382,7 @@ function paperRecoverySnapshot(session = paperSourceSession) {
   const durability = session.durability || {};
   const recoveryRunId = session.recoveryRunId || session.run.id;
   return {
-    version: 1,
+    version: 2,
     runId: recoveryRunId,
     sourceId: session.source && session.source.id || session.run.sourceId,
     page: Number(session.page) || 0,
@@ -6247,10 +6393,73 @@ function paperRecoverySnapshot(session = paperSourceSession) {
     lastLocalAt: Number(durability.localAt) || null,
     lastCloudAt: Number(durability.cloudAt) || null,
     pending: durability.pendingClientIds instanceof Set ? durability.pendingClientIds.size : 0,
+    inkCheckpoint:session.recoveryInkCheckpoint || null,
     closed: false,
   };
 }
-function paperRecoveryWrite(forceState = false, session = paperSourceSession) {
+function paperRecoveryInkPayload(session) {
+  if (!session || !session.run || !session.source) return null;
+  const pages = (session.source.scans || []).map((_, page) => {
+    const data = session.inkPages && session.inkPages[page] || { s:[], deleted:new Set() };
+    const merged = paperInkMergePayloads([{ s:Array.isArray(data.s) ? data.s : [], deleted:[...(data.deleted instanceof Set ? data.deleted : new Set(data.deleted || []))] }]);
+    return {
+      page,
+      strokes:merged.s.map(paperInkCloneStroke).sort((a, b) => String(a.id).localeCompare(String(b.id))),
+      deleted:merged.deleted.map(String).sort(),
+    };
+  });
+  return { version:1, runId:String(session.run.id || ''), sourceId:String(session.source.id || session.run.sourceId || ''), pages };
+}
+function paperRecoveryCheckpointSignature(session) {
+  return (session && session.source && session.source.scans || []).map((_, page) => {
+    const data = session.inkPages && session.inkPages[page];
+    return `${page}:${Number(data && data.revision) || 0}:${Number(data && data.persistedRevision) || 0}:${data && Array.isArray(data.s) ? data.s.length : 0}:${data && data.deleted ? data.deleted.size || data.deleted.length || 0 : 0}`;
+  }).join('|');
+}
+function paperRecoveryCheckpointReady(session) {
+  if (!session || session.reviewMode || session.readOnly || session.durability && session.durability.localError) return false;
+  if (session.journalPromises instanceof Set && session.journalPromises.size) return false;
+  if (session.journalRetry instanceof Map && session.journalRetry.size) return false;
+  return (session.source && session.source.scans || []).every((_, page) => {
+    const data = session.inkPages && session.inkPages[page];
+    return data && !data.dirty && Number(data.persistedRevision) >= Number(data.revision);
+  });
+}
+async function paperRecoveryRefreshCheckpoint(session = paperSourceSession) {
+  if (!paperRecoveryCheckpointReady(session)) return null;
+  const signature = paperRecoveryCheckpointSignature(session);
+  if (session.recoveryInkCheckpoint && session.recoveryInkCheckpoint.signature === signature) return session.recoveryInkCheckpoint;
+  if (session.recoveryCheckpointPromise && session.recoveryCheckpointPromise.signature === signature) return session.recoveryCheckpointPromise.promise;
+  const payload = paperRecoveryInkPayload(session);
+  const promise = capabilityCanonicalDigest(payload).then((sha256) => {
+    if (paperSourceSession !== session || !paperRecoveryCheckpointReady(session)
+      || paperRecoveryCheckpointSignature(session) !== signature) return null;
+    const strokeCount = payload.pages.reduce((sum, page) => sum + page.strokes.length, 0);
+    const deletedCount = payload.pages.reduce((sum, page) => sum + page.deleted.length, 0);
+    session.recoveryInkCheckpoint = { version:1, algorithm:'SHA-256', sha256, pageCount:payload.pages.length,
+      strokeCount, deletedCount, signature, createdAt:Date.now(), complete:true };
+    paperRecoveryWrite(false, session, false);
+    return session.recoveryInkCheckpoint;
+  }).finally(() => {
+    if (session.recoveryCheckpointPromise && session.recoveryCheckpointPromise.promise === promise) session.recoveryCheckpointPromise = null;
+  });
+  session.recoveryCheckpointPromise = { signature, promise };
+  return promise;
+}
+async function paperRecoveryVerifyInk(recovery, session) {
+  const checkpoint = recovery && recovery.inkCheckpoint;
+  if (!checkpoint || checkpoint.complete !== true || checkpoint.algorithm !== 'SHA-256'
+    || !/^[a-f0-9]{64}$/.test(String(checkpoint.sha256 || ''))) return null;
+  const payload = paperRecoveryInkPayload(session);
+  if (!payload || Number(checkpoint.pageCount) !== payload.pages.length) return null;
+  const sha256 = await capabilityCanonicalDigest(payload);
+  if (sha256 !== checkpoint.sha256) return null;
+  return { ...recovery, inkVerified:true, checkpointInkSha256:checkpoint.sha256,
+    recoveredInkSha256:sha256, pageCount:payload.pages.length,
+    strokeCount:payload.pages.reduce((sum, page) => sum + page.strokes.length, 0),
+    deletedCount:payload.pages.reduce((sum, page) => sum + page.deleted.length, 0) };
+}
+function paperRecoveryWrite(forceState = false, session = paperSourceSession, refreshCheckpoint = true) {
   const recovery = paperRecoverySnapshot(session);
   if (!recovery) return null;
   try { localStorage.setItem(paperRecoveryStorageKey(recovery.runId), JSON.stringify(recovery)); } catch (_) {}
@@ -6261,6 +6470,7 @@ function paperRecoveryWrite(forceState = false, session = paperSourceSession) {
     session.run.mt = recovery.updatedAt;
     save();
   }
+  if (refreshCheckpoint) paperRecoveryRefreshCheckpoint(session).catch(() => {});
   return recovery;
 }
 function paperRecoveryHeartbeat(now = Date.now()) {
@@ -6273,7 +6483,7 @@ function paperRecoveryClose(run, status) {
   try { localStorage.removeItem(paperRecoveryStorageKey(run.id)); } catch (_) {}
   run.paperRecovery = {
     ...(run.paperRecovery && typeof run.paperRecovery === 'object' ? run.paperRecovery : {}),
-    version: 1, runId: run.id, sourceId: run.sourceId,
+    version: 2, runId: run.id, sourceId: run.sourceId,
     remainingMs: Number(run.remainingMs) || 0, page: Number(run.paperPage) || 0,
     updatedAt: Date.now(), closed: true, status: status || run.status || 'closed',
   };
@@ -6331,10 +6541,11 @@ async function startPaperSource(sourceId) {
       status: 'paused', remainingMs: source.minutes * 60000, resumeAt: null, wrongNos: [], paperPage: 0,
       freshnessConfirmedAt: freshnessConfirmed ? now : null,
       calibrationEligible: source.questions === 20 && source.calibrationEligible !== false && freshnessConfirmed,
-      paperLayoutVersion: PAPER_LAYOUT_VERSION };
+      paperLayoutVersion: PAPER_LAYOUT_VERSION, runCreatedAppVersion: APP_VER };
     S.paperRuns = S.paperRuns || []; S.paperRuns.push(run); save();
   }
   const recovered = paperRecoveryApply(run);
+  const acceptedSubmitLocked = !!(run.submitAttempt && run.submitAttempt.status === 'accepted');
   if (run.paperLayoutVersion !== PAPER_LAYOUT_VERSION) {
     const legacyPage = Math.max(0, Number(run.paperPage) || 0);
     run.paperPage = legacyPage > 0 ? (legacyPage - 1) * 2 : 0;
@@ -6346,11 +6557,16 @@ async function startPaperSource(sourceId) {
   try {
     const urls = await paperSourceFiles(source);
     run.paperInkClients = run.paperInkClients || {};
+    const acceptedManifest = acceptedSubmitLocked
+      ? paperSubmitPageManifest(run.submitAttempt && run.submitAttempt.pageManifest) : [];
     for (let i = 0; i < source.scans.length; i++) {
-      if (!run.paperInkClients[i]) run.paperInkClients[i] = inkClientId(`paper-${run.id}-${i}`, run.createdAt + i);
+      if (acceptedSubmitLocked) run.paperInkClients[i] = acceptedManifest[i] && acceptedManifest[i].clientId || '';
+      else if (!run.paperInkClients[i]) run.paperInkClients[i] = inkClientId(`paper-${run.id}-${i}`, run.createdAt + i);
     }
-    const inkPages = await paperInkLoadAll(run, source);
-    run.status = run.status === 'grading' ? 'grading' : 'active';
+    const inkPages = acceptedSubmitLocked
+      ? await paperAcceptedInkLoadAll(run, source) : await paperInkLoadAll(run, source);
+    const loadMeta = acceptedSubmitLocked ? paperAcceptedInkLoadAll.lastMeta : paperInkLoadAll.lastMeta;
+    run.status = acceptedSubmitLocked || run.status === 'grading' ? 'grading' : 'active';
     if (run.status === 'active') run.resumeAt = Date.now();
     run.mt = Date.now(); save();
     const savedPage = Number(run.paperPage);
@@ -6367,23 +6583,37 @@ async function startPaperSource(sourceId) {
       journalPromises: new Set(),
       journalRetry: new Map(),
       durability: {
-        localAt: Number(paperInkLoadAll.lastMeta && paperInkLoadAll.lastMeta.localAt) || null,
-        cloudAt: Number(paperInkLoadAll.lastMeta && paperInkLoadAll.lastMeta.cloudAt) || null,
+        localAt: Number(loadMeta && loadMeta.localAt) || null,
+        cloudAt: Number(loadMeta && loadMeta.cloudAt) || null,
         localError: false,
         cloudError: false,
-        pendingClientIds: new Set(paperInkLoadAll.lastMeta && paperInkLoadAll.lastMeta.pendingClientIds || []),
+        pendingClientIds: new Set(loadMeta && loadMeta.pendingClientIds || []),
       },
-      recoveredNotice: recovered ? `已從 ${new Date(Number(recovered.updatedAt)).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 的安全點恢復` : '',
+      recoveredNotice: '',
+      submitLocked: acceptedSubmitLocked,
+      readOnly: acceptedSubmitLocked,
     };
-    if (run.status === 'active') paperRuntimeAuditSessionStart(paperSourceSession, recovered);
     paperSourceSession.page = Math.max(0, Math.min(source.scans.length - 1, paperSourceSession.page));
+    const verifiedRecovery = recovered ? await paperRecoveryVerifyInk(recovered, paperSourceSession) : null;
+    if (recovered) paperSourceSession.recoveredNotice = verifiedRecovery
+      ? `已驗證恢復 ${new Date(Number(recovered.updatedAt)).toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit' })} 的頁碼、時間與同一批筆跡`
+      : '已恢復頁碼與剩餘時間；筆跡已載回，但本次沒有完整的當機前雜湊，所以不列入真機驗收';
+    if (run.submitAttempt && ['submitting', 'reconciling'].includes(String(run.submitAttempt.status || ''))) {
+      run.resumeAt = null; sessionActive = true; sessionMode = 'paper-submit-reconcile'; save();
+      await paperSourceSubmitReconcile();
+      return;
+    }
+    if (run.status === 'active') paperRuntimeAuditSessionStart(paperSourceSession, verifiedRecovery);
     sessionActive = true; sessionMode = run.status === 'grading' ? 'paper-grade' : 'paper-source';
     if (sessionMode === 'paper-source') paperRecoveryWrite(true);
     if (run.status === 'grading' || paperRunLeft(run) <= 0) paperSourceGrade(run.status === 'grading' ? '繼續今天的批分' : '時間到');
     else renderPaperSource();
   } catch (e) {
-    run.status = 'paused'; run.resumeAt = null; run.mt = Date.now(); save();
-    app().innerHTML = `<div class="card warn"><h2>原卷暫時載入失敗</h2><p>${escH((e && e.message) || e)}</p><div class="actr"><button class="btn" onclick="nav('mock')">回模考與破題</button><button class="btn primary" onclick="startPaperSource('${jsA(sourceId)}')">重試</button></div></div>`;
+    run.status = acceptedSubmitLocked ? 'grading' : 'paused';
+    run.resumeAt = null; run.mt = Date.now(); save();
+    app().innerHTML = acceptedSubmitLocked
+      ? `<div class="card warn"><h2>交卷已接受，卷面仍鎖定</h2><p>${escH((e && e.message) || e)}</p><p>題頁或筆跡暫時讀不到不會把本回降回可作答；重試只會載回 accepted 收據綁定的原卷並繼續同一代批改。</p><div class="actr"><button class="btn" onclick="nav('mock')">先離開</button><button class="btn primary" onclick="startPaperSource('${jsA(sourceId)}')">鎖定狀態下重試</button></div></div>`
+      : `<div class="card warn"><h2>原卷暫時載入失敗</h2><p>${escH((e && e.message) || e)}</p><div class="actr"><button class="btn" onclick="nav('mock')">回模考與破題</button><button class="btn primary" onclick="startPaperSource('${jsA(sourceId)}')">重試</button></div></div>`;
   }
 }
 
@@ -6418,7 +6648,7 @@ const PAPER_INK_COLORS = {
   green: '#4f7158',
 };
 const PAPER_AI_RED = '#b43b32';
-const PAPER_RUNTIME_AUDIT_SCHEMA = 1;
+const PAPER_RUNTIME_AUDIT_SCHEMA = 2;
 const PAPER_RUNTIME_AUDIT_EVENT_CAP = 240;
 const PAPER_RUNTIME_AUDIT_SAMPLE_CAP = 220;
 const PAPER_RUNTIME_AUDIT_SAMPLE_MS = 30000;
@@ -6453,6 +6683,8 @@ function paperRuntimeAuditFor(session = paperSourceSession) {
     },
     sessions:0,
     crashRecoveries:0,
+    recoveryEvents:[],
+    visitedPages:[],
     strokesCommitted:0,
     localSaveFailures:0,
     localSaveFailureIds:[],
@@ -6485,10 +6717,27 @@ function paperRuntimeAuditSessionStart(session = paperSourceSession, recovered =
   audit.lastSessionStartedAt = Date.now();
   audit.activeElapsedMs = paperRuntimeAuditElapsed(session);
   if (!audit.startedAt) audit.startedAt = audit.lastSessionStartedAt;
+  audit.visitedPages = Array.isArray(audit.visitedPages) ? audit.visitedPages : [];
+  const initialPage = Math.max(0, Number(session.page) || 0);
+  if (!audit.visitedPages.includes(initialPage)) audit.visitedPages.push(initialPage);
+  if (!Number.isInteger(audit.initialPage)) audit.initialPage = initialPage;
   if (recovered) {
     audit.crashRecoveries = (Number(audit.crashRecoveries) || 0) + 1;
     audit.lastRecoveredAt = audit.lastSessionStartedAt;
     audit.lastRecoveredFrom = Number(recovered.updatedAt) || null;
+    paperRuntimeAuditPush(audit.recoveryEvents, {
+      sourceId:String(recovered.sourceId || session.run.sourceId || ''),
+      checkpointUpdatedAt:Number(recovered.updatedAt) || null,
+      recoveredAt:audit.lastSessionStartedAt,
+      page:Math.max(0, Number(recovered.page) || 0),
+      remainingMs:Math.max(0, Number(recovered.remainingMs) || 0),
+      inkVerified:recovered.inkVerified === true,
+      checkpointInkSha256:String(recovered.checkpointInkSha256 || ''),
+      recoveredInkSha256:String(recovered.recoveredInkSha256 || ''),
+      pageCount:Number(recovered.pageCount) || 0,
+      strokeCount:Number(recovered.strokeCount) || 0,
+      deletedCount:Number(recovered.deletedCount) || 0,
+    }, 20);
   }
   paperRuntimeAuditSample(session, true);
   return audit;
@@ -6562,11 +6811,13 @@ function paperRuntimeAuditCloudStored(clientIds, session = paperSourceSession) {
 function paperRuntimeAuditPageToken(session, from, to, method) {
   return paperRuntimeAuditFor(session) ? { session, from, to, method:method || 'button', started:paperRuntimeNow(), at:Date.now() } : null;
 }
-function paperRuntimeAuditRecordPageSwitch(token, elapsed = null) {
+function paperRuntimeAuditRecordPageSwitch(token, elapsed = null, painted = true) {
   const audit = token && paperRuntimeAuditFor(token.session); if (!audit) return null;
   const ms = Math.max(0, Number.isFinite(Number(elapsed)) ? Number(elapsed) : paperRuntimeNow() - Number(token.started));
-  const row = { at:Number(token.at) || Date.now(), from:Number(token.from), to:Number(token.to), method:String(token.method || 'button'), ms:Math.round(ms * 10) / 10 };
+  const row = { at:Number(token.at) || Date.now(), from:Number(token.from), to:Number(token.to), method:String(token.method || 'button'), ms:Math.round(ms * 10) / 10, painted:painted === true };
   paperRuntimeAuditPush(audit.pageSwitches, row);
+  audit.visitedPages = Array.isArray(audit.visitedPages) ? audit.visitedPages : [];
+  for (const page of [row.from, row.to]) if (!audit.visitedPages.includes(page)) audit.visitedPages.push(page);
   paperRuntimeAuditSample(token.session, true);
   return row;
 }
@@ -6574,24 +6825,35 @@ function paperRuntimeAuditAfterPaint(token) {
   if (!token) return;
   let done = false;
   let timeout = null;
-  const finish = () => {
+  const finish = (painted = true) => {
     if (done) return;
     done = true;
     if (timeout != null) clearTimeout(timeout);
-    paperRuntimeAuditRecordPageSwitch(token);
+    paperRuntimeAuditRecordPageSwitch(token, null, painted);
   };
   const afterFrames = () => {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(finish));
-    else finish();
+    /* The measurement ends only after the scan has decoded, final fit has run and the
+       ink/AI canvases have actually been repainted.  The old 35ms deferred repaint made
+       fast tablets report a latency that stopped before the visible page was ready. */
+    if (paperSourceSession !== token.session || Number(token.session.page) !== Number(token.to)) return finish(false);
+    paperWorkspaceFit(true);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(() => finish(true)));
+    else finish(true);
   };
   const image = $('#paper-source-image');
-  if (!image || image.complete || typeof image.addEventListener !== 'function') afterFrames();
+  const decoded = () => {
+    if (!image || Number(image.naturalWidth) <= 0) return finish(false);
+    if (typeof image.decode === 'function') image.decode().then(afterFrames, () => finish(false));
+    else afterFrames();
+  };
+  if (!image || typeof image.addEventListener !== 'function') return finish(false);
+  if (image.complete) decoded();
   else {
-    image.addEventListener('load', afterFrames, { once:true });
-    image.addEventListener('error', finish, { once:true });
-    timeout = setTimeout(finish, 5000);
-    if (timeout && typeof timeout.unref === 'function') timeout.unref();
+    image.addEventListener('load', decoded, { once:true });
+    image.addEventListener('error', () => finish(false), { once:true });
   }
+  timeout = setTimeout(() => finish(false), 5000);
+  if (timeout && typeof timeout.unref === 'function') timeout.unref();
 }
 function paperRuntimeAuditPause(session = paperSourceSession, remaining = null, status = 'paused') {
   const audit = paperRuntimeAuditFor(session); if (!audit) return;
@@ -6603,7 +6865,7 @@ function paperRuntimeAuditPause(session = paperSourceSession, remaining = null, 
 function paperRuntimeAuditFinish(session = paperSourceSession, remaining = null, reason = '') {
   const audit = paperRuntimeAuditFor(session); if (!audit) return;
   audit.activeElapsedMs = Math.max(Number(audit.activeElapsedMs) || 0, paperRuntimeAuditElapsed(session, remaining));
-  audit.submittedAt = Date.now();
+  audit.submittedAt = Number(audit.submittedAt) || Date.now();
   audit.submitReason = String(reason || '').slice(0, 80);
   audit.pendingAtSubmit = session.durability && session.durability.pendingClientIds instanceof Set
     ? session.durability.pendingClientIds.size : 0;
@@ -6619,7 +6881,14 @@ function paperRuntimeAuditSummary(run) {
   const audit = run && run.runtimeAudit;
   const source = run && paperSourceById(run.sourceId);
   if (!audit || Number(audit.schema) !== PAPER_RUNTIME_AUDIT_SCHEMA) return { available:false, passed:false, checks:[] };
-  const pageMs = (audit.pageSwitches || []).map((row) => Number(row && row.ms)).filter(Number.isFinite);
+  const pageCount = Number(source && source.scans && source.scans.length) || 0;
+  const swipeRows = (audit.pageSwitches || []).filter((row) => row && row.method === 'swipe' && row.painted === true);
+  const pageMs = swipeRows.map((row) => Number(row.ms)).filter(Number.isFinite);
+  const visitedPages = new Set((audit.visitedPages || []).map(Number).filter((page) => Number.isInteger(page) && page >= 0 && page < pageCount));
+  const swipeVisitedPages = new Set([Number(audit.initialPage) || 0]);
+  for (const row of swipeRows) { swipeVisitedPages.add(Number(row.from)); swipeVisitedPages.add(Number(row.to)); }
+  const allPagesVisited = pageCount > 0 && visitedPages.size === pageCount;
+  const allPagesSwiped = pageCount > 0 && [...Array(pageCount).keys()].every((page) => swipeVisitedPages.has(page));
   const saveMs = (audit.localSaveMs || []).map(Number).filter(Number.isFinite);
   const heap = (audit.samples || []).map((row) => Number(row && row.heapBytes)).filter((value) => value > 0);
   const p95Page = paperRuntimePercentile(pageMs, .95);
@@ -6629,13 +6898,54 @@ function paperRuntimeAuditSummary(run) {
   const elapsed = Number(audit.activeElapsedMs) || 0;
   const heapGrowth = heap.length >= 3 ? heap[heap.length - 1] - heap[0] : null;
   const heapLimit = heap.length >= 3 ? Math.max(96 * 1024 * 1024, heap[0] * .75) : null;
+  const verifiedRecoveryEvents = (Array.isArray(audit.recoveryEvents) ? audit.recoveryEvents : []).filter((row) => row
+    && row.inkVerified === true
+    && /^[a-f0-9]{64}$/.test(String(row.checkpointInkSha256 || ''))
+    && row.checkpointInkSha256 === row.recoveredInkSha256
+    && Number(row.pageCount) === pageCount);
+  const durability = audit.submitDurability && typeof audit.submitDurability === 'object' ? audit.submitDurability : null;
+  const durabilityPages = durability && Array.isArray(durability.pages) ? durability.pages : [];
+  const durabilityPageNos = new Set(durabilityPages.map((page) => Number(page && page.page)));
+  const cloudReady = !!durability && durability.journalDrained === true && durability.allPagesPersisted === true
+    && durability.cloudFlushed === true && Number(durability.pendingAtSubmit) === 0
+    && Number(durability.expectedPages) === pageCount && Number(durability.verifiedPages) === pageCount
+    && Number(durability.readbackVerifiedAt) >= Number(audit.submittedAt)
+    && durabilityPages.length === pageCount && durabilityPageNos.size === pageCount
+    && durabilityPages.every((page) => page && page.matched === true
+      && /^[a-f0-9]{64}$/.test(String(page.localSha256 || '')) && page.localSha256 === page.cloudSha256
+      && page.qid === paperInkQid(run, Number(page.page)) && !!page.clientId);
+  const pdf = audit.pdfArtifact && typeof audit.pdfArtifact === 'object' ? audit.pdfArtifact : null;
+  const pdfReady = !!pdf && pdf.magic === '%PDF-' && pdf.format === 'application/pdf'
+    && /^[a-f0-9]{64}$/.test(String(pdf.sha256 || '')) && Number(pdf.bytes) > 1000
+    && Number(pdf.pageCount) === pageCount && ['graded', 'answer'].includes(pdf.kind)
+    && Number(pdf.generatedAt) >= Number(audit.submittedAt)
+    && pdf.storageVerified === true && pdf.bucket === PAPER_AUDIT_PRIVATE_BUCKET
+    && Number(pdf.contentBindingVersion) === 1
+    && /^[a-f0-9]{64}$/.test(String(pdf.contentBindingSha256 || ''))
+    && /^private-scan-set-[a-z0-9-]+-\d{8}-v\d+$/.test(String(pdf.sourceAssetVersion || ''))
+    && (pdf.kind === 'graded' ? /^[a-f0-9]{64}$/.test(String(pdf.gradeBindingSha256 || '')) : pdf.gradeBindingSha256 == null)
+    && /^runtime-audits\/matha_[a-f0-9]{32}\/pdf\/paper-run-\d{10,20}\/(?:graded|answer)-[a-f0-9]{64}-[a-f0-9]{64}\.pdf$/.test(String(pdf.path || ''))
+    && String(pdf.path).includes(`/pdf/${run.id}/`)
+    && String(pdf.path).endsWith(`/${pdf.kind}-${pdf.contentBindingSha256}-${pdf.sha256}.pdf`)
+    && Number.isFinite(Date.parse(String(pdf.serverVerifiedAt || '')));
+  const pixelQa = audit.pdfPixelQa && typeof audit.pdfPixelQa === 'object' ? audit.pdfPixelQa : null;
+  const pixelQaReady = !!pdfReady && !!pixelQa && pixelQa.confirmed === true
+    && pixelQa.source === 'owner-visual-review' && pixelQa.reviewer === 'authenticated-owner'
+    && pixelQa.pdfSha256 === pdf.sha256 && pixelQa.contentBindingSha256 === pdf.contentBindingSha256
+    && Number.isFinite(Date.parse(String(pixelQa.confirmedAt || '')))
+    && Date.parse(pixelQa.confirmedAt) >= Date.parse(pdf.serverVerifiedAt);
   const checks = [
     { id:'duration', label:'100 分鐘全程', status:durationTarget && elapsed >= durationTarget - 1000 ? 'pass' : 'pending', detail:`已量測 ${Math.floor(elapsed / 60000)} / ${Math.round(durationTarget / 60000)} 分鐘` },
-    { id:'page', label:'翻頁延遲', status:pageMs.length >= Math.max(3, Number(source && source.scans && source.scans.length) - 1) ? (p95Page <= PAPER_RUNTIME_PAGE_P95_MS ? 'pass' : 'fail') : 'pending', detail:pageMs.length ? `P95 ${Math.round(p95Page)} ms，共 ${pageMs.length} 次` : '尚無翻頁量測' },
+    { id:'page', label:'手指滑動翻遍全卷', status:allPagesVisited && allPagesSwiped && pageMs.length >= Math.max(1, pageCount - 1) ? (p95Page <= PAPER_RUNTIME_PAGE_P95_MS ? 'pass' : 'fail') : 'pending', detail:pageMs.length ? `已看 ${visitedPages.size}/${pageCount} 頁；滑動 P95 ${Math.round(p95Page)} ms，共 ${pageMs.length} 次` : `已看 ${visitedPages.size}/${pageCount} 頁；尚無滑動量測` },
     { id:'save', label:'落筆後本機保存', status:saveMs.length ? (maxSave <= PAPER_RUNTIME_LOCAL_SAVE_MAX_MS && !Number(audit.localSaveFailures) ? 'pass' : 'fail') : 'pending', detail:saveMs.length ? `P95 ${Math.round(p95Save)} ms，最慢 ${Math.round(maxSave)} ms，失敗 ${Number(audit.localSaveFailures) || 0}` : '尚無完成筆畫' },
     { id:'canvas', label:'Canvas 資源上限', status:Number(audit.maxSingleCanvasPixels) > 0 ? (Number(audit.maxSingleCanvasPixels) <= PAPER_CANVAS_MAX_PIXELS && Number(audit.maxLiveCanvasCount) <= 3 ? 'pass' : 'fail') : 'pending', detail:`單層最高 ${Math.round((Number(audit.maxSingleCanvasPixels) || 0) / 100000) / 10} MP；同時 ${Number(audit.maxLiveCanvasCount) || 0} 層` },
-    { id:'resume', label:'暫停後恢復', status:Number(audit.sessions) >= 2 ? 'pass' : 'pending', detail:`已開啟本回 ${Number(audit.sessions) || 0} 次；當機恢復 ${Number(audit.crashRecoveries) || 0} 次` },
-    { id:'pdf', label:'批改卷 PDF 準備', status:audit.pdfPreparedAt ? 'pass' : 'pending', detail:audit.pdfPreparedAt ? '已成功產生列印版' : '批改完成後尚未按輸出 PDF' },
+    { id:'resume', label:'當機後恢復', status:Number(audit.crashRecoveries) >= 1 && verifiedRecoveryEvents.length === Number(audit.crashRecoveries) ? 'pass' : 'pending', detail:`已開啟本回 ${Number(audit.sessions) || 0} 次；筆跡雜湊相符的非預期中斷恢復 ${verifiedRecoveryEvents.length} 次` },
+    { id:'cloud', label:'交卷前逐頁雲端回讀', status:cloudReady ? 'pass' : 'pending',
+      detail:durability ? `已回讀 ${Number(durability.verifiedPages) || 0}/${pageCount} 頁；待上傳 ${Number(durability.pendingAtSubmit) || 0}` : '交卷尚未完成雲端回讀' },
+    { id:'pdf', label:'PDF 位元與來源綁定', status:pdfReady ? 'pass' : 'pending',
+      detail:pdf ? `${Math.round(Number(pdf.bytes || 0) / 1024)} KB｜${Number(pdf.pageCount) || 0} 頁｜檔案 ${String(pdf.sha256 || '').slice(0, 12)}｜內容綁定 ${String(pdf.contentBindingSha256 || '').slice(0, 12)}` : '尚未生成並由伺服器回讀、綁定本回逐頁筆跡的 PDF' },
+    { id:'pdf-visual', label:'真人逐頁像素核對', status:pixelQaReady ? 'pass' : 'pending',
+      detail:pixelQaReady ? `本人已核對此份 PDF｜${String(pixelQa.confirmedAt)}` : '伺服器無法重建平板合成像素；必須本人開啟 PDF，逐頁確認題面、筆跡與紅筆後才算內容正確' },
     { id:'memory', label:'記憶體趨勢', status:heapGrowth == null ? 'unknown' : heapGrowth <= heapLimit ? 'pass' : 'fail', detail:heapGrowth == null ? '此裝置未提供可比較的 heap 指標' : `首末差 ${Math.round(heapGrowth / 1048576)} MB；峰值 ${Math.round(Number(audit.maxHeapBytes || 0) / 1048576)} MB` },
   ];
   const required = checks.filter((row) => row.id !== 'memory');
@@ -6644,6 +6954,8 @@ function paperRuntimeAuditSummary(run) {
     passed:required.every((row) => row.status === 'pass') && checks.find((row) => row.id === 'memory').status !== 'fail',
     fullyObserved:checks.every((row) => row.status === 'pass'),
     checks,
+    pdfReady,
+    pixelQaReady,
     pageP95Ms:p95Page,
     localSaveP95Ms:p95Save,
   };
@@ -6659,7 +6971,41 @@ function paperRuntimeAuditOpen(runId = '') {
   const archiveNote = archive && archive.sha256
     ? `<p class='okc'>私有雲端已封存｜${escH(String(archive.sha256).slice(0, 12))}</p>`
     : `<p class='dim'>按下方按鈕後會先同步到私人 Supabase，再下載一份本機備份；不呼叫 OpenAI。</p>`;
-  modal(`<div class='paper-grade-audit'><span class='eyebrow'>Galaxy Tab 真機驗收｜版本 ${escH(run.runtimeAudit.appVersion)}</span><h2>${headline}</h2><p>數值直接來自這一回的書寫、翻頁、保存與資源紀錄；沒有呼叫 AI。記憶體指標若裝置不提供會明示未知，不會假裝通過。</p><table><tbody>${rows}</tbody></table>${archiveNote}<div class='actr'><button class='btn' onclick="paperRuntimeAuditDownload('${jsA(run.id)}')">同步並匯出驗收檔</button></div></div>`, [['關閉']]);
+  const visualAction = summary.pdfReady && !summary.pixelQaReady
+    ? `<button class='btn primary' onclick="paperRuntimePdfVisualConfirm('${jsA(run.id)}')">我已逐頁核對此 PDF</button>` : '';
+  modal(`<div class='paper-grade-audit'><span class='eyebrow'>Galaxy Tab 真機驗收｜版本 ${escH(run.runtimeAudit.appVersion)}</span><h2>${headline}</h2><p>數值直接來自這一回的書寫、翻頁、保存與資源紀錄；沒有呼叫 AI。PDF 的位元、來源與逐頁筆跡雜湊由伺服器驗證，但伺服器不能重建平板合成像素；所以內容正確仍需本人逐頁看過。記憶體指標若裝置不提供會明示未知，不會假裝通過。</p><table><tbody>${rows}</tbody></table>${archiveNote}<div class='actr'>${visualAction}<button class='btn' onclick="paperRuntimeAuditDownload('${jsA(run.id)}')">同步並匯出驗收檔</button></div></div>`, [['關閉']]);
+}
+async function paperRuntimePdfVisualConfirm(runId) {
+  const run = (S.paperRuns || []).find((row) => row && row.id === runId);
+  const audit = run && run.runtimeAudit, pdf = audit && audit.pdfArtifact;
+  const summary = paperRuntimeAuditSummary(run);
+  if (!run || !audit || !pdf || !summary.pdfReady) {
+    alert('請先輸出 PDF，並等私人雲端完成內容綁定與原檔回讀。');
+    return false;
+  }
+  if (!supa || !syncState.user) {
+    alert('請先登入；真人核對必須同步到同一位帳號的私人驗收資料。');
+    return false;
+  }
+  if (!confirm('只有在你已打開剛下載的這一份 PDF，逐頁確認：題目沒有空白／錯頁、黑藍綠筆跡完整、紅筆批改（若有）位置正確，才按「確定」。\n\n這不是自動像素驗證；你的確認會綁定此 PDF 與本回內容雜湊。')) return false;
+  audit.pdfPixelQa = {
+    confirmed:true,
+    source:'owner-visual-review',
+    reviewer:'authenticated-owner',
+    pdfSha256:String(pdf.sha256),
+    contentBindingSha256:String(pdf.contentBindingSha256),
+    confirmedAt:new Date().toISOString(),
+  };
+  delete audit.archive;
+  run.mt = Date.now();
+  save();
+  await syncPush();
+  if (syncState.pushErr) {
+    alert('核對結果已保在本機，但尚未同步到私人雲端；連線恢復後再按一次同步。');
+    return false;
+  }
+  paperRuntimeAuditOpen(runId);
+  return true;
 }
 async function paperRuntimeReportedDeviceModel() {
   const data = typeof navigator !== 'undefined' && navigator.userAgentData;
@@ -6684,11 +7030,21 @@ async function paperRuntimeAuditAttest(run) {
 }
 async function paperRuntimeAuditArchive(run) {
   if (!run || !run.runtimeAudit || !supa || !syncState.user) throw new Error('請先登入，才能把驗收證據封存到私人雲端');
+  if (!paperRuntimeAuditSummary(run).passed) throw new Error('尚未完成全部必要量測與本人逐頁 PDF 像素核對');
   await syncPush();
   if (syncState.pushErr) throw new Error('驗收證據尚未同步，請保持連線後重試');
   const payload = await openAiInvoke({ responseType:'paper_audit_archive', context:{ paperRunId:run.id } }, 30000);
   const archive = payload && payload.paperAudit;
-  if (!archive || !archive.path || !/^[a-f0-9]{64}$/.test(String(archive.sha256 || ''))) throw new Error('雲端沒有回傳可驗證的封存證據');
+  const pdf = run.runtimeAudit.pdfArtifact;
+  if (!archive || archive.authority !== 'supabase-service-role-storage-readback'
+    || archive.bucket !== PAPER_AUDIT_PRIVATE_BUCKET || !archive.path
+    || !/^[a-f0-9]{64}$/.test(String(archive.sha256 || ''))
+    || !Number.isInteger(Number(archive.bytes)) || Number(archive.bytes) <= 0
+    || !Number.isFinite(Date.parse(String(archive.readbackVerifiedAt || '')))
+    || String(archive.contentBindingSha256 || '') !== String(pdf && pdf.contentBindingSha256 || '')
+    || String(archive.pdfSha256 || '') !== String(pdf && pdf.sha256 || '')) {
+    throw new Error('雲端沒有回傳可即時讀回且綁定本回 PDF 的封存證據');
+  }
   run.runtimeAudit.archive = { ...archive, archivedAt:Date.now() };
   run.mt = Date.now();
   save();
@@ -6707,7 +7063,7 @@ async function paperRuntimeAuditDownload(runId) {
   } catch (error) {
     archiveError = (error && error.message) || String(error);
   }
-  const payload = { kind:'matha-paper-runtime-audit-v1', exportedAt:attestation.confirmedAt, appVersion:APP_VER, deviceAttestation:attestation, run:{ id:run.id, sourceId:run.sourceId, date:run.d, status:run.status }, summary, audit:run.runtimeAudit };
+  const payload = { kind:'matha-paper-runtime-audit-v2', schemaVersion:2, exportedAt:attestation.confirmedAt, appVersion:APP_VER, deviceAttestation:attestation, run:{ id:run.id, sourceId:run.sourceId, date:run.d, status:run.status, paperLayoutVersion:run.paperLayoutVersion }, summary, audit:run.runtimeAudit };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -6761,15 +7117,33 @@ function paperInkStrokeId(stroke) {
   stroke.id = `legacy-${Number(stroke.t0) || 0}-${pts.length}-${coord(first[0])}-${coord(first[1])}-${coord(last[0])}-${coord(last[1])}-${stroke.c || 'black'}`;
   return stroke.id;
 }
+function paperInkStrokeQuestionNo(stroke) {
+  const qno = stroke && stroke.qno;
+  return typeof qno === 'number' && Number.isInteger(qno) && qno >= 1 && qno <= 20
+    ? qno : null;
+}
+function paperInkActiveReviewQuestionNo(session = paperSourceSession) {
+  if (!session || session.reviewMode !== true || !paperReview || paperReview.run !== session.run) return null;
+  const qno = paperReview.nos && paperReview.nos[paperReview.i];
+  return typeof qno === 'number' && Number.isInteger(qno) && qno >= 1 && qno <= 20
+    ? qno : null;
+}
 function paperInkMergePayloads(payloads) {
-  const strokes = new Map(), deleted = new Set();
+  const strokes = new Map(), deleted = new Set(), qnoConflicts = new Set();
   for (const payload of payloads || []) {
     for (const id of payload && Array.isArray(payload.deleted) ? payload.deleted : []) if (id) deleted.add(String(id));
     for (const stroke of payload && Array.isArray(payload.s) ? payload.s : []) {
       if (!stroke) continue;
       const id = paperInkStrokeId(stroke);
       if (stroke.dead) deleted.add(id);
+      if (qnoConflicts.has(id)) continue;
       const old = strokes.get(id);
+      if (old && paperInkStrokeQuestionNo(old) !== paperInkStrokeQuestionNo(stroke)) {
+        // A stroke id may never be retagged from another question (or from a
+        // legacy untagged row).  Drop the ambiguous id instead of letting row
+        // order silently choose which question it can unlock.
+        strokes.delete(id); qnoConflicts.add(id); deleted.add(id); continue;
+      }
       if (!old || Number(stroke.t1 || stroke.t0 || 0) >= Number(old.t1 || old.t0 || 0)) strokes.set(id, stroke);
     }
   }
@@ -6783,24 +7157,49 @@ function paperInkRowUpdatedAt(row) {
   return Date.parse(row && (row.updated_at || row.created_at) || '')
     || Number(row && (row.updatedAt || row.t0) || 0);
 }
+function paperAwaitWithTimeout(value, timeoutMs, label = '操作') {
+  const ms = Math.max(250, Number(timeoutMs) || 10000);
+  const controller = typeof AbortController === 'function' && value && typeof value.abortSignal === 'function'
+    ? new AbortController() : null;
+  let awaited = value;
+  if (controller) {
+    try { awaited = value.abortSignal(controller.signal); } catch (_) { awaited = value; }
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (controller) try { controller.abort(); } catch (_) {}
+      reject(new Error(`${label}逾時`));
+    }, ms);
+    Promise.resolve(awaited).then((result) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); resolve(result);
+    }, (error) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); reject(error);
+    });
+  });
+}
 async function paperInkCloudRows(runId) {
   if (!supa || !syncState.user) return [];
   const out = [];
   let from = 0;
   while (true) {
     let query = supa.from('ink_sessions')
-      .select('client_id,qid,t0,proc,strokes,created_at,updated_at')
+      .select('client_id,qid,t0,proc,strokes,created_at,updated_at,server_updated_at')
       .like('qid', `paper:${runId}:%`);
     const canPage = query && typeof query.range === 'function';
     if (query && typeof query.order === 'function') query = query.order('updated_at', { ascending: true });
     if (canPage) query = query.range(from, from + PAPER_INK_CLOUD_PAGE_SIZE - 1);
-    let { data, error } = await query;
-    if (error && /updated_at/i.test(String(error.message || ''))) {
+    let { data, error } = await paperAwaitWithTimeout(query, 12000, '雲端筆跡讀取');
+    if (error && /(?:server_)?updated_at/i.test(String(error.message || ''))) {
       query = supa.from('ink_sessions')
         .select('client_id,qid,t0,proc,strokes,created_at')
         .like('qid', `paper:${runId}:%`);
       if (canPage && query && typeof query.range === 'function') query = query.range(from, from + PAPER_INK_CLOUD_PAGE_SIZE - 1);
-      ({ data, error } = await query);
+      ({ data, error } = await paperAwaitWithTimeout(query, 12000, '雲端筆跡相容讀取'));
     }
     if (error) throw error;
     const rows = Array.isArray(data) ? data : [];
@@ -6853,6 +7252,37 @@ async function paperInkLoadAll(run, source) {
   paperInkLoadAll.lastMeta = { pendingClientIds: [...pendingClientIds], localAt, cloudAt };
   return pages;
 }
+async function paperAcceptedInkLoadAll(run, source) {
+  const attempt = run && run.submitAttempt;
+  const manifest = paperSubmitPageManifest(attempt && attempt.pageManifest);
+  if (!run || !source || !paperSubmitAcceptedReceiptValid(attempt, run.id, source.id)
+    || manifest.length !== source.scans.length) throw new Error('已接受交卷缺少不可變逐頁索引');
+  const cloud = await paperInkCloudRows(run.id);
+  const pages = {};
+  let cloudAt = 0;
+  for (let page = 0; page < source.scans.length; page++) {
+    const ref = manifest[page];
+    const matches = cloud.filter((row) => row && row.qid === ref.qid && row.client_id === ref.clientId);
+    if (matches.length !== 1) throw new Error(`已接受交卷第 ${page + 1} 頁不存在唯一雲端 checkpoint`);
+    const row = matches[0], proc = row.proc || {}, strokes = row.strokes || {};
+    const updatedAt = Date.parse(String(row.updated_at || ''));
+    const serverSha256 = await capabilityCanonicalDigest(strokes);
+    if (proc.overlay !== true || proc.mode !== 'paper-source' || proc.event != null
+      || Number(proc.page) !== page || Number(proc.revision) !== ref.revision
+      || strokes.paper !== true || Number(strokes.revision) !== ref.revision
+      || updatedAt !== Date.parse(ref.updatedAt) || serverSha256 !== ref.cloudSha256) {
+      throw new Error(`已接受交卷第 ${page + 1} 頁與不可變 manifest 不一致`);
+    }
+    const exact = paperInkMergePayloads([strokes]);
+    pages[page] = {
+      s:exact.s, deleted:new Set(exact.deleted), loaded:true,
+      revision:ref.revision, persistedRevision:ref.revision, dirty:false,
+    };
+    cloudAt = Math.max(cloudAt, updatedAt);
+  }
+  paperAcceptedInkLoadAll.lastMeta = { pendingClientIds:[], localAt:null, cloudAt };
+  return pages;
+}
 function paperInkPage(page) {
   if (!paperSourceSession) return null;
   paperSourceSession.inkPages = paperSourceSession.inkPages || {};
@@ -6861,18 +7291,28 @@ function paperInkPage(page) {
     || { s: [], deleted:new Set(), loaded: true, revision: 0, persistedRevision: 0, dirty: false });
 }
 function paperInkCloneStroke(stroke) {
-  return {
+  const boundedUnit = (value, fallback = 0) => {
+    const numeric = Number(value);
+    const safe = Number.isFinite(numeric) ? numeric : fallback;
+    return Math.round(Math.max(0, Math.min(1, safe)) * 1e6) / 1e6;
+  };
+  const t0 = Number(stroke.t0);
+  const t1 = Number(stroke.t1);
+  const clone = {
     id: paperInkStrokeId(stroke),
-    t0: Number(stroke.t0) || Date.now(),
-    t1: Number(stroke.t1) || null,
+    t0: Number.isSafeInteger(t0) && t0 >= 0 ? t0 : Date.now(),
+    t1: Number.isSafeInteger(t1) && t1 >= 0 ? t1 : null,
     w: paperInkWidthValue(stroke.w),
     c: PAPER_INK_COLORS[stroke.c] ? stroke.c : 'black',
     pts: (stroke.pts || []).map((point) => [
-      Number(point[0]) || 0,
-      Number(point[1]) || 0,
-      Number(point[2]) || .5,
+      boundedUnit(point[0]),
+      boundedUnit(point[1]),
+      boundedUnit(point[2], .5),
     ]),
   };
+  const qno = paperInkStrokeQuestionNo(stroke);
+  if (qno != null) clone.qno = qno;
+  return clone;
 }
 function paperInkEventClientFor(run, pageIndex, kind, id) {
   const safe = (value) => String(value || '').replace(/[^\w.-]/g, '_').slice(-96);
@@ -6971,6 +7411,10 @@ function paperInkTrackJournal(promise, session = paperSourceSession) {
 }
 function paperInkJournalStroke(stroke, final = false, session = paperSourceSession) {
   if (!session || !session.run || !stroke || !Array.isArray(stroke.pts) || stroke.pts.length < 2) return Promise.resolve(false);
+  const reviewQuestionNo = paperInkActiveReviewQuestionNo(session);
+  if (session.reviewMode && (reviewQuestionNo == null || paperInkStrokeQuestionNo(stroke) !== reviewQuestionNo)) {
+    return Promise.resolve(false);
+  }
   const pageIndex = Number(session.page) || 0;
   const storageRun = paperInkStorageRun(session);
   if (!stroke._journalClientId) {
@@ -6983,8 +7427,10 @@ function paperInkJournalStroke(stroke, final = false, session = paperSourceSessi
     user_id: session.inkUserId || (syncState.user ? syncState.user.id : null),
     qid: paperInkQid(storageRun, pageIndex),
     t0: Number(stroke.t0) || Date.now(),
-    proc: { overlay: true, mode: session.reviewMode ? 'paper-correction' : 'paper-source', page: pageIndex, event: 'stroke', draft: !final, committedAt:final ? Number(captured.t1) || Date.now() : null },
-    strokes: { paper: true, event: true, s: [captured], deleted: [] },
+    proc: { overlay: true, mode: session.reviewMode ? 'paper-correction' : 'paper-source', page: pageIndex, event: 'stroke',
+      ...(reviewQuestionNo == null ? {} : { questionNo:reviewQuestionNo }),
+      draft: !final, committedAt:final ? Number(captured.t1) || Date.now() : null },
+    strokes: { paper: true, event: true, ...(session.reviewMode ? { questionTagSchema:1 } : {}), s: [captured], deleted: [] },
     uploaded: false,
   };
   const previous = stroke._journalPromise || Promise.resolve();
@@ -6997,14 +7443,17 @@ function paperInkJournalDeleted(ids, session = paperSourceSession) {
   if (!session || !session.run || !deleted.length) return Promise.resolve(false);
   const pageIndex = Number(session.page) || 0;
   const storageRun = paperInkStorageRun(session);
+  const reviewQuestionNo = paperInkActiveReviewQuestionNo(session);
+  if (session.reviewMode && reviewQuestionNo == null) return Promise.resolve(false);
   const eventId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const record = {
     client_id: paperInkEventClientFor(storageRun, pageIndex, 'delete', eventId),
     user_id: session.inkUserId || (syncState.user ? syncState.user.id : null),
     qid: paperInkQid(storageRun, pageIndex),
     t0: Date.now(),
-    proc: { overlay: true, mode: session.reviewMode ? 'paper-correction' : 'paper-source', page: pageIndex, event: 'delete' },
-    strokes: { paper: true, event: true, s: [], deleted },
+    proc: { overlay: true, mode: session.reviewMode ? 'paper-correction' : 'paper-source', page: pageIndex, event: 'delete',
+      ...(reviewQuestionNo == null ? {} : { questionNo:reviewQuestionNo }) },
+    strokes: { paper: true, event: true, ...(session.reviewMode ? { questionTagSchema:1 } : {}), s: [], deleted },
     uploaded: false,
   };
   return paperInkTrackJournal(paperInkJournalRecord(record, session), session);
@@ -7029,9 +7478,13 @@ function paperInkCompact(data) {
   return live;
 }
 function paperInkSnapshot(data, pageIndex, session = paperSourceSession) {
-  const strokes = paperInkCompact(data).map(paperInkCloneStroke);
+  const source = paperInkCompact(data);
+  const strokes = (session && session.reviewMode
+    ? source.filter((stroke) => paperInkStrokeQuestionNo(stroke) != null)
+    : source).map(paperInkCloneStroke);
   const current = session && Number(session.page) === Number(pageIndex) ? session.inkCurrent : null;
-  if (current && Array.isArray(current.pts) && current.pts.length > 1) strokes.push(paperInkCloneStroke(current));
+  if (current && Array.isArray(current.pts) && current.pts.length > 1
+      && (!session.reviewMode || paperInkStrokeQuestionNo(current) != null)) strokes.push(paperInkCloneStroke(current));
   return strokes;
 }
 function paperInkSaveKey(session, pageIndex) {
@@ -7057,6 +7510,27 @@ function paperInkScheduleRetry(pageIndex, data, session = paperSourceSession) {
   // Node 測試環境的 Timeout 支援 unref；瀏覽器回傳數字、正式自動重試不受影響。
   if (timer && typeof timer.unref === 'function') timer.unref();
 }
+function paperInkCheckpointRecord(pageIndex, data, session = paperSourceSession) {
+  if (!session || !data || !session.run) return null;
+  const run = paperInkStorageRun(session);
+  const revision = Number(data.revision) || 0;
+  session.inkClientIds = session.inkClientIds || {};
+  if (!session.inkClientIds[pageIndex]) session.inkClientIds[pageIndex] = paperInkClientFor(run, pageIndex);
+  return {
+    client_id: session.inkClientIds[pageIndex],
+    user_id: session.inkUserId || (syncState.user ? syncState.user.id : null),
+    qid: paperInkQid(run, pageIndex),
+    t0: Number(run.createdAt) + pageIndex,
+    proc: { overlay:true, mode:session.reviewMode ? 'paper-correction' : 'paper-source', page:pageIndex, revision },
+    strokes: {
+      paper:true, revision,
+      ...(session.reviewMode ? { questionTagSchema:1 } : {}),
+      s:paperInkSnapshot(data, pageIndex, session),
+      deleted:[...(data.deleted instanceof Set ? data.deleted : new Set(data.deleted || []))],
+    },
+    uploaded:false,
+  };
+}
 async function paperInkPersistPage(pageIndex, data, force, session = paperSourceSession) {
   if (!session || !data || !session.run) return false;
   const run = paperInkStorageRun(session);
@@ -7067,19 +7541,8 @@ async function paperInkPersistPage(pageIndex, data, force, session = paperSource
   do {
     if (!data.dirty && !force) return wrote;
     const revision = Number(data.revision) || 0;
-    const record = {
-      client_id: session.inkClientIds[pageIndex],
-      user_id: session.inkUserId || (syncState.user ? syncState.user.id : null),
-      qid: paperInkQid(run, pageIndex),
-      t0: Number(run.createdAt) + pageIndex,
-      proc: { overlay: true, mode: session.reviewMode ? 'paper-correction' : 'paper-source', page: pageIndex, revision },
-      strokes: {
-        paper: true, revision,
-        s: paperInkSnapshot(data, pageIndex, session),
-        deleted: [...(data.deleted instanceof Set ? data.deleted : new Set(data.deleted || []))],
-      },
-      uploaded: false,
-    };
+    const record = paperInkCheckpointRecord(pageIndex, data, session);
+    if (!record) return false;
     const request = inkRecordPut(record);
     data.persistPromise = request;
     try {
@@ -7104,6 +7567,104 @@ async function paperInkPersistPage(pageIndex, data, force, session = paperSource
     force = force && data.dirty;
   } while (force);
   return wrote;
+}
+async function paperInkPersistAll(force = true, session = paperSourceSession) {
+  if (!session || !session.source || !session.run) return false;
+  session.inkPages = session.inkPages || {};
+  const results = [];
+  for (let page = 0; page < session.source.scans.length; page++) {
+    const data = session.inkPages[page] = session.inkPages[page]
+      || { s:[], deleted:new Set(), loaded:true, revision:0, persistedRevision:0, dirty:false };
+    paperInkSaveTimerClear(session, page);
+    results.push(await paperInkPersistPage(page, data, force, session));
+  }
+  return results.length === session.source.scans.length && results.every(Boolean);
+}
+function paperInkPendingCount(session = paperSourceSession) {
+  return session && session.durability && session.durability.pendingClientIds instanceof Set
+    ? session.durability.pendingClientIds.size : 0;
+}
+async function paperInkCloudFlushBarrier(session = paperSourceSession, timeoutMs = 30000) {
+  if (!session || !supa || !syncState.user) return false;
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 30000);
+  while (Date.now() <= deadline) {
+    const left = Math.max(250, deadline - Date.now());
+    try { await paperAwaitWithTimeout(flushInkQueue(), Math.min(12000, left), '雲端筆跡補傳'); }
+    catch (_) { return false; }
+    if (!paperInkPendingCount(session) && !inkFlushBusy) return true;
+    await new Promise((resolve) => setTimeout(resolve, 125));
+  }
+  return false;
+}
+async function paperInkCloudReadbackVerify(session = paperSourceSession) {
+  if (!session || !session.run || !session.source) return null;
+  const rows = await paperInkCloudRows(session.run.id);
+  const pages = [];
+  for (let page = 0; page < session.source.scans.length; page++) {
+    const data = session.inkPages && session.inkPages[page];
+    const local = data && paperInkCheckpointRecord(page, data, session);
+    const cloud = local && rows.filter((row) => row && row.qid === local.qid && row.client_id === local.client_id)
+      .sort((a, b) => paperInkRowUpdatedAt(b) - paperInkRowUpdatedAt(a))[0];
+    const localSha256 = local ? await capabilityCanonicalDigest(local.strokes) : '';
+    const cloudSha256 = cloud && cloud.strokes ? await capabilityCanonicalDigest(cloud.strokes) : '';
+    const proc = cloud && cloud.proc || {};
+    const revision = Number(proc.revision);
+    const updatedAt = String(cloud && cloud.updated_at || '');
+    const matched = !!local && !!cloud && localSha256 === cloudSha256
+      && proc.overlay === true && proc.mode === 'paper-source' && Number(proc.page) === page
+      && proc.event == null && Number(proc.revision) === Number(cloud.strokes && cloud.strokes.revision)
+      && Number.isInteger(revision) && revision >= 0 && Number.isFinite(Date.parse(updatedAt))
+      && cloud.strokes.paper === true;
+    pages.push({ page, qid:local && local.qid || paperInkQid(session.run, page),
+      clientId:local && local.client_id || '', revision, updatedAt,
+      localSha256, cloudSha256, matched });
+  }
+  const verifiedPages = pages.filter((page) => page.matched).length;
+  return {
+    readbackVerifiedAt:Math.max(Date.now(), Number(session.run.submittedAt) + 1),
+    expectedPages:session.source.scans.length,
+    verifiedPages,
+    pages,
+    passed:verifiedPages === session.source.scans.length,
+  };
+}
+async function paperAcceptedGradeSnapshotPreflight(session = paperSourceSession) {
+  if (!session || !session.run || !session.source || !session.readOnly || !session.submitLocked) return null;
+  const run = session.run, source = session.source, attempt = run.submitAttempt;
+  if (!paperSubmitAcceptedReceiptValid(attempt, run.id, source.id)) return null;
+  const refs = paperSubmitPageManifest(attempt.pageManifest);
+  if (refs.length !== source.scans.length) return null;
+  const rows = await paperInkCloudRows(run.id);
+  const snapshotPages = [], revisions = [];
+  for (let page = 0; page < source.scans.length; page++) {
+    const ref = refs.find((row) => Number(row && row.page) === page);
+    const matches = ref && rows.filter((row) => row && row.qid === ref.qid && row.client_id === ref.clientId)
+      .sort((a, b) => paperInkRowUpdatedAt(b) - paperInkRowUpdatedAt(a));
+    if (!ref || !matches || matches.length < 1) return null;
+    const cloud = matches[0], proc = cloud.proc || {}, strokes = cloud.strokes || {};
+    const revision = Number(proc.revision);
+    const serverSha256 = await capabilityCanonicalDigest(strokes);
+    const data = session.inkPages && session.inkPages[page];
+    if (!data || data.dirty || proc.overlay !== true || proc.mode !== 'paper-source'
+      || proc.event != null || Number(proc.page) !== page || !Number.isInteger(revision) || revision < 0
+      || strokes.paper !== true || Number(strokes.revision) !== revision
+      || revision !== Number(ref.revision)
+      || Date.parse(String(cloud.updated_at || '')) !== Date.parse(String(ref.updatedAt || ''))
+      || serverSha256 !== String(ref.cloudSha256 || '').toLowerCase()) return null;
+    const currentVisible = paperInkSnapshot(data, page, session).map(paperInkCloneStroke);
+    const cloudVisible = paperInkMergePayloads([strokes]).s.map(paperInkCloneStroke);
+    if (await capabilityCanonicalDigest(currentVisible) !== await capabilityCanonicalDigest(cloudVisible)) return null;
+    revisions.push({ page, revision, persistedRevision:revision, dirty:false });
+    snapshotPages.push({ page, qid:String(ref.qid || ''), clientId:String(ref.clientId || ''),
+      sha256:serverSha256, cloudSha256:serverSha256 });
+  }
+  const canonicalDigest = await capabilityCanonicalDigest({
+    schema:1, runId:String(run.id), sourceId:String(source.id),
+    paperLayoutVersion:Number(run.paperLayoutVersion), submittedAt:Number(run.submittedAt),
+    revisions, pages:snapshotPages,
+  });
+  return canonicalDigest === String(attempt.inkSnapshotSha256 || '').toLowerCase()
+    ? { canonicalDigest, pages:snapshotPages } : null;
 }
 function paperInkPersist(force) {
   if (!paperSourceSession) return Promise.resolve(false);
@@ -7630,6 +8191,22 @@ function paperTouchPanBlocksPage(touch, zoom) {
   const startedAtRight = Number(touch.startScrollLeft) >= max - 2;
   return !((startedAtLeft && dx > 0) || (startedAtRight && dx < 0));
 }
+function paperInkCreateStroke(e, cv, session = paperSourceSession) {
+  if (!session) return null;
+  const stroke = {
+    id: inkClientId('paper-stroke', Date.now()),
+    t0: Date.now(),
+    w: paperInkWidthValue(session.inkWidth),
+    c: PAPER_INK_COLORS[session.inkColor] ? session.inkColor : 'black',
+    pts: [paperInkPoint(e, cv)],
+  };
+  if (session.reviewMode) {
+    const qno = paperInkActiveReviewQuestionNo(session);
+    if (qno == null) return null;
+    stroke.qno = qno;
+  }
+  return stroke;
+}
 function paperInkDown(e) {
   if (!paperSourceSession) return;
   const cv = e.currentTarget;
@@ -7673,13 +8250,7 @@ function paperInkDown(e) {
     if (paperInkPenHasContact(e)) paperInkEraseAt(e, cv);
     return;
   }
-  paperSourceSession.inkCurrent = {
-    id: inkClientId('paper-stroke', Date.now()),
-    t0: Date.now(),
-    w: paperInkWidthValue(paperSourceSession.inkWidth),
-    c: PAPER_INK_COLORS[paperSourceSession.inkColor] ? paperSourceSession.inkColor : 'black',
-    pts: [paperInkPoint(e, cv)],
-  };
+  paperSourceSession.inkCurrent = paperInkCreateStroke(e, cv, paperSourceSession);
   paperSourceSession.inkCheckpointAt = Date.now();
 }
 function paperInkMove(e) {
@@ -7724,13 +8295,7 @@ function paperInkMove(e) {
     paperSourceSession.inkGestureMode = nextMode;
     paperInkModeRender(nextMode, paperInkGestureIsTemporaryErase());
     if (nextMode === 'pen') {
-      paperSourceSession.inkCurrent = {
-        id: inkClientId('paper-stroke', Date.now()),
-        t0: Date.now(),
-        w: paperInkWidthValue(paperSourceSession.inkWidth),
-        c: PAPER_INK_COLORS[paperSourceSession.inkColor] ? paperSourceSession.inkColor : 'black',
-        pts: [paperInkPoint(e, cv)],
-      };
+      paperSourceSession.inkCurrent = paperInkCreateStroke(e, cv, paperSourceSession);
     }
   }
   if (paperSourceSession.inkGestureMode === 'erase') {
@@ -7951,7 +8516,7 @@ function paperWorkspaceZoom(delta) {
   if (!paperSourceSession) return;
   paperWorkspaceSetZoom(Math.round((paperSourceSession.zoom + delta) * 4) / 4);
 }
-function paperWorkspaceFit() {
+function paperWorkspaceFit(immediatePaint = false) {
   if (!paperSourceSession) return;
   const pane = document.querySelector('.paper-page-viewport'), sheet = $('#paper-write-sheet');
   if (!pane || !sheet || !pane.clientWidth || !pane.clientHeight) return;
@@ -7959,7 +8524,9 @@ function paperWorkspaceFit() {
   paperSourceSession.fitWidth = Math.max(pane.clientWidth, pane.clientHeight * sheetRatio);
   sheet.style.width = `${paperSourceSession.fitWidth * paperSourceSession.zoom}px`;
   sheet.style.maxWidth = 'none';
-  clearTimeout(paperZoomPaintTimer); paperZoomPaintTimer = setTimeout(paperInkPaint, 35);
+  clearTimeout(paperZoomPaintTimer);
+  if (immediatePaint) paperInkPaint();
+  else paperZoomPaintTimer = setTimeout(paperInkPaint, 35);
 }
 function paperWorkspaceObserveFit() {
   if (paperFitObserver) { paperFitObserver.disconnect(); paperFitObserver = null; }
@@ -8057,72 +8624,206 @@ async function paperPageComposite(page) {
     page,
   );
 }
-async function paperExportGradedPdf() {
-  if (!paperSourceSession || !paperSourceSession.run || !paperSourceSession.run.aiGrade) {
-    alert('目前沒有可輸出的批改結果。');
+function paperBase64Bytes(value) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = String(value || '').replace(/[^A-Za-z0-9+/=]/g, '');
+  const out = [];
+  let buffer = 0, bits = 0;
+  for (const char of clean) {
+    if (char === '=') break;
+    const index = alphabet.indexOf(char);
+    if (index < 0) continue;
+    buffer = (buffer << 6) | index;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buffer >> bits) & 255);
+      buffer &= (1 << bits) - 1;
+    }
+  }
+  return new Uint8Array(out);
+}
+function paperPdfAscii(value) {
+  return Uint8Array.from(String(value), (char) => char.charCodeAt(0) & 255);
+}
+function paperPdfConcat(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.length; }
+  return out;
+}
+function paperJpegDimensions(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 16 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error('PDF 頁面不是完整 JPEG');
+  const sof = new Set([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf]);
+  let offset = 2;
+  while (offset + 8 < bytes.length) {
+    if (bytes[offset] !== 0xff) { offset++; continue; }
+    while (bytes[offset] === 0xff) offset++;
+    const marker = bytes[offset++];
+    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 1 >= bytes.length) break;
+    const length = (bytes[offset] << 8) | bytes[offset + 1];
+    if (length < 2 || offset + length > bytes.length) break;
+    if (sof.has(marker)) {
+      const height = (bytes[offset + 3] << 8) | bytes[offset + 4];
+      const width = (bytes[offset + 5] << 8) | bytes[offset + 6];
+      if (width > 0 && height > 0) return { width, height };
+    }
+    offset += length;
+  }
+  throw new Error('PDF 無法讀取 JPEG 尺寸');
+}
+function paperBuildPdfBytes(base64Images) {
+  if (!Array.isArray(base64Images) || !base64Images.length) throw new Error('PDF 沒有頁面');
+  const images = base64Images.map((base64) => {
+    const bytes = paperBase64Bytes(base64);
+    return { bytes, ...paperJpegDimensions(bytes) };
+  });
+  const objectCount = 2 + images.length * 3;
+  const objects = new Map();
+  objects.set(1, [paperPdfAscii('<< /Type /Catalog /Pages 2 0 R >>')]);
+  const kids = images.map((_, index) => `${3 + index * 3} 0 R`).join(' ');
+  objects.set(2, [paperPdfAscii(`<< /Type /Pages /Count ${images.length} /Kids [${kids}] >>`)]);
+  const mediaW = 595.28, mediaH = 841.89, margin = 10;
+  images.forEach((image, index) => {
+    const pageId = 3 + index * 3, imageId = pageId + 1, contentId = pageId + 2;
+    const scale = Math.min((mediaW - margin * 2) / image.width, (mediaH - margin * 2) / image.height);
+    const width = Math.round(image.width * scale * 100) / 100;
+    const height = Math.round(image.height * scale * 100) / 100;
+    const x = Math.round((mediaW - width) * 50) / 100;
+    const y = Math.round((mediaH - height) * 50) / 100;
+    const content = paperPdfAscii(`q\n${width} 0 0 ${height} ${x} ${y} cm\n/Im${index + 1} Do\nQ\n`);
+    objects.set(pageId, [paperPdfAscii(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${mediaW} ${mediaH}] /Resources << /XObject << /Im${index + 1} ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`)]);
+    objects.set(imageId, [
+      paperPdfAscii(`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.bytes.length} >>\nstream\n`),
+      image.bytes,
+      paperPdfAscii('\nendstream'),
+    ]);
+    objects.set(contentId, [paperPdfAscii(`<< /Length ${content.length} >>\nstream\n`), content, paperPdfAscii('endstream')]);
+  });
+  const chunks = [paperPdfAscii('%PDF-1.4\n%matha-generated\n')];
+  const offsets = new Array(objectCount + 1).fill(0);
+  let length = chunks[0].length;
+  for (let id = 1; id <= objectCount; id++) {
+    offsets[id] = length;
+    const parts = [paperPdfAscii(`${id} 0 obj\n`), ...(objects.get(id) || []), paperPdfAscii('\nendobj\n')];
+    chunks.push(...parts);
+    length += parts.reduce((sum, part) => sum + part.length, 0);
+  }
+  const xrefAt = length;
+  let xref = `xref\n0 ${objectCount + 1}\n0000000000 65535 f \n`;
+  for (let id = 1; id <= objectCount; id++) xref += `${String(offsets[id]).padStart(10, '0')} 00000 n \n`;
+  xref += `trailer\n<< /Size ${objectCount + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+  chunks.push(paperPdfAscii(xref));
+  return paperPdfConcat(chunks);
+}
+function paperDownloadBytes(bytes, filename, type = 'application/pdf') {
+  const blob = new Blob([bytes], { type });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  return blob;
+}
+function paperRuntimePdfStoreEligible(run, kind) {
+  return !!run && Number(run.submittedAt) > 0 && ['grading', 'awaiting-correction', 'completed'].includes(String(run.status || ''))
+    && ['graded', 'answer'].includes(kind) && (kind !== 'graded' || !!run.aiGrade);
+}
+async function paperRuntimePdfStore(run, bytes, localArtifact) {
+  if (!paperRuntimePdfStoreEligible(run, localArtifact && localArtifact.kind)) return localArtifact;
+  if (!supa || !syncState.user) throw new Error('尚未登入，無法把 PDF 寫入私人驗收區');
+  await syncPush();
+  if (syncState.pushErr) throw new Error('交卷狀態尚未同步，PDF 私人雲端驗證未完成');
+  const pdfBase64 = await blobBase64(new Blob([bytes], { type:'application/pdf' }));
+  const payload = await openAiInvoke({ responseType:'paper_audit_pdf_store', context:{
+    paperRunId:run.id, kind:localArtifact.kind, pdfBase64,
+  } }, 90000);
+  const remote = payload && payload.paperPdfArtifact;
+  if (!remote || remote.storageVerified !== true || remote.bucket !== PAPER_AUDIT_PRIVATE_BUCKET
+    || remote.format !== localArtifact.format || remote.magic !== localArtifact.magic || remote.eof !== '%%EOF'
+    || remote.sha256 !== localArtifact.sha256 || Number(remote.bytes) !== Number(localArtifact.bytes)
+    || Number(remote.pageCount) !== Number(localArtifact.pageCount) || remote.kind !== localArtifact.kind
+    || Number(remote.contentBindingVersion) !== 1
+    || !/^[a-f0-9]{64}$/.test(String(remote.contentBindingSha256 || ''))
+    || !/^private-scan-set-[a-z0-9-]+-\d{8}-v\d+$/.test(String(remote.sourceAssetVersion || ''))
+    || (remote.kind === 'graded' ? !/^[a-f0-9]{64}$/.test(String(remote.gradeBindingSha256 || '')) : remote.gradeBindingSha256 != null)
+    || remote.runId !== run.id || !remote.path
+    || !String(remote.path).endsWith(`/${remote.kind}-${remote.contentBindingSha256}-${remote.sha256}.pdf`)
+    || !Number.isFinite(Date.parse(String(remote.serverVerifiedAt || '')))) {
+    throw new Error('伺服器回讀的 PDF 與平板下載檔不一致');
+  }
+  return { ...localArtifact, ...remote, generatedAt:localArtifact.generatedAt };
+}
+async function paperExportPdf(includeGrade = false) {
+  if (!paperSourceSession || !paperSourceSession.run || includeGrade && !paperSourceSession.run.aiGrade) {
+    alert(includeGrade ? '目前沒有可輸出的批改結果。' : '目前沒有可輸出的作答卷。');
     return false;
   }
   const session = paperSourceSession;
   const { source, run, urls, inkPages } = session;
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    alert('瀏覽器封鎖了列印頁。請允許這個網站開啟新分頁後再按一次。');
-    return false;
-  }
-  printWindow.document.write('<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>正在產生批改卷</title></head><body style="font-family:system-ui,sans-serif;padding:32px;color:#51483f">正在整理完整批改卷，請稍候，不要關閉此分頁。</body></html>');
-  printWindow.document.close();
-  const button = $('#paper-export-pdf');
-  if (button) { button.disabled = true; button.textContent = '正在整理 PDF…'; }
+  const button = $(includeGrade ? '#paper-export-pdf' : '#paper-export-answer-pdf');
+  if (button) { button.disabled = true; button.textContent = '正在生成 PDF…'; }
   try {
+    if (!session.readOnly) {
+      paperInkCommitCurrent();
+      const journalOk = await paperInkJournalDrain(session);
+      const saved = await paperInkPersistAll(true, session);
+      if (!journalOk || !saved) throw new Error('作答筆跡尚未完成本機保存');
+    }
     const images = [];
     for (let page = 0; page < source.scans.length; page++) {
       if (button) button.textContent = `正在整理 ${page + 1}/${source.scans.length}`;
-      images.push(`data:image/jpeg;base64,${await paperCompositeImage(source, urls, inkPages, page, true)}`);
+      images.push(await paperCompositeImage(source, urls, inkPages, page, includeGrade));
     }
-    const title = `${source.title}_${run.d || today()}_${run.aiGrade.score}分_紅筆批改`;
-    const wrong = run.aiGrade.wrongNos && run.aiGrade.wrongNos.length ? run.aiGrade.wrongNos.join('、') : '無';
-    const pages = images.map((src, index) => `<section class="page">
-      ${index === 0 ? `<header><strong>${escH(source.title)}　${Number(run.aiGrade.score) || 0} / 100</strong><span>錯題：${escH(wrong)}　作答日：${escH(run.d || today())}</span></header>` : ''}
-      <img src="${src}" alt="${escH(source.title)}第 ${index + 1} 頁批改卷">
-      <footer>${index + 1} / ${images.length}</footer>
-    </section>`).join('');
-    printWindow.document.open();
-    printWindow.document.write(`<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>${escH(title)}</title>
-      <style>
-        @page { size: A4 portrait; margin: 5mm; }
-        * { box-sizing: border-box; }
-        html, body { margin: 0; padding: 0; background: #fff; color: #413b35; font-family: system-ui, "Noto Sans TC", sans-serif; }
-        .page { width: 100%; min-height: 287mm; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; align-items: start; break-after: page; page-break-after: always; }
-        .page:last-child { break-after: auto; page-break-after: auto; }
-        header { min-height: 12mm; display: flex; align-items: center; justify-content: space-between; gap: 8mm; padding: 1mm 2mm 2mm; font-size: 10pt; }
-        header strong { font-size: 13pt; }
-        img { display: block; width: 100%; height: auto; max-height: 266mm; object-fit: contain; object-position: top center; }
-        footer { min-height: 5mm; padding-top: 1mm; text-align: right; color: #82786d; font-size: 8pt; }
-        @media screen { body { max-width: 210mm; margin: 0 auto; background: #d8d3cb; } .page { margin: 10mm 0; padding: 5mm; background: #fff; box-shadow: 0 3px 18px rgba(0,0,0,.14); } }
-      </style></head><body>${pages}</body></html>`);
-    printWindow.document.close();
-    printWindow.document.title = title;
-    const ready = () => {
-      try { printWindow.focus(); printWindow.print(); } catch (_) {}
-    };
-    if (printWindow.document.readyState === 'complete') setTimeout(ready, 250);
-    else printWindow.addEventListener('load', () => setTimeout(ready, 250), { once: true });
-    if (run.runtimeAudit) {
-      run.runtimeAudit.pdfPreparedAt = Date.now();
-      run.mt = Date.now();
-      save();
+    const bytes = paperBuildPdfBytes(images);
+    const magic = String.fromCharCode(...bytes.slice(0, 5));
+    if (magic !== '%PDF-' || String.fromCharCode(...bytes.slice(-6)).indexOf('%%EOF') < 0) throw new Error('PDF 位元組驗證失敗');
+    const sha256 = await sha256Bytes(bytes);
+    const kind = includeGrade ? 'graded' : 'answer';
+    const score = includeGrade && run.aiGrade ? `_${run.aiGrade.score}分` : '';
+    const safeTitle = String(source.title || '數A原卷').replace(/[\\/:*?"<>|]/g, '_');
+    paperDownloadBytes(bytes, `${safeTitle}_${run.d || today()}${score}_${includeGrade ? '紅筆批改' : '作答卷'}.pdf`);
+    const audit = run.runtimeAudit;
+    if (audit && Number(audit.schema) === PAPER_RUNTIME_AUDIT_SCHEMA) {
+      const localArtifact = { format:'application/pdf', magic, eof:'%%EOF', sha256, bytes:bytes.length, pageCount:images.length, kind, generatedAt:Date.now(), storageVerified:false };
+      audit.pdfArtifact = localArtifact;
+      delete audit.pdfPixelQa;
+      delete audit.archive;
+      run.mt = Date.now(); save();
+      let cloudError = '';
+      if (paperRuntimePdfStoreEligible(run, kind)) {
+        try {
+          if (button) button.textContent = '正在私人雲端回讀 PDF…';
+          audit.pdfArtifact = await paperRuntimePdfStore(run, bytes, localArtifact);
+          delete audit.pdfPixelQa;
+          delete audit.archive;
+          run.mt = Date.now(); save();
+          await syncPush();
+          if (syncState.pushErr) throw new Error('PDF 驗證結果尚未同步');
+        } catch (error) {
+          audit.pdfArtifact = localArtifact;
+          cloudError = (error && error.message) || String(error);
+          run.mt = Date.now(); save();
+        }
+      } else syncPush();
+      const summary = paperRuntimeAuditSummary(run);
+      if (summary.passed && audit.deviceAttestation && audit.deviceAttestation.confirmed === true) {
+        paperRuntimeAuditArchive(run).catch(() => {});
+      }
+      if (cloudError) alert(`PDF 已下載到本機；私人雲端回讀驗證尚未完成：${cloudError}`);
     }
     return true;
   } catch (error) {
-    try {
-      printWindow.document.body.innerHTML = `<h1>批改卷整理失敗</h1><p>${escH((error && error.message) || error)}</p>`;
-    } catch (_) {}
-    alert(`批改卷整理失敗：${(error && error.message) || error}`);
+    alert(`PDF 整理失敗：${(error && error.message) || error}`);
     return false;
   } finally {
-    if (button) { button.disabled = false; button.innerHTML = `${uiIcon('save')}輸出批改卷 PDF`; }
+    if (button) { button.disabled = false; button.innerHTML = `${uiIcon('save')}${includeGrade ? '輸出批改卷 PDF' : '輸出作答 PDF'}`; }
   }
 }
+function paperExportGradedPdf() { return paperExportPdf(true); }
+function paperExportAnswerPdf() { return paperExportPdf(false); }
 function paperGradePromptKey(source, answerKey) {
   return answerKey.map((q, index) => ({
     no: index + 1,
@@ -8134,60 +8835,219 @@ function paperGradePromptKey(source, answerKey) {
     rubric: q.type === 'constructed' && Array.isArray(q.rubric) ? q.rubric : [],
   }));
 }
+function paperGradeGenerationRequestId() {
+  const uuid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  return `paper-grade-generation-${uuid}`;
+}
+function paperGradeGenerationRequestValid(value) {
+  return /^paper-grade-generation-[A-Za-z0-9._:-]{16,127}$/.test(String(value || ''));
+}
+function paperGradeGenerationConflictRequests(run) {
+  const conflict = run && run.gradeGenerationRequestConflict;
+  if (!conflict || typeof conflict !== 'object') return [];
+  const fallback = Number(conflict.previousGeneration);
+  const rows = Array.isArray(conflict.requests) ? conflict.requests
+    : (Array.isArray(conflict.requestIds) ? conflict.requestIds.map((requestId) => ({ requestId,
+      previousGeneration:fallback })) : []);
+  const unique = new Map();
+  for (const row of rows) {
+    const requestId = String(row && row.requestId || '');
+    const previousGeneration = Number(row && row.previousGeneration);
+    if (!paperGradeGenerationRequestValid(requestId)
+      || !Number.isInteger(previousGeneration) || previousGeneration < 0
+      || previousGeneration > 2147483646) continue;
+    unique.set(`${previousGeneration}|${requestId}`, { requestId, previousGeneration });
+  }
+  return [...unique.values()].sort((a, b) => a.previousGeneration - b.previousGeneration
+    || a.requestId.localeCompare(b.requestId));
+}
+function paperGradeKnownGeneration(run) {
+  const values = [
+    Number(run && run.gradeGeneration),
+    Number(run && run.pendingGradeGeneration),
+    Number(run && run.gradePreviousGeneration),
+    Number(run && run.gradeJob && run.gradeJob.generation),
+    paperGradeMergeAuthority(run && run.aiGrade).generation,
+  ].filter((value) => Number.isInteger(value) && value >= 0 && value <= 2147483647);
+  return values.length ? Math.max(...values) : 0;
+}
 async function paperAnswerKeyAfterSubmit(source, run) {
   if (Array.isArray(source.key)) return source.key;
-  if (!run || !run.id || !run.submittedAt || run.status !== 'grading') throw new Error('交卷狀態尚未完成，答案仍保持鎖定');
+  const attempt = run && run.submitAttempt;
+  if (!run || !run.id || !run.submittedAt || run.status !== 'grading'
+    || !paperSubmitAcceptedReceiptValid(attempt, run.id, source.id)) throw new Error('交卷狀態尚未完成，答案仍保持鎖定');
   const payload = await openAiInvoke({
     responseType: 'paper_key',
-    context: { paperRunId: run.id, sourceId: source.id },
+    context: {
+      paperRunId:run.id, sourceId:source.id, submitAttemptId:attempt.attemptId,
+      submitAttemptInkSnapshotSha256:attempt.inkSnapshotSha256,
+      submittedAt:attempt.submittedAt, runCreatedAppVersion:attempt.runCreatedAppVersion,
+    },
   }, 30000);
   const key = payload && payload.paperKey;
   if (!Array.isArray(key) || key.length !== source.questions) throw new Error('批改後端尚未完成答案鎖定部署；本次筆跡已保存，沒有送出 AI 批改');
   return key;
 }
-async function paperAiGradeCall(source, pages, answerKey = source.key) {
-  if (!Array.isArray(answerKey) || answerKey.length !== source.questions) throw new Error('正式答案資料不完整，已停止送出 AI 批改');
-  const key = paperGradePromptKey(source, answerKey);
-  const pageRanges = pages.map((_, page) => {
-    const nos = Array.from({ length: source.questions }, (_, index) => index + 1)
-      .filter((no) => paperQuestionScanIndex(source, no) === page);
-    return `第 ${page + 1} 頁＝第 ${nos[0]}–${nos[nos.length - 1]} 題`;
-  }).join('；');
-  const topicKeys = Object.entries(TOPICS).map(([id, label]) => `${id}=${label}`).join('、');
-  const content = [{
-    type: 'text',
-    text: `你是台灣學測數學閱卷老師。接下來依序附上「${source.title}」的 ${pages.length} 張單頁題本；每張已把原掃描題目、考生在題目上與右側留白寫的黑／藍／綠筆跡合成。請直接讀取題本上的作答，不存在另外的答案卡。
-
-正式答案與配分：${JSON.stringify(key)}
-頁面與題號對照：${pageRanges}
-
-批改規則：
-1. questions 必須恰好回傳第 1 到 ${source.questions} 題，每題一次；page 必須依上面對照。
-2. 只把考生自己寫的黑／藍／綠筆跡視為作答。印刷題目不是作答，右側留白也可能有最後答案。
-3. 特別防止誤判：圈住「印刷的題號」只代表考生想回頭看，絕對不是選了同號選項。若只圈題號並寫「不會」、沒有另外寫最終答案，必須回傳 hasFinalAnswer=false、status=unanswered、selectedOptions=[]；例如圈住印刷題號 4 不等於單選答案 (4)。
-4. hasFinalAnswer 只表示你是否真的找到考生另外寫出的最終答案。finalAnswer 必須逐字填入你辨識到的最終答案；沒有答案填空字串。單選與填答答對得該題滿分，答錯或未答 0 分；等價分數、根式、小數形式可算對。
-5. 單選與多選的 selectedOptions 都必須列出你從考生「最終答案清單」辨識到的 1 起算選項，不可從算式中猜；填答與非選題固定回傳空陣列。多選依五個選項逐一比較：全對 5 分、差 1 個選項 3 分、差 2 個選項 1 分、差 3 個以上 0 分；系統會以 selectedOptions 與正式答案重新計分，不採信模型自行填的 status 或 points。非選題 constructed 必須依正式 rubric 整體核分；若官方規準沒有固定細項權重，不得自行捏造每一步幾分，也不得因解法不同但正確而扣分。
-6. status：正確 correct、錯誤 incorrect、沒有作答 unanswered、筆跡真的無法辨識 uncertain。不要為了湊答案而猜。
-7. marks 的 box 是該張完整單頁 [左,上,右,下] 0–1 座標，必須落在考生實際寫下的最終答案或答案清單上，不可框題目、題號或中間算式。定位優先順序是：「考生另外寫在左側或右側留白的答案數字」優先於「印刷選項那一行」；若沒有另外寫答案，才框考生親手圈、勾或劃記的選項。單選／填答各回傳一個 kind=check 或 cross；未答用 unanswered、看不清楚用 uncertain，option=0。
-8. 複選題必須像真人逐項批改：每個正確選到的手寫選項回傳 kind=check；每個錯選的手寫選項回傳 kind=strike；每個漏選的正確選項回傳 kind=add，box 放在答案清單旁可補寫的位置。這三種 mark 的 option 都填該選項 1–5。若部分得分，可另回傳一個 option=0 的 partial，但不可省略逐項 marks。
-9. label 只可放「✓」「✕」「△」「未答」「看不清楚」或補入的選項號碼；系統會在紅叉或部分得分旁強制寫出完整正解。
-10. read 只記錄實際辨識到的最終答案與必要的「寫了不會」事實，供稽核；note 只記錄整體辨識風險。填答題在輸出前必須回到原頁，把圈起來或寫在答案格旁的分子、分母與正負號逐字重讀一次；手寫 7 的橫筆不可直接當成負號。若第一個字元真的無法區分，回傳 uncertain，不可猜成一個確定但錯誤的數值。
-11. 每題 topic 只回傳下列一個內部分類 key：${topicKeys}。這個欄位只供後台統計，不在第一次批改畫面顯示。
-12. 這是第一次簡批。禁止輸出詳解、提示、破題方向、錯誤類型或「從哪一步開始錯」；也不要把這些內容塞進 read、note 或 label。`,
-  }];
-  pages.forEach((b64, index) => {
-    content.push({ type: 'text', text: `【完整單頁 ${index + 1}／${pages.length}】` });
-    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } });
-  });
-  const payload = await openAiInvoke({ responseType: 'paper_grade', messages: [{ role: 'user', content }] }, 120000);
+function paperGradePayloadResult(run, generation, payload) {
+  payload = payload && typeof payload === 'object' ? payload : {};
+  if (payload.gradeJob && payload.gradeJob.status === 'missing') {
+    const error = new Error('伺服器尚未建立這一代批改；目前卷面與 accepted 交卷快照不一致，所以沒有呼叫模型。');
+    error.gradeJobMissing = true;
+    throw error;
+  }
+  if (payload.gradeJob && payload.gradeJob.status !== 'completed') {
+    run.pendingGradeGeneration = generation;
+    run.gradeJob = { ...payload.gradeJob };
+    run.mt = Date.now(); save();
+    const error = new Error(payload.message || '這一代批改已送出或由另一台裝置接手；查詢不會再次呼叫模型。');
+    error.gradeJobPending = true;
+    error.gradeGeneration = generation;
+    throw error;
+  }
   if (!payload.json || typeof payload.json !== 'object') throw new Error('OpenAI 沒有回傳完整批改資料');
+  if (!payload.serverGradeReceipt || typeof payload.serverGradeReceipt !== 'object') throw new Error('批改完成但伺服器逐題收據未能安全回讀，結果未採用');
+  if (!payload.gradeJob || payload.gradeJob.status !== 'completed'
+    || Number(payload.gradeJob.generation) !== generation
+    || Number(payload.serverGradeReceipt.gradeGeneration) !== generation) {
+    throw new Error('批改結果與伺服器世代收據不一致，結果未採用');
+  }
   return {
     json: payload.json,
     model: String(payload.model || ''),
     requestId: String(payload.requestId || ''),
     usage: payload.usage && typeof payload.usage === 'object' ? payload.usage : null,
     budget: payload.budget && typeof payload.budget === 'object' ? payload.budget : null,
+    serverGradeReceipt: payload.serverGradeReceipt,
+    gradeGeneration: generation,
+    gradeJob: { ...payload.gradeJob },
+    gradeJobContentDigests: payload.gradeJobContentDigests && typeof payload.gradeJobContentDigests === 'object'
+      ? { ...payload.gradeJobContentDigests } : null,
   };
+}
+async function paperAiGradeStatusCall(source, run) {
+  if (paperGradeGenerationConflictRequests(run).length) {
+    const recovered = await paperAiGradeConflictReconcile(source, run, false);
+    if (recovered) return recovered;
+  }
+  const submitAttempt = run && run.submitAttempt;
+  let generation = Number(run && run.pendingGradeGeneration);
+  if (!(Number.isInteger(generation) && generation >= 0)) {
+    if (run && run.aiGrade) throw new Error('本機尚未取得新一代 generation，且卷面不符合 accepted 快照；模型沒有送出。');
+    generation = 0;
+  }
+  const payload = await openAiInvoke({ responseType:'paper_grade_status', context:{
+    paperRunId:run.id, sourceId:source.id, submitAttemptId:submitAttempt && submitAttempt.attemptId,
+    gradeGeneration:generation,
+  } }, 30000);
+  return paperGradePayloadResult(run, generation, payload);
+}
+async function paperAiGradeConflictReconcile(source, run, allowIssuance) {
+  const requests = paperGradeGenerationConflictRequests(run);
+  if (!requests.length) return null;
+  const submitAttempt = run && run.submitAttempt;
+  const payload = await openAiInvoke({ responseType:'paper_grade_latest_status', context:{
+    paperRunId:run.id, sourceId:source.id,
+    submitAttemptId:submitAttempt && submitAttempt.attemptId,
+  } }, 30000);
+  const job = payload && payload.gradeJob && typeof payload.gradeJob === 'object'
+    ? payload.gradeJob : null;
+  const latestGeneration = Number(job && job.generation);
+  if (!job || !Number.isInteger(latestGeneration) || latestGeneration < 0
+    || latestGeneration > 2147483647 || job.status === 'missing') {
+    const error = new Error('伺服器找不到可對帳的批改世代；沒有核發新世代，也沒有呼叫模型。');
+    error.gradeJobPending = true;
+    throw error;
+  }
+  const eligible = requests.filter((row) => row.previousGeneration === latestGeneration);
+  const maxRequestedBase = Math.max(...requests.map((row) => row.previousGeneration));
+  if ((job.status === 'completed' || job.status === 'lost') && eligible.length) {
+    const chosen = eligible[0];
+    run.gradeGenerationRequestId = chosen.requestId;
+    run.gradePreviousGeneration = latestGeneration;
+    delete run.gradeGenerationRequestConflict;
+    delete run.pendingGradeGeneration;
+    run.gradeJob = { ...job };
+    run.mt = Date.now(); save();
+    if (allowIssuance) return null;
+    const error = new Error('跨裝置世代已安全對帳；尚未送出新模型。請在 accepted 卷面可重建後繼續同一筆重批申請。');
+    error.gradeJobPending = true;
+    throw error;
+  }
+  if (latestGeneration >= maxRequestedBase || !eligible.length) {
+    delete run.gradeGenerationRequestConflict;
+    delete run.gradeGenerationRequestId;
+    delete run.gradePreviousGeneration;
+    run.pendingGradeGeneration = latestGeneration;
+    run.gradeJob = { ...job };
+    run.mt = Date.now(); save();
+    return paperGradePayloadResult(run, latestGeneration, payload);
+  }
+  const error = new Error('跨裝置批改世代尚未能由伺服器唯一對帳；沒有核發新世代，也沒有呼叫模型。');
+  error.gradeJobPending = true;
+  throw error;
+}
+async function paperAiGradeCall(source, run, answerKey = source.key) {
+  if (Number(source && source.questions) !== 20) throw new Error('這份題本不是 20 題完整卷，伺服器不支援整卷 AI 簡批；原筆跡仍完整保留。');
+  if (!Array.isArray(answerKey) || answerKey.length !== source.questions) throw new Error('正式答案資料不完整，已停止送出 AI 批改');
+  const submitAttempt = run && run.submitAttempt;
+  if (!run || !/^paper-run-\d{10,20}$/.test(String(run.id || ''))
+    || String(run.sourceId || '') !== source.id || String(run.status || '') !== 'grading'
+    || !Number(run.submittedAt) || !Number(run.createdAt)
+    || !/^\d{4}[a-z]$/.test(String(run.runCreatedAppVersion || ''))
+    || Number(run.paperLayoutVersion) !== PAPER_LAYOUT_VERSION
+    || !paperSubmitAcceptedReceiptValid(submitAttempt, run.id, source.id)
+    || Number(submitAttempt.submittedAt) !== Number(run.submittedAt)
+    || String(submitAttempt.runCreatedAppVersion || '') !== String(run.runCreatedAppVersion || '')) {
+    throw new Error('本回缺少可由伺服器驗證的建立版本或交卷狀態，已停止批改');
+  }
+  const context = {
+    paperRunId: run.id,
+    sourceId: source.id,
+    runCreatedAt: run.createdAt,
+    runCreatedAppVersion: run.runCreatedAppVersion,
+    submittedAt: run.submittedAt,
+    paperLayoutVersion: run.paperLayoutVersion,
+    submitAttemptId: submitAttempt.attemptId,
+    submitAttemptInkSnapshotSha256: submitAttempt.inkSnapshotSha256,
+  };
+  if (paperGradeGenerationConflictRequests(run).length) {
+    const recovered = await paperAiGradeConflictReconcile(source, run, true);
+    if (recovered) return recovered;
+  }
+  let generation = Number(run.pendingGradeGeneration);
+  const issuanceRequestId = String(run.gradeGenerationRequestId || '');
+  if (run.aiGrade && !issuanceRequestId && !(Number.isInteger(generation) && generation > 0)) {
+    throw new Error('已有批改結果；必須按「重新 AI 簡批」取得新的伺服器世代，不能把第一次請求當成重批。');
+  }
+  if (issuanceRequestId && !(Number.isInteger(generation) && generation > 0)) {
+    const previousGeneration = paperGradeKnownGeneration(run);
+    const issued = await openAiInvoke({
+      responseType: 'paper_grade_generation',
+      context: { ...context, gradeGenerationRequestId: issuanceRequestId,
+        gradePreviousGeneration: previousGeneration },
+    }, 120000);
+    const job = issued && issued.gradeJob;
+    generation = Number(job && job.generation);
+    if (!job || !Number.isInteger(generation) || generation <= 0
+      || !/^[a-f0-9]{64}$/.test(String(job.modelInputBindingSha256 || ''))) {
+      throw new Error('重新簡批沒有取得有效的伺服器世代；原批改仍保留，模型尚未重送。');
+    }
+    run.pendingGradeGeneration = generation;
+    run.gradeJob = { ...job };
+    if (paperGradeGenerationRequestValid(job.issuanceRequestId)) {
+      run.gradeGenerationRequestId = job.issuanceRequestId;
+    }
+    run.gradePreviousGeneration = previousGeneration;
+    run.mt = Date.now(); save();
+  }
+  if (!(Number.isInteger(generation) && generation >= 0)) generation = 0;
+  const payload = await openAiInvoke({
+    responseType: 'paper_grade',
+    context: { ...context, gradeGeneration: generation },
+  }, 120000);
+  return paperGradePayloadResult(run, generation, payload);
 }
 function paperFallbackMark(source, no, page, label, kind, option, slot) {
   return {
@@ -8334,7 +9194,9 @@ function paperNormalizeAiGrade(source, raw, model, answerKey = source.key) {
     }
     return {
       no, page, status, points,
-      topic: TOPICS[item.topic] ? item.topic : (TOPICS[q.topic] ? q.topic : ''),
+      topic: TOPICS[q.topic] ? q.topic : '',
+      topicSource: TOPICS[q.topic] ? 'official-key' : 'unknown',
+      aiTopic: TOPICS[item.topic] ? item.topic : '',
       answer: paperFinalAnswerText(q), answerType: q.type, maxPoints: Number(q.points) || 0,
       read: String(item.read || '').slice(0, 120),
       hasFinalAnswer: status !== 'unanswered' && item.hasFinalAnswer !== false,
@@ -8352,6 +9214,67 @@ function paperNormalizeAiGrade(source, raw, model, answerKey = source.key) {
     uncertainNos: questions.filter((item) => item.status === 'uncertain').map((item) => item.no),
     questions,
   };
+}
+function paperApplyServerGradeReceipt(grade, receipt, run, source) {
+  const summary = receipt && receipt.gradeSummary && typeof receipt.gradeSummary === 'object'
+    ? receipt.gradeSummary : null;
+  const rows = summary && Array.isArray(summary.questions) ? summary.questions : [];
+  const digest = String(receipt && receipt.canonicalDigest || '').toLowerCase();
+  const path = String(receipt && receipt.path || '').replace(/\\/g, '/');
+  const runId = String(run && run.id || '');
+  const submitAttempt = run && run.submitAttempt;
+  const modelInputImages = receipt && Array.isArray(receipt.modelInputImages)
+    ? receipt.modelInputImages : [];
+  const expectedPath = new RegExp('^grade-receipts/matha_[a-f0-9]{32}/'
+    + runId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/grade-' + digest + '\\.json$');
+  if (!grade || !run || !source || receipt.authority !== 'supabase-service-role-storage-readback'
+    || receipt.bucket !== PAPER_AUDIT_PRIVATE_BUCKET || !/^[a-f0-9]{64}$/.test(digest)
+    || !/^[a-f0-9]{64}$/.test(String(receipt.sha256 || '')) || !expectedPath.test(path)
+    || !/^[a-f0-9]{64}$/.test(String(receipt.modelInputBindingSha256 || ''))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.sourceContentDigest || ''))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.submitAttemptDigest || ''))
+    || String(receipt.submitAttemptId || '') !== String(submitAttempt && submitAttempt.attemptId || '')
+    || !paperSubmitAcceptedReceiptValid(submitAttempt, runId, source.id)
+    || modelInputImages.length !== source.scans.length * 3
+    || modelInputImages.some((image, index) => Number(image && image.page) !== Math.floor(index / 3) + 1
+      || String(image && image.kind || '') !== ['source-scan', 'source-aligned-ink', 'full-workspace-ink'][index % 3]
+      || !['image/png', 'image/jpeg'].includes(String(image && image.mediaType || ''))
+      || !/^[a-f0-9]{64}$/.test(String(image && image.sha256 || '')))
+    || String(receipt.runId || '') !== runId || String(receipt.sourceId || '') !== source.id
+    || Number(receipt.submittedAt) !== Number(run.submittedAt)
+    || String(receipt.runCreatedAppVersion || '') !== String(run.runCreatedAppVersion || '')
+    || Number(receipt.gradedAt) < Number(run.submittedAt)
+    || Number(receipt.gradeGeneration) !== Number(grade.gradeGeneration || 0)
+    || String(receipt.requestId || '') !== String(grade.requestId || '')
+    || rows.length !== source.questions || Number(summary.questionCount) !== source.questions
+    || Number(summary.maxPoints) !== 100) {
+    throw new Error('伺服器批改收據與本回題本不一致，結果未採用');
+  }
+  const byNo = new Map();
+  for (const row of rows) {
+    const no = Number(row && row.no), status = String(row && row.status || '');
+    const points = Number(row && row.points), maxPoints = Number(row && row.maxPoints);
+    if (!Number.isInteger(no) || no < 1 || no > source.questions || byNo.has(no)
+      || !['correct', 'incorrect', 'unanswered', 'uncertain'].includes(status)
+      || !Number.isFinite(points) || !Number.isFinite(maxPoints) || points < 0 || points > maxPoints
+      || (status === 'correct' && points !== maxPoints)
+      || (['unanswered', 'uncertain'].includes(status) && points !== 0)) {
+      throw new Error('伺服器批改收據的逐題分數不完整，結果未採用');
+    }
+    byNo.set(no, { status, points, maxPoints });
+  }
+  for (const item of grade.questions) {
+    const authoritative = byNo.get(Number(item.no));
+    if (!authoritative || Number(item.maxPoints) !== authoritative.maxPoints) throw new Error('伺服器批改收據配分與正式答案不一致');
+    item.status = authoritative.status;
+    item.points = authoritative.points;
+    // 保留 topic/topicSource/aiTopic、辨識文字與紅筆座標；收據只接管核分。
+  }
+  paperGradeRecalculate(grade);
+  if (grade.score !== Number(summary.awardedPoints)) throw new Error('伺服器批改收據總分無法由逐題重算');
+  grade.gradedAt = Number(receipt.gradedAt);
+  grade.serverGradeReceipt = { ...receipt };
+  return grade;
 }
 function paperRecoveryTimeText(value) {
   const at = Number(value) || 0;
@@ -8386,10 +9309,11 @@ async function paperRecoveryOpen() {
     ['匯出救援檔', () => paperRecoveryExport()],
     ['立即同步', async () => {
       paperInkCommitCurrent();
-      await paperInkJournalDrain(session);
-      await paperInkPersist(true);
+      const journalOk = await paperInkJournalDrain(session);
+      const snapshotOk = journalOk && await paperInkPersistAll(true, session);
       await flushInkQueue();
       paperInkStatusRender(session);
+      if (!journalOk || !snapshotOk) alert('仍有頁面尚未完成本機快照；系統會繼續重試，請暫時不要關閉頁面。');
     }, 'primary'],
   ]);
 }
@@ -8397,14 +9321,33 @@ async function paperRecoveryExport() {
   if (!paperSourceSession) return false;
   const session = paperSourceSession;
   paperInkCommitCurrent();
-  const journalOk = await paperInkJournalDrain(session);
-  const snapshotOk = await paperInkPersist(true);
+  const failures = [];
+  let journalOk = false, snapshotOk = false, recordsOk = false;
+  try {
+    journalOk = await paperAwaitWithTimeout(paperInkJournalDrain(session), 3000, '救援增量日誌');
+  } catch (error) { failures.push((error && error.message) || '救援增量日誌逾時'); }
+  try {
+    snapshotOk = await paperAwaitWithTimeout(paperInkPersistAll(true, session), 5000, '救援全頁快照');
+  } catch (error) { failures.push((error && error.message) || '救援全頁快照逾時'); }
   let records = [];
-  try { records = await paperRecoveryRows(session); } catch (_) {}
-  const recovery = paperRecoveryWrite(true, session);
+  try {
+    records = await paperAwaitWithTimeout(paperRecoveryRows(session), 5000, '救援本機紀錄讀取');
+    recordsOk = true;
+  } catch (error) { failures.push((error && error.message) || '救援本機紀錄讀取逾時'); }
+  let recovery = null;
+  try { recovery = paperRecoveryWrite(true, session); } catch (error) {
+    failures.push((error && error.message) || '救援檢查點寫入失敗');
+  }
+  /* 即使 IndexedDB Promise 永久 pending，仍把目前記憶體中的每頁筆跡帶走。
+     partial 明示缺少哪一層，不把殘缺救援檔假裝成完整快照。 */
+  const memoryInk = paperRecoveryInkPayload(session);
+  const partial = !journalOk || !snapshotOk || !recordsOk || failures.length > 0;
   const payload = {
     kind: 'matha-paper-rescue-v1',
     version: 1,
+    partial,
+    completeness:{ journalDrained:!!journalOk, snapshotPersisted:!!snapshotOk,
+      localRecordsRead:!!recordsOk, memoryInkIncluded:!!memoryInk, failures },
     exportedAt: new Date().toISOString(),
     appVersion: APP_VER,
     run: {
@@ -8414,6 +9357,7 @@ async function paperRecoveryExport() {
     },
     source: { id: session.source.id, title: session.source.title, pages: session.source.scans.length },
     recovery,
+    memoryInk,
     records,
     runtimeAudit:session.run.runtimeAudit || null,
   };
@@ -8423,7 +9367,7 @@ async function paperRecoveryExport() {
   link.download = `數A原卷救援-${session.run.d || today()}-${session.run.id}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-  if (!journalOk || !snapshotOk) alert('救援檔已匯出，但本機資料庫仍有寫入失敗；請保留這個檔案並不要關閉頁面。');
+  if (partial) alert('已輸出部分救援檔：目前記憶體筆跡已包含，但本機資料庫仍有逾時或寫入失敗。請保留此檔並不要關閉頁面。');
   return true;
 }
 function renderPaperSource() {
@@ -8436,7 +9380,7 @@ function renderPaperSource() {
       <span id="paper-clock" class="timer paper-timer">${fmtClock(left)}</span>
       <div class="paper-workgroup right"><button id="paper-ink-status" class="paper-save-status" data-state="local" onclick="paperRecoveryOpen()" aria-label="查看當機保護與救援">${escH(paperInkStatusText(paperSourceSession))}</button><button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="exitFlow()" aria-label="離開">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-ink-tools"><button id="paper-tool-pen" onclick="paperInkModeSet('pen')">${uiIcon('pencil')}筆</button><button id="paper-tool-erase" onclick="paperInkModeSet('erase')">${uiIcon('erase')}橡皮擦</button><button onclick="paperInkUndo()">${uiIcon('undo')}復原</button><button onclick="paperInkClear()">${uiIcon('x')}清空本頁</button><div class="paper-color-group" role="group" aria-label="畫筆顏色"><button id="paper-color-black" class="paper-color-button" onclick="paperInkColorSet('black')" aria-label="黑色筆" aria-pressed="${paperSourceSession.inkColor === 'black'}"><i style="--ink:${PAPER_INK_COLORS.black}"></i><span>黑</span></button><button id="paper-color-blue" class="paper-color-button" onclick="paperInkColorSet('blue')" aria-label="藍色筆" aria-pressed="${paperSourceSession.inkColor === 'blue'}"><i style="--ink:${PAPER_INK_COLORS.blue}"></i><span>藍</span></button><button id="paper-color-green" class="paper-color-button" onclick="paperInkColorSet('green')" aria-label="綠色筆" aria-pressed="${paperSourceSession.inkColor === 'green'}"><i style="--ink:${PAPER_INK_COLORS.green}"></i><span>綠</span></button></div><label class="paper-pen-width" for="paper-pen-width"><span>筆粗 <b id="paper-pen-width-label">${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}%</b></span><input id="paper-pen-width" type="range" min="35" max="200" step="5" value="${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}" oninput="paperInkWidthSet(this.value)" aria-label="調整畫筆粗細"></label></div><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="整個畫面皆可直接書寫並左右滑動翻頁"></canvas><canvas id="paper-ai-canvas" aria-hidden="true"></canvas></div></div></div></section></div>
-    <div class="paper-finish-bar"><span>${source.questions} 題・${source.minutes} 分鐘</span><button class="btn primary" onclick="paperSourceGrade('主動交卷')">交卷並第一次批改</button></div>
+    <div class="paper-finish-bar"><span>${source.questions} 題・${source.minutes} 分鐘</span><div class="actr"><button id="paper-export-answer-pdf" class="btn" onclick="paperExportAnswerPdf()">${uiIcon('save')}輸出作答 PDF</button><button class="btn primary" onclick="paperSourceGrade('主動交卷')">交卷並第一次批改</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true);
   paperInkAttach();
@@ -8461,11 +9405,16 @@ async function paperSourcePause() {
   run.paperPage = Number(session.page) || 0;
   paperRecoveryClose(run, 'paused');
   save();
-  const [journalOk, persisted] = await Promise.all([paperInkJournalDrain(session), paperInkPersist(true)]);
-  return !!journalOk && (!!persisted || !paperInkPage() || !paperInkPage().dirty);
+  const journalOk = await paperInkJournalDrain(session);
+  const persisted = journalOk && await paperInkPersistAll(true, session);
+  return !!journalOk && !!persisted;
 }
 function paperSourceDiscard(runId) {
   const run = (S.paperRuns || []).find((item) => item && item.id === runId);
+  const submitStatus = String(run && run.submitAttempt && run.submitAttempt.status || '');
+  if (run && (run.status === 'grading' || ['submitting', 'reconciling', 'accepted'].includes(submitStatus))) {
+    return false;
+  }
   if (run) {
     const now = Date.now();
     run.status = 'discarded';
@@ -8477,6 +9426,7 @@ function paperSourceDiscard(runId) {
   }
   S.extMocks = (S.extMocks || []).filter((row) => row && row.paperRunId !== runId);
   save();
+  return true;
 }
 function paperGradeSnapshot(grade, reason) {
   return {
@@ -8529,17 +9479,20 @@ function paperSourceUpdateExtMock(source, run) {
   else S.extMocks.push(record);
 }
 function paperRunLearningTags(run) {
-  const topics = new Set(Array.isArray(run && run.topics) ? run.topics : []);
-  const errors = new Set(Array.isArray(run && run.errors) ? run.errors : []);
-  for (const state of Object.values(run && run.review || {})) {
+  const topics = new Set(), errors = new Set();
+  const source = run && paperSourceById(run.sourceId);
+  for (const [noText, state] of Object.entries(run && run.review || {})) {
     if (!state || typeof state !== 'object') continue;
-    const topic = paperReviewEffectiveTopic(state, state.topic || '');
+    const item = paperGradeQuestion(run, Number(noText));
+    const topic = paperReviewEffectiveTopic(
+      state, paperTrustedQuestionTopic(run, source, Number(noText), item),
+    );
     if (topic) topics.add(topic);
-    if (state.errorKind) errors.add(state.errorKind);
-    if (state.aiErrorKind) errors.add(state.aiErrorKind);
-    for (const log of state.logs || []) {
-      if (log && log.topic) topics.add(log.topic);
-      if (log && log.errorKind) errors.add(log.errorKind);
+    for (const row of processEvidenceRows(state)) if (row.status === 'blocked' && row.note) {
+      const error = learningErrorClass(row.note); if (error) errors.add(error);
+    }
+    for (const log of state.logs || []) if (log && log.confidence === 'verified' && log.errorKind) {
+      errors.add(log.errorKind);
     }
   }
   return { topics: [...topics].filter((key) => TOPICS[key]), errors: [...errors].filter(Boolean) };
@@ -8552,7 +9505,21 @@ function paperRunRefreshLearningTags(run) {
 }
 function paperSourceRecordGrade(source, run, grade) {
   if (run.aiGrade) paperGradeAuditPush(run, 'AI 重新批改前');
+  // 每次重新批改都會產生新的 receipt/model-input binding；舊的本人卷面
+  // 確認絕不能沿用到新影像。
+  delete run.gradeInputVisualAttestation;
+  if (grade && typeof grade === 'object') delete grade.gradeInputVisualAttestation;
   run.aiGrade = grade;
+  run.serverGradeReceipt = grade && grade.serverGradeReceipt && typeof grade.serverGradeReceipt === 'object'
+    ? { ...grade.serverGradeReceipt } : null;
+  run.gradeGeneration = Number.isInteger(Number(grade && grade.gradeGeneration))
+    ? Number(grade.gradeGeneration) : 0;
+  run.gradeJob = grade && grade.gradeJob && typeof grade.gradeJob === 'object'
+    ? { ...grade.gradeJob } : null;
+  delete run.pendingGradeGeneration;
+  delete run.gradeGenerationRequestId;
+  delete run.gradePreviousGeneration;
+  delete run.gradeGenerationRequestConflict;
   run.score = grade.score;
   run.wrongNos = grade.wrongNos;
   run.note = grade.uncertainNos.length ? `AI 看不清楚：${grade.uncertainNos.join('、')}` : '';
@@ -8564,64 +9531,456 @@ function paperSourceRecordGrade(source, run, grade) {
   paperSourceUpdateExtMock(source, run);
   save();
 }
-function paperSourceGradeLoading(source, reason, progress, error) {
+function paperSourceGradeLoading(source, reason, progress, error, pending = false) {
   app().innerHTML = `<div class="paper-grade-loading card${error ? ' warn' : ''}"><span class="eyebrow">第一次批改｜GPT‑5.5 整卷視覺核分</span><h1>${error ? '這次批改沒有完成' : escH(reason)}</h1><p id="paper-grade-progress">${escH(progress)}</p>
-    ${error ? `<p class="warnc">${escH(error)}</p><div class="actr"><button class="btn" onclick="exitFlow()">先離開</button><button class="btn primary" onclick="paperSourceGrade('重新批改')">重新批改整份原卷</button></div>` : '<div class="paper-grade-pulse" aria-hidden="true"><span></span></div><p class="dim">正在辨識卷面上的黑、藍、綠筆跡並逐題核分。這一輪會在錯答旁標出正解，但不分析步驟，也不提供詳解。</p>'}
+    ${error ? `<p class="warnc">${escH(error)}</p><div class="actr"><button class="btn" onclick="exitFlow()">先離開</button><button class="btn primary" onclick="paperSourceGrade('查詢同一代批改')">${pending ? '查詢同一代' : '安全重試／查詢同一代'}</button><button class="btn subtle" onclick="paperSourceExplicitNewGrade()">明確建立新一代簡批</button></div><p class="dim">「查詢同一代」不會再次呼叫模型。只有你明確建立新一代，伺服器才會核發新的 generation，且可能產生另一筆模型費用。</p>` : '<div class="paper-grade-pulse" aria-hidden="true"><span></span></div><p class="dim">正在辨識卷面上的黑、藍、綠筆跡並逐題核分。這一輪會在錯答旁標出正解，但不分析步驟，也不提供詳解。</p>'}
     <small>${escH(source.title)}｜請保持此頁開啟；即使失敗，原筆跡也不會消失。</small></div>`;
   sessionChrome(true);
+}
+function paperSourceSubmitLoading(source, phase = '正在保存全部頁面…') {
+  app().innerHTML = `<div class="paper-grade-loading card"><span class="eyebrow">安全交卷｜答案仍鎖定</span><h1>正在保護這一整回</h1><p id="paper-submit-progress">${escH(phase)}</p><div class="paper-grade-pulse" aria-hidden="true"><span></span></div><p class="dim">目前已鎖住書寫、翻頁與離開。系統會依序完成本機全頁快照、雲端補傳與逐頁回讀；任一步逾時就回到原卷，不會開始批改。</p><small>${escH(source.title)}｜請保持此頁開啟</small></div>`;
+  sessionChrome(true);
+}
+function paperSourceRevisionSnapshot(session) {
+  return (session && session.source && session.source.scans || []).map((_, page) => {
+    const data = session.inkPages && session.inkPages[page];
+    return { page, revision:Number(data && data.revision) || 0,
+      persistedRevision:Number(data && data.persistedRevision) || 0, dirty:!!(data && data.dirty) };
+  });
+}
+function paperSourceRevisionSnapshotEqual(left, right) {
+  return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+    && left.every((row, index) => row.page === right[index].page
+      && row.revision === right[index].revision
+      && row.persistedRevision === right[index].persistedRevision
+      && row.dirty === right[index].dirty);
+}
+const PAPER_SUBMIT_ATTEMPT_SCHEMA = 1;
+function paperSubmitPageManifest(raw) {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 20) return [];
+  const rows = raw.map((item) => {
+    const updatedMs = Date.parse(String(item && (item.updatedAt || item.updated_at) || ''));
+    return {
+      page:Number(item && item.page), qid:String(item && item.qid || ''),
+      clientId:String(item && (item.clientId || item.client_id) || ''),
+      revision:Number(item && item.revision),
+      cloudSha256:String(item && (item.cloudSha256 || item.cloud_sha256) || '').toLowerCase(),
+      updatedAt:Number.isFinite(updatedMs) ? new Date(updatedMs).toISOString() : '',
+    };
+  }).sort((a, b) => a.page - b.page);
+  if (rows.some((row, index) => row.page !== index || !/^paper:paper-run-[0-9]{10,20}:v[0-9]+:[0-9]+$/.test(row.qid)
+    || !row.clientId || row.clientId.length > 300 || !Number.isInteger(row.revision) || row.revision < 0
+    || !/^[a-f0-9]{64}$/.test(row.cloudSha256) || !row.updatedAt)) return [];
+  return rows;
+}
+function paperSubmitAttemptNew(run, source, remainingMs, submittedAt, inkSnapshotSha256, pageManifest) {
+  const entropy = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+  return {
+    schema:PAPER_SUBMIT_ATTEMPT_SCHEMA,
+    attemptId:`paper-submit-${entropy}`,
+    runId:String(run && run.id || ''), sourceId:String(source && source.id || ''),
+    remainingMs:Math.max(0, Math.round(Number(remainingMs) || 0)),
+    inkSnapshotSha256:String(inkSnapshotSha256 || '').toLowerCase(),
+    pageManifest:paperSubmitPageManifest(pageManifest),
+    submittedAt:Number(submittedAt) || Date.now(),
+    runCreatedAppVersion:String(run && run.runCreatedAppVersion || APP_VER),
+    runCreatedAt:Number(run && run.createdAt),
+    paperLayoutVersion:Number(run && run.paperLayoutVersion),
+    sourcePageCount:Number(source && source.scans && source.scans.length),
+    freshnessConfirmedAt:run && run.freshnessConfirmedAt || null,
+    status:'submitting', createdAt:Date.now(), updatedAt:Date.now(),
+  };
+}
+function paperSubmitAttemptRow(value, depth = 0) {
+  const row = Array.isArray(value) ? value[0] : value;
+  if (!row || typeof row !== 'object') return null;
+  const acceptedAt = paperRunTimestamp(row.accepted_at || row.acceptedAt) || null;
+  const canceledAt = paperRunTimestamp(row.canceled_at || row.canceledAt) || null;
+  const submittedAt = paperRunTimestamp(row.submitted_at || row.submittedAt);
+  const result = {
+    schema:PAPER_SUBMIT_ATTEMPT_SCHEMA,
+    attemptId:String(row.attempt_id || row.attemptId || ''),
+    runId:String(row.run_id || row.runId || ''),
+    sourceId:String(row.source_id || row.sourceId || ''),
+    status:String(row.status || ''),
+    remainingMs:Number(row.remaining_ms ?? row.remainingMs),
+    inkSnapshotSha256:String(row.ink_snapshot_sha256 || row.inkSnapshotSha256 || '').toLowerCase(),
+    pageManifest:paperSubmitPageManifest(row.page_manifest || row.pageManifest),
+    submittedAt,
+    acceptedAt,
+    canceledAt,
+    runCreatedAppVersion:String(row.run_created_app_version || row.runCreatedAppVersion || ''),
+    runCreatedAt:Number(row.run_created_at ?? row.runCreatedAt),
+    paperLayoutVersion:Number(row.paper_layout_version ?? row.paperLayoutVersion),
+    sourcePageCount:Number(row.source_page_count ?? row.sourcePageCount),
+    freshnessConfirmedAt:row.freshness_confirmed_at == null && row.freshnessConfirmedAt == null
+      ? null : Number(row.freshness_confirmed_at ?? row.freshnessConfirmedAt),
+    decisionReason:String(row.decision_reason || row.decisionReason || ''),
+    winnerAttemptId:String(row.winner_attempt_id || row.winnerAttemptId || ''),
+    receiptSha256:String(row.receipt_sha256 || row.receiptSha256 || '').toLowerCase(),
+    updatedAt:paperRunTimestamp(row.updated_at || row.updatedAt) || acceptedAt || canceledAt || submittedAt || Date.now(),
+  };
+  result.winner = depth < 1 && row.winner && typeof row.winner === 'object'
+    ? paperSubmitAttemptRow(row.winner, depth + 1) : null;
+  return result;
+}
+function paperSubmitAttemptMatches(row, attempt) {
+  return !!row && !!attempt
+    && row.attemptId === attempt.attemptId && row.runId === attempt.runId && row.sourceId === attempt.sourceId
+    && row.remainingMs === attempt.remainingMs && row.inkSnapshotSha256 === attempt.inkSnapshotSha256
+    && row.submittedAt === attempt.submittedAt
+    && row.runCreatedAppVersion === attempt.runCreatedAppVersion
+    && (row.status !== 'accepted' || (row.runCreatedAt === attempt.runCreatedAt
+      && row.paperLayoutVersion === attempt.paperLayoutVersion
+      && row.sourcePageCount === attempt.sourcePageCount
+      && row.freshnessConfirmedAt === (attempt.freshnessConfirmedAt || null)))
+    && /^[a-f0-9]{64}$/.test(row.inkSnapshotSha256)
+    && (row.status !== 'accepted'
+      || JSON.stringify(row.pageManifest) === JSON.stringify(paperSubmitPageManifest(attempt.pageManifest)));
+}
+function paperSubmitAcceptedReceiptValid(row, runId, sourceId) {
+  return !!row && row.status === 'accepted'
+    && row.decisionReason === 'accepted-first-for-run'
+    && row.runId === String(runId || '') && row.sourceId === String(sourceId || '')
+    && /^paper-submit-[A-Za-z0-9._:-]{16,127}$/.test(row.attemptId)
+    && Number.isFinite(row.remainingMs) && row.remainingMs >= 0 && row.remainingMs <= 43200000
+    && /^[a-f0-9]{64}$/.test(row.inkSnapshotSha256)
+    && Number.isSafeInteger(row.submittedAt) && row.submittedAt > 0
+    && /^[0-9]{4}[a-z]$/.test(row.runCreatedAppVersion)
+    && Number.isSafeInteger(row.runCreatedAt) && row.runCreatedAt > 0
+    && Number.isInteger(row.paperLayoutVersion) && row.paperLayoutVersion > 0
+    && Number.isInteger(row.sourcePageCount) && row.sourcePageCount > 0
+    && paperSubmitPageManifest(row.pageManifest).length === row.sourcePageCount
+    && !!row.acceptedAt && !row.canceledAt && !row.winnerAttemptId;
+}
+function paperSubmitAttemptPersist(run, row) {
+  if (!run || !row) return null;
+  const history = Array.isArray(run.submitAttemptHistory) ? run.submitAttemptHistory.slice() : [];
+  const key = `${row.attemptId}|${row.status}|${row.updatedAt || row.acceptedAt || row.canceledAt || ''}`;
+  if (!history.some((item) => `${item.attemptId}|${item.status}|${item.updatedAt || item.acceptedAt || item.canceledAt || ''}` === key)) {
+    history.push({ ...row });
+  }
+  run.submitAttemptHistory = history.sort((a, b) => Number(a.updatedAt || 0) - Number(b.updatedAt || 0)).slice(-12);
+  run.submitAttempt = { ...row };
+  run.mt = Date.now(); save();
+  return run.submitAttempt;
+}
+async function paperSubmitAttemptRpc(name, attempt) {
+  if (!supa || !syncState.user || !attempt) throw new Error('私人交卷確認需要登入');
+  const params = name === 'matha_paper_submit_lookup_run'
+    ? { p_run_id:attempt.runId }
+    : { p_attempt_id:attempt.attemptId, p_run_id:attempt.runId };
+  if (name === 'matha_paper_submit_accept' || name === 'matha_paper_submit_cancel') Object.assign(params, {
+    p_source_id:attempt.sourceId,
+    p_remaining_ms:attempt.remainingMs,
+    p_submitted_at:attempt.submittedAt,
+    p_run_created_app_version:attempt.runCreatedAppVersion,
+  });
+  if (name === 'matha_paper_submit_cancel') params.p_ink_snapshot_sha256 = attempt.inkSnapshotSha256;
+  if (name === 'matha_paper_submit_accept') Object.assign(params, {
+    p_run_created_at:attempt.runCreatedAt,
+    p_paper_layout_version:attempt.paperLayoutVersion,
+    p_freshness_confirmed_at:attempt.freshnessConfirmedAt == null ? null : attempt.freshnessConfirmedAt,
+    p_page_manifest:paperSubmitPageManifest(attempt.pageManifest),
+  });
+  const response = await paperAwaitWithTimeout(supa.rpc(name, params), 18000, '私人交卷狀態確認');
+  if (response && response.error) throw response.error;
+  return paperSubmitAttemptRow(response && response.data);
+}
+async function paperSubmitAttemptSettle(attempt) {
+  const classify = (row) => {
+    if (!row) return null;
+    if (!paperSubmitAttemptMatches(row, attempt)) return { outcome:'conflict', row };
+    if (row.status === 'accepted') {
+      return paperSubmitAcceptedReceiptValid(row, attempt.runId, attempt.sourceId)
+        ? { outcome:'accepted', row } : { outcome:'conflict', row };
+    }
+    if (row.status === 'canceled') {
+      if (row.decisionReason === 'client-canceled-before-accept'
+          && !row.winnerAttemptId && !row.winner) return { outcome:'canceled', row };
+      const winner = row.winner;
+      if (row.decisionReason === 'superseded-by-accepted-attempt'
+          && row.winnerAttemptId && winner
+          && row.winnerAttemptId === winner.attemptId
+          && winner.attemptId !== row.attemptId
+          && paperSubmitAcceptedReceiptValid(winner, attempt.runId, attempt.sourceId)) {
+        return { outcome:'superseded', row, winner };
+      }
+      return { outcome:'conflict', row };
+    }
+    return { outcome:'unknown', row };
+  };
+  try {
+    const direct = classify(await paperSubmitAttemptRpc('matha_paper_submit_accept', attempt));
+    if (direct && direct.outcome !== 'unknown') return direct;
+  } catch (_) {}
+  try {
+    const found = classify(await paperSubmitAttemptRpc('matha_paper_submit_lookup', attempt));
+    if (found && found.outcome !== 'unknown') return found;
+  } catch (_) {}
+  try {
+    const accepted = await paperSubmitAttemptRpc('matha_paper_submit_lookup_run', attempt);
+    if (paperSubmitAcceptedReceiptValid(accepted, attempt.runId, attempt.sourceId)) {
+      return accepted.attemptId === attempt.attemptId
+        ? { outcome:'accepted', row:accepted }
+        : { outcome:'superseded', row:{ ...attempt, status:'canceled',
+            decisionReason:'superseded-by-accepted-attempt', winnerAttemptId:accepted.attemptId,
+            winner:accepted }, winner:accepted };
+    }
+  } catch (_) {}
+  /* 沒有 definitive accept receipt 時，必須先讓 server 原子記錄 canceled 才能回到原卷。
+     若晚到的 accept 已經 commit，cancel RPC 會回傳同一 accepted receipt，絕不假裝取消。 */
+  try {
+    const canceled = classify(await paperSubmitAttemptRpc('matha_paper_submit_cancel', attempt));
+    if (canceled && canceled.outcome !== 'unknown') return canceled;
+  } catch (_) {}
+  return { outcome:'unknown', row:null };
+}
+function paperSourceSubmitReconcileScreen(session, message) {
+  if (!session || paperSourceSession !== session) return false;
+  session.grading = true; session.submitLocked = true; sessionMode = 'paper-submit-reconcile';
+  app().innerHTML = `<div class="paper-grade-loading card warn"><span class="eyebrow">安全交卷｜正在核對伺服器結果</span><h1>卷面已鎖住，不會重複送出</h1><p class="warnc">${escH(message)}</p><p>目前不能確定交卷請求是在網路途中，還是已由伺服器接受。系統不會先退回可寫狀態；重新確認會沿用同一 attemptId，避免晚到成功後又把新筆跡蓋掉。</p><div class="actr"><button class="btn" onclick="paperRecoveryExport()">匯出救援檔</button><button class="btn primary" onclick="paperSourceSubmitReconcile()">重新確認交卷狀態</button></div></div>`;
+  sessionChrome(true); return false;
+}
+function paperSourceAcceptedSyncRetryScreen(session, message) {
+  if (!session || paperSourceSession !== session) return false;
+  session.grading = false; session.submitLocked = true; sessionMode = 'paper-submit-reconcile';
+  app().innerHTML = `<div class="paper-grade-loading card warn"><span class="eyebrow">交卷已接受｜等待雲端保存</span><h1>卷面保持鎖定，尚未送去批改</h1><p class="warnc">${escH(message)}</p><p>伺服器已接受這一回，不能再恢復作答。系統會先確認 app_state 已回讀到同一筆 accepted 收據與 grading 狀態，才會取得答案或啟動批改。</p><div class="actr"><button class="btn" onclick="paperRecoveryExport()">匯出救援檔</button><button class="btn primary" onclick="paperSourceGrade('繼續今天的批分')">重試雲端保存</button></div></div>`;
+  sessionChrome(true); return false;
+}
+function paperSubmitApplyTransition(run, transition, reason) {
+  if (!run || !transition) return null;
+  if (transition.outcome === 'superseded') {
+    paperSubmitAttemptPersist(run, transition.row);
+    paperSubmitAttemptPersist(run, transition.winner);
+  } else if (transition.outcome === 'accepted') {
+    paperSubmitAttemptPersist(run, transition.row);
+  } else return null;
+  const accepted = transition.outcome === 'superseded' ? transition.winner : transition.row;
+  delete run.submitRollback;
+  run.submittedAt = accepted.submittedAt;
+  run.remainingMs = accepted.remainingMs;
+  run.resumeAt = null;
+  run.status = 'grading';
+  run.gradeReason = reason || run.gradeReason || '繼續今天的批分';
+  run.mt = Date.now(); save();
+  return accepted;
+}
+async function paperSubmitAcceptedRemoteDurable(session, accepted) {
+  if (!session || paperSourceSession !== session) throw new Error('原卷工作階段已改變');
+  const { source, run } = session;
+  if (!paperSubmitAcceptedReceiptValid(accepted, run.id, source.id)) {
+    throw new Error('accepted 收據內容不完整，已停止批改');
+  }
+  if (!supa || !syncState.user) throw new Error('需要登入才能保存已接受的交卷狀態');
+  await paperAwaitWithTimeout(syncPush(), 30000, '已接受交卷的雲端保存');
+  if (syncState.pushErr) throw new Error('已接受交卷尚未成功寫入雲端');
+  const response = await paperAwaitWithTimeout(
+    supa.from('app_state').select('data,revision').eq('user_id', syncState.user.id).maybeSingle(),
+    15000,
+    '已接受交卷的雲端回讀',
+  );
+  if (!response || response.error) throw (response && response.error) || new Error('雲端回讀沒有結果');
+  const remoteState = response.data && response.data.data;
+  const remoteRun = remoteState && Array.isArray(remoteState.paperRuns)
+    ? remoteState.paperRuns.find((item) => item && String(item.id) === String(run.id)) : null;
+  const remoteAccepted = paperSubmitAttemptRow(remoteRun && remoteRun.submitAttempt);
+  const remoteStatus = String(remoteRun && remoteRun.status || '');
+  if (!remoteRun || !remoteAccepted || remoteAccepted.status !== 'accepted'
+      || !paperSubmitAttemptMatches(remoteAccepted, accepted)
+      || !paperSubmitAcceptedReceiptValid(remoteAccepted, run.id, source.id)
+      || !['grading', 'awaiting-key', 'awaiting-correction', 'completed'].includes(remoteStatus)) {
+    throw new Error('雲端尚未回讀到同一筆 accepted 收據與 grading 鎖定');
+  }
+  const merged = mergePaperRunRecord(run, remoteRun);
+  for (const key of Object.keys(run)) delete run[key];
+  Object.assign(run, merged);
+  session.run = run;
+  return remoteRun;
+}
+function paperSourceSubmitRestore(session, previous, message) {
+  if (!session || paperSourceSession !== session) return false;
+  const run = session.run, audit = run && run.runtimeAudit;
+  session.grading = false; session.submitLocked = false;
+  run.status = previous.status;
+  run.remainingMs = previous.remainingAtSubmit;
+  run.resumeAt = previous.wasRunning && previous.remainingAtSubmit > 0 ? Date.now() : null;
+  if (previous.gradeReason == null) delete run.gradeReason;
+  else run.gradeReason = previous.gradeReason;
+  if (previous.submittedAt == null) delete run.submittedAt;
+  else run.submittedAt = previous.submittedAt;
+  if (audit) {
+    if (previous.auditSubmittedAt == null) delete audit.submittedAt;
+    else audit.submittedAt = previous.auditSubmittedAt;
+    if (previous.auditSubmitDurability == null) delete audit.submitDurability;
+    else audit.submitDurability = previous.auditSubmitDurability;
+  }
+  delete run.submitRollback;
+  run.mt = Date.now(); save();
+  if (previous.remainingAtSubmit <= 0) {
+    sessionMode = 'paper-submit-error';
+    app().innerHTML = `<div class="paper-grade-loading card warn"><span class="eyebrow">時間到｜安全交卷尚未完成</span><h1>卷面仍在，請手動處理一次</h1><p class="warnc">${escH(message)}</p><p>系統已停止自動重試，避免網路或儲存故障讓平板反覆卡住。先匯出救援檔，再於連線穩定時手動重試；答案仍保持鎖定。</p><div class="actr"><button class="btn" onclick="paperRecoveryExport()">匯出救援檔</button><button class="btn primary" onclick="paperSourceGrade('時間到手動重試')">重新安全交卷</button></div></div>`;
+    sessionChrome(true);
+    return false;
+  }
+  sessionMode = 'paper-source';
+  renderPaperSource();
+  alert(message);
+  return false;
 }
 async function paperSourceGrade(reason) {
   if (!paperSourceSession || paperSourceSession.grading) return;
   stopTicker();
   const session = paperSourceSession, { source, run } = session;
-  session.grading = true;
   const remaining = paperRunLeft(run);
-  paperInkCommitCurrent();
-  const [journalOk, saved] = await Promise.all([paperInkJournalDrain(session), paperInkPersist(true)]);
-  if (!journalOk || (!saved && paperInkPage() && paperInkPage().dirty)) {
-    session.grading = false;
-    renderPaperSource();
-    alert('最後一筆尚未安全保存，已取消交卷。請保持頁面開啟，等右上顯示「已保存」後再交卷。');
-    return;
+  if (run.status === 'grading' && run.submitAttempt && run.submitAttempt.status === 'accepted') {
+    session.grading = true; session.submitLocked = true;
+    return paperSourceGradeAfterSubmit(session, reason, Number(run.submitAttempt.remainingMs) || remaining);
   }
-  run.remainingMs = remaining; run.resumeAt = null; run.status = 'grading'; run.gradeReason = reason;
+  paperInkCommitCurrent();
+  const previous = {
+    status:run.status, resumeAt:run.resumeAt, wasRunning:run.resumeAt != null,
+    remainingMs:run.remainingMs, remainingAtSubmit:remaining,
+    submittedAt:run.submittedAt, gradeReason:run.gradeReason,
+    auditSubmittedAt:run.runtimeAudit && run.runtimeAudit.submittedAt,
+    auditSubmitDurability:run.runtimeAudit && run.runtimeAudit.submitDurability
+      ? JSON.parse(JSON.stringify(run.runtimeAudit.submitDurability)) : null,
+  };
+  /* 所有安全交卷步驟都凍結同一個剩餘時間；失敗時從這一刻恢復，
+     不把雲端回讀／同步等待重複扣進考試時間。 */
+  run.remainingMs = remaining; run.resumeAt = null; run.mt = Date.now(); save();
+  session.grading = true; session.submitLocked = true; sessionMode = 'paper-submit';
+  paperSourceSubmitLoading(source);
+  let journalOk = false, allPagesPersisted = false;
+  try {
+    journalOk = await paperAwaitWithTimeout(paperInkJournalDrain(session), 12000, '增量日誌保存');
+    const progress = $('#paper-submit-progress'); if (progress) progress.textContent = '正在建立每一頁的本機快照…';
+    allPagesPersisted = journalOk && await paperAwaitWithTimeout(paperInkPersistAll(true, session), 18000, '全頁本機快照');
+  } catch (_) {}
+  if (!journalOk || !allPagesPersisted || Object.values(session.inkPages || {}).some((page) => page && page.dirty)) {
+    return paperSourceSubmitRestore(session, previous, '本回仍有頁面未完成本機快照，已取消交卷。原筆跡仍在，請保持頁面開啟後再試一次。');
+  }
+  const persistedRevisions = paperSourceRevisionSnapshot(session);
+  run.submittedAt = run.submittedAt || Date.now();
+  const audit = paperRuntimeAuditFor(session);
+  if (audit) audit.submittedAt = run.submittedAt;
+  const cloudProgress = $('#paper-submit-progress'); if (cloudProgress) cloudProgress.textContent = '正在補傳雲端並逐頁讀回核對…';
+  const cloudFlushed = await paperInkCloudFlushBarrier(session);
+  let readback = null;
+  try { if (cloudFlushed) readback = await paperAwaitWithTimeout(paperInkCloudReadbackVerify(session), 18000, '逐頁雲端回讀'); } catch (_) {}
+  const revisionsUnchanged = paperSourceRevisionSnapshotEqual(persistedRevisions, paperSourceRevisionSnapshot(session))
+    && !Object.values(session.inkPages || {}).some((page) => page && page.dirty);
+  if (audit) audit.submitDurability = {
+    journalDrained:journalOk,
+    allPagesPersisted,
+    cloudFlushed,
+    revisionsUnchanged,
+    pendingAtSubmit:paperInkPendingCount(session),
+    readbackVerifiedAt:readback && readback.readbackVerifiedAt || null,
+    expectedPages:source.scans.length,
+    verifiedPages:readback && readback.verifiedPages || 0,
+    pages:readback && readback.pages || [],
+  };
+  if (!cloudFlushed || paperInkPendingCount(session) || !readback || !readback.passed || !revisionsUnchanged) {
+    return paperSourceSubmitRestore(session, previous, '交卷前逐頁雲端回讀尚未全部通過，所以沒有解鎖答案或開始批改。原筆跡已保在本機，網路穩定後直接再交卷即可，不會重寫。');
+  }
+  const inkSnapshotSha256 = await capabilityCanonicalDigest({
+    schema:1, runId:String(run.id), sourceId:String(source.id), paperLayoutVersion:Number(run.paperLayoutVersion),
+    submittedAt:Number(run.submittedAt), revisions:persistedRevisions,
+    pages:(readback.pages || []).map((page) => ({
+      page:Number(page.page), qid:String(page.qid || ''), clientId:String(page.clientId || ''),
+      sha256:String(page.localSha256 || '').toLowerCase(), cloudSha256:String(page.cloudSha256 || '').toLowerCase(),
+    })),
+  });
+  const pageManifest = (readback.pages || []).map((page) => ({
+    page:Number(page.page), qid:String(page.qid || ''), clientId:String(page.clientId || ''),
+    revision:Number(page.revision), cloudSha256:String(page.cloudSha256 || '').toLowerCase(),
+    updatedAt:String(page.updatedAt || ''),
+  }));
+  const attempt = paperSubmitAttemptNew(run, source, remaining, run.submittedAt,
+    inkSnapshotSha256, pageManifest);
+  run.submitRollback = JSON.parse(JSON.stringify(previous));
+  paperSubmitAttemptPersist(run, attempt);
+  const transition = await paperSubmitAttemptSettle(attempt);
+  if (transition.outcome === 'canceled') {
+    paperSubmitAttemptPersist(run, transition.row);
+    return paperSourceSubmitRestore(session, previous, '伺服器已確認本次交卷取消；原筆跡仍在，已安全回到原卷。');
+  }
+  if (!['accepted', 'superseded'].includes(transition.outcome)
+      || (transition.outcome === 'accepted' && !transition.row)
+      || (transition.outcome === 'superseded' && (!transition.row || !transition.winner))) {
+    const label = transition.outcome === 'conflict'
+      ? '另一台裝置已先送出不同的交卷請求；本機不會覆蓋或重複批改。'
+      : '尚未取得「已接受」或「已取消」的確定收據。';
+    attempt.status = 'reconciling'; attempt.updatedAt = Date.now();
+    paperSubmitAttemptPersist(run, attempt);
+    return paperSourceSubmitReconcileScreen(session, label);
+  }
+  const accepted = paperSubmitApplyTransition(run, transition, reason);
+  return paperSourceGradeAfterSubmit(session, reason, accepted.remainingMs);
+}
+async function paperSourceGradeAfterSubmit(session, reason, remaining) {
+  if (!session || paperSourceSession !== session) return false;
+  const { source, run } = session;
   paperRuntimeAuditFinish(session, remaining, reason);
-  run.submittedAt = run.submittedAt || Date.now(); run.mt = Date.now();
-  paperRecoveryClose(run, 'grading');
+  session.submitLocked = true;
+  session.readOnly = true;
   save();
-  if (!Array.isArray(source.key)) {
-    await syncPush();
-    if (syncState.pushErr) {
-      session.grading = false;
-      run.status = 'paused'; run.resumeAt = null; run.mt = Date.now(); save();
-      renderPaperSource();
-      alert('交卷狀態還沒同步到私人雲端，答案仍保持鎖定。原筆跡已保存，連線恢復後再交卷即可。');
-      return;
-    }
+  try {
+    await paperSubmitAcceptedRemoteDurable(session, paperSubmitAttemptRow(run.submitAttempt));
+  } catch (error) {
+    run.status = 'grading'; run.resumeAt = null; run.mt = Date.now(); save();
+    return paperSourceAcceptedSyncRetryScreen(session,
+      (error && error.message) || '已接受交卷的雲端保存尚未完成');
+  }
+  try {
+    session.inkPages = await paperAcceptedInkLoadAll(run, source);
+    const manifest = paperSubmitPageManifest(run.submitAttempt && run.submitAttempt.pageManifest);
+    run.paperInkClients = Object.fromEntries(manifest.map((page) => [page.page, page.clientId]));
+    session.inkClientIds = { ...run.paperInkClients };
+  } catch (error) {
+    run.status = 'grading'; run.resumeAt = null; run.mt = Date.now(); save();
+    return paperSourceGradeLoading(source, 'accepted 卷面無法安全重建',
+      (error && error.message) || '不可變逐頁 checkpoint 回讀失敗；沒有呼叫模型。', '批改維持鎖定');
+  }
+  paperRecoveryClose(run, 'grading');
+  if (run.aiGrade && ['awaiting-key', 'awaiting-correction', 'completed'].includes(String(run.status || ''))) {
+    session.grading = false; session.submitLocked = false; session.readOnly = true;
+    session.page = 0; session.zoom = 1; sessionMode = 'paper-result'; sessionActive = false;
+    renderPaperGradeResult();
+    return true;
   }
   sessionMode = 'paper-grade';
   paperSourceGradeLoading(source, reason, `正在整理第 1 / ${source.scans.length} 頁…`);
   try {
-    const pages = [];
-    for (let page = 0; page < source.scans.length; page++) {
-      const progress = $('#paper-grade-progress');
-      if (progress) progress.textContent = `正在整理第 ${page + 1} / ${source.scans.length} 頁…`;
-      pages.push(await paperPageComposite(page));
-    }
-    const progress = $('#paper-grade-progress');
-    if (progress) progress.textContent = `已送出 ${source.scans.length} 頁，正在逐題辨識與核分…`;
     const answerKey = await paperAnswerKeyAfterSubmit(source, run);
-    const response = await paperAiGradeCall(source, pages, answerKey);
+    // The browser no longer composites or uploads grading images.  Edge reads
+    // the accepted attempt, frozen ink and reviewed private source assets
+    // directly, so a stale/crashed client cannot swap or blank a page.
+    const progress = $('#paper-grade-progress');
+    if (progress) progress.textContent = '伺服器正在重建 accepted 卷面並逐題核分…';
+    const response = await paperAiGradeCall(source, run, answerKey);
     const grade = paperNormalizeAiGrade(source, response.json, response.model, answerKey);
-    paperGradeAlignMarksToInk(grade, session.inkPages);
     grade.requestId = response.requestId;
     grade.usage = response.usage;
     grade.budget = response.budget;
-    grade.promptVersion = 'paper-grade-first-pass-v3';
-    if (run.status === 'discarded') return;
+    grade.promptVersion = Number(response.gradeGeneration) > 0
+      ? 'paper-grade-explicit-regrade-v1' : 'paper-grade-first-pass-v3';
+    grade.gradeGeneration = Number(response.gradeGeneration) || 0;
+    grade.gradeJob = response.gradeJob && typeof response.gradeJob === 'object' ? { ...response.gradeJob } : null;
+    grade.gradeJobContentDigests = response.gradeJobContentDigests && typeof response.gradeJobContentDigests === 'object'
+      ? { ...response.gradeJobContentDigests } : null;
+    paperApplyServerGradeReceipt(grade, response.serverGradeReceipt, run, source);
+    paperGradeAlignMarksToInk(grade, session.inkPages);
+    if (run.status === 'discarded') {
+      if (run.submitAttempt && run.submitAttempt.status === 'accepted') run.status = 'grading';
+      else return;
+    }
     paperSourceRecordGrade(source, run, grade);
     if (paperSourceSession === session) {
       session.grading = false;
+      session.submitLocked = false;
       session.readOnly = true;
       session.page = 0;
       session.zoom = 1;
@@ -8633,9 +9992,40 @@ async function paperSourceGrade(reason) {
     run.status = 'grading'; run.resumeAt = null; run.mt = Date.now(); save();
     if (paperSourceSession === session) {
       session.grading = false;
-      paperSourceGradeLoading(source, '批改未完成', '原筆跡已保留，可以直接重試。', (error && error.message) || String(error));
+      session.submitLocked = true;
+      paperSourceGradeLoading(source,
+        error && error.gradeJobPending ? '批改工作已鎖定，正在等待安全結果' : '批改未完成',
+        error && error.gradeJobPending
+          ? '按「查詢同一代」只會讀取狀態或已封存結果，不會再次呼叫模型。'
+          : '原筆跡已保留；一般重試只查詢同一代，不會自動建立新的付費批改。',
+        (error && error.message) || String(error), !!(error && error.gradeJobPending));
     }
   }
+}
+async function paperSourceSubmitReconcile() {
+  const session = paperSourceSession, run = session && session.run;
+  const attempt = run && run.submitAttempt;
+  if (!session || !attempt || !['submitting', 'reconciling'].includes(String(attempt.status || ''))) return false;
+  stopTicker(); session.grading = true; session.submitLocked = true;
+  paperSourceSubmitLoading(session.source, '正在用同一筆交卷編號查詢伺服器…');
+  const transition = await paperSubmitAttemptSettle(attempt);
+  if ((transition.outcome === 'accepted' && transition.row)
+      || (transition.outcome === 'superseded' && transition.row && transition.winner)) {
+    const accepted = paperSubmitApplyTransition(run, transition, run.gradeReason || '繼續今天的批分');
+    return paperSourceGradeAfterSubmit(session, run.gradeReason || '繼續今天的批分', accepted.remainingMs);
+  }
+  if (transition.outcome === 'canceled' && transition.row) {
+    paperSubmitAttemptPersist(run, transition.row);
+    const fallback = run.submitRollback || {
+      status:'active', wasRunning:Number(attempt.remainingMs) > 0, remainingAtSubmit:Number(attempt.remainingMs) || 0,
+      submittedAt:null, gradeReason:null, auditSubmittedAt:null, auditSubmitDurability:null,
+    };
+    return paperSourceSubmitRestore(session, fallback, '伺服器已確認交卷取消；已安全恢復原卷，不會被晚到請求重新鎖住。');
+  }
+  attempt.status = 'reconciling'; attempt.updatedAt = Date.now(); paperSubmitAttemptPersist(run, attempt);
+  return paperSourceSubmitReconcileScreen(session, transition.outcome === 'conflict'
+    ? '另一台裝置已先接受不同的交卷請求；請在該裝置完成批改，或先匯出本機救援檔。'
+    : '伺服器仍沒有回傳確定狀態；卷面繼續鎖住，沒有遺失或重複送出。');
 }
 function renderPaperGradeResult() {
   if (!paperSourceSession) return renderMockIntro();
@@ -8643,14 +10033,109 @@ function renderPaperGradeResult() {
   if (!grade) return paperSourceGradeLoading(source, '批改未完成', '找不到完整批改結果，請重新批改。', '批改資料尚未完成');
   const page = paperSourceSession.page, scan = source.scans[page];
   const uncertain = Array.isArray(grade.uncertainNos) ? grade.uncertainNos : [];
+  if (!(paperSourceSession.gradeVisualVisitedPages instanceof Set)) paperSourceSession.gradeVisualVisitedPages = new Set();
+  paperSourceSession.gradeVisualVisitedPages.add(page);
+  const visualVisited = paperSourceSession.gradeVisualVisitedPages.size;
+  const visualConfirmed = paperGradeVisualAttestationValid(run);
+  const visualButton = visualConfirmed
+    ? '<button class="btn" disabled>本回卷面已確認</button>'
+    : `<button class="btn" onclick="paperGradeVisualAttest('${jsA(run.id)}')"${visualVisited < source.scans.length ? ' disabled' : ''}>確認這是本回卷面 (${visualVisited}/${source.scans.length})</button>`;
+  const regradeButton = paperSourceRegradeAvailable(run, source)
+    ? '<button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button>'
+    : `<button class="btn subtle" onclick="paperSourceExplicitNewGrade()">${source.id === 'paper-mock-1' ? '舊卷無安全重批收據' : '此卷不可安全重批'}</button>`;
   app().innerHTML = `<div class="paper-session-shell is-graded">
     <div class="paper-workbar"><div class="paper-work-title"><b>第一次批改｜對錯、分數、正確答案</b><small>${escH(source.title)}</small></div><strong class="paper-result-score">${grade.score} / 100</strong>
       <div class="paper-workgroup right">${paperAiToggleButtonHTML()}<button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace" aria-label="你的原筆跡＋AI 紅筆標記"><section class="paper-source-pane"><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div></div></div></section></div>
-    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen(${page})">AI 看錯／修正這頁</button><button class="btn" onclick="paperRuntimeAuditOpen('${jsA(run.id)}')">真機驗收</button><button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button><button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
+    <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen(${page})">AI 看錯／修正這頁</button>${visualButton}<button class="btn" onclick="paperRuntimeAuditOpen('${jsA(run.id)}')">真機驗收</button>${regradeButton}<button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true);
   paperInkAttach();
+}
+function paperGradeVisualAttestationValid(run) {
+  const grade = run && run.aiGrade;
+  const receipt = run && run.serverGradeReceipt && typeof run.serverGradeReceipt === 'object'
+    ? run.serverGradeReceipt : grade && grade.serverGradeReceipt && typeof grade.serverGradeReceipt === 'object'
+      ? grade.serverGradeReceipt : null;
+  const attestation = run && run.gradeInputVisualAttestation && typeof run.gradeInputVisualAttestation === 'object'
+    ? run.gradeInputVisualAttestation : grade && grade.gradeInputVisualAttestation && typeof grade.gradeInputVisualAttestation === 'object'
+      ? grade.gradeInputVisualAttestation : null;
+  const digest = String(attestation && attestation.canonicalDigest || '').toLowerCase();
+  const path = String(attestation && attestation.path || '').replace(/\\/g, '/');
+  if (!run || !receipt || !attestation || attestation.authority !== 'supabase-service-role-storage-readback'
+    || attestation.bucket !== PAPER_AUDIT_PRIVATE_BUCKET || !/^[a-f0-9]{64}$/.test(digest)
+    || !/^[a-f0-9]{64}$/.test(String(attestation.sha256 || ''))
+    || !new RegExp('^grade-visual-attestations/matha_[a-f0-9]{32}/'
+      + String(run.id || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      + '/attestation-' + digest + '\\.json$').test(path)
+    || String(attestation.runId || '') !== String(run.id || '')
+    || String(attestation.sourceId || '') !== String(run.sourceId || '')
+    || String(attestation.gradeReceiptDigest || '') !== String(receipt.canonicalDigest || '')
+    || String(attestation.submitAttemptDigest || '') !== String(receipt.submitAttemptDigest || '')
+    || String(attestation.submitAttemptId || '') !== String(receipt.submitAttemptId || '')
+    || String(attestation.modelInputBindingSha256 || '') !== String(receipt.modelInputBindingSha256 || '')
+    || String(attestation.submissionContentBindingSha256 || '') !== String(receipt.submissionContentBindingSha256 || '')
+    || !Number.isFinite(Date.parse(String(attestation.readbackVerifiedAt || '')))) return false;
+  return true;
+}
+async function paperGradeVisualAttest(runId) {
+  const run = (S.paperRuns || []).find((item) => item && item.id === runId);
+  const source = run && paperSourceById(run.sourceId);
+  const session = paperSourceSession && paperSourceSession.run === run ? paperSourceSession : null;
+  if (!run || !source || !run.aiGrade || !run.serverGradeReceipt) {
+    alert('本回沒有可由伺服器即時回讀的正式批改收據。'); return false;
+  }
+  if (!session || !(session.gradeVisualVisitedPages instanceof Set)
+    || session.gradeVisualVisitedPages.size !== source.scans.length) {
+    alert('請先用上一頁／下一頁逐頁看完本回卷面與第一次批改，再建立確認紀錄。'); return false;
+  }
+  if (!confirm('請確認：我已逐頁看過，畫面確實是這一回的原題、我的筆跡與第一次批改。這是本人像素核對；系統不會把雜湊冒充成伺服器重建畫面。')) return false;
+  if (!supa || !syncState.user) { alert('請先登入，才能把本人卷面確認封存在私人區。'); return false; }
+  try {
+    await syncPush();
+    if (syncState.pushErr) throw new Error('批改收據尚未同步');
+    const confirmedPages = Array.isArray(run.serverGradeReceipt.modelInputImages)
+      ? run.serverGradeReceipt.modelInputImages.map((image) => ({
+        page:Number(image.page), mediaType:String(image.mediaType || ''), sha256:String(image.sha256 || ''),
+      })) : [];
+    if (confirmedPages.length !== source.scans.length * 3) throw new Error('批改收據缺少逐頁 A／B／C 影像雜湊');
+    const payload = await openAiInvoke({
+      responseType:'paper_grade_visual_attest', context:{
+        paperRunId:run.id,
+        ownerStatement:'I reviewed every model-input page and confirm it is this paper run',
+        gradeReceiptDigest:String(run.serverGradeReceipt.canonicalDigest || ''),
+        modelInputBindingSha256:String(run.serverGradeReceipt.modelInputBindingSha256 || ''),
+        submitAttemptId:String(run.serverGradeReceipt.submitAttemptId || ''),
+        submitAttemptDigest:String(run.serverGradeReceipt.submitAttemptDigest || ''),
+        confirmedPages,
+      },
+    }, 30000);
+    const remote = payload && payload.gradeInputVisualAttestation;
+    const receipt = run.serverGradeReceipt;
+    if (!remote || remote.authority !== 'supabase-service-role-storage-readback'
+      || remote.bucket !== PAPER_AUDIT_PRIVATE_BUCKET
+      || String(remote.runId || '') !== run.id || String(remote.sourceId || '') !== source.id
+      || String(remote.gradeReceiptDigest || '') !== String(receipt.canonicalDigest || '')
+      || String(remote.submitAttemptDigest || '') !== String(receipt.submitAttemptDigest || '')
+      || String(remote.submitAttemptId || '') !== String(receipt.submitAttemptId || '')
+      || String(remote.modelInputBindingSha256 || '') !== String(receipt.modelInputBindingSha256 || '')
+      || String(remote.submissionContentBindingSha256 || '') !== String(receipt.submissionContentBindingSha256 || '')
+      || !/^[a-f0-9]{64}$/.test(String(remote.canonicalDigest || ''))
+      || !/^[a-f0-9]{64}$/.test(String(remote.sha256 || ''))
+      || !Number.isFinite(Date.parse(String(remote.readbackVerifiedAt || '')))) {
+      throw new Error('伺服器回讀紀錄與本回批改影像不一致');
+    }
+    run.gradeInputVisualAttestation = { ...remote };
+    run.aiGrade.gradeInputVisualAttestation = { ...remote };
+    run.mt = Date.now(); save();
+    await syncPush();
+    if (syncState.pushErr) throw new Error('確認紀錄尚未同步');
+    renderPaperGradeResult();
+    return true;
+  } catch (error) {
+    alert(`本回卷面確認失敗：${(error && error.message) || error}`);
+    return false;
+  }
 }
 async function openPaperGradeResult(runId) {
   const run = (S.paperRuns || []).find((item) => item && item.id === runId);
@@ -8662,7 +10147,7 @@ async function openPaperGradeResult(runId) {
   try {
     const urls = await paperSourceFiles(source);
     run.paperInkClients = run.paperInkClients || {};
-    const inkPages = await paperInkLoadAll(run, source);
+    const inkPages = await paperAcceptedInkLoadAll(run, source);
     paperSourceSession = {
       source, run, urls, inkPages, page:0, zoom:1, inkMode:'pen',
       inkWidth:paperInkWidthValue(run.paperInkWidth), inkColor:'black', readOnly:true,
@@ -8755,11 +10240,55 @@ function paperGradeAuditSave() {
   modalClose();
   renderPaperGradeResult();
 }
+function paperSourceRegradeAvailable(run, source) {
+  return !!run && !!source && Number(source.questions) === 20
+    && paperSubmitAcceptedReceiptValid(run.submitAttempt, run.id, source.id)
+    && Number(run.createdAt) > 0 && Number(run.submittedAt) > 0
+    && /^\d{4}[a-z]$/.test(String(run.runCreatedAppVersion || ''))
+    && Number(run.paperLayoutVersion) === PAPER_LAYOUT_VERSION;
+}
+function paperSourceBeginExplicitRegrade() {
+  const session = paperSourceSession, run = session && session.run, source = session && session.source;
+  if (!paperSourceRegradeAvailable(run, source)) return false;
+  if (run.gradeGenerationRequestConflict && typeof run.gradeGenerationRequestConflict === 'object') {
+    paperSourceGrade('正在向伺服器對帳跨裝置重批世代');
+    return true;
+  }
+  const pendingGeneration = Number(run.pendingGradeGeneration);
+  if (paperGradeGenerationRequestValid(run.gradeGenerationRequestId)
+      && !(Number.isInteger(pendingGeneration) && pendingGeneration > 0)) {
+    paperSourceGrade('繼續核發同一代批改');
+    return true;
+  }
+  run.gradePreviousGeneration = paperGradeKnownGeneration(run);
+  run.gradeGenerationRequestId = paperGradeGenerationRequestId();
+  delete run.pendingGradeGeneration;
+  run.status = 'grading'; run.resumeAt = null; run.gradeReason = '重新 AI 簡批'; run.mt = Date.now();
+  save();
+  paperSourceGrade('重新 AI 簡批');
+  return true;
+}
+function paperSourceExplicitNewGrade() {
+  const session = paperSourceSession, run = session && session.run, source = session && session.source;
+  if (!run || !source) return;
+  if (!paperSourceRegradeAvailable(run, source)) {
+    const legacy = source.id === 'paper-mock-1';
+    modal(`<h2>這份舊卷不能安全重批</h2><p>${legacy ? '這份歷史第一回仍可查看舊批改與訂正；但當年的 run 沒有目前版本的不可變 accepted submit 收據，因此伺服器不能把它假裝成可驗證的新重批。' : '本回缺少目前版本的已接受交卷收據、建立版本或 20 題結構。'} 原結果不受影響；若要重新批改，請以目前版本重新開始一回並安全交卷。</p>`, [['知道了']]);
+    return;
+  }
+  modal('<h2>明確建立新一代 AI 簡批？</h2><p>這會請伺服器核發新的 generation，重新辨識全部頁面，可能產生另一筆模型費用。若只是等待或查詢剛才那一代，請取消並按「查詢同一代」。</p>', [
+    ['取消'],
+    ['建立新一代並簡批', () => paperSourceBeginExplicitRegrade(), 'primary'],
+  ]);
+}
 function paperSourceRegrade() {
   if (!paperSourceSession || !paperSourceSession.run || !paperSourceSession.run.aiGrade) return;
+  if (!paperSourceRegradeAvailable(paperSourceSession.run, paperSourceSession.source)) {
+    return paperSourceExplicitNewGrade();
+  }
   modal('<h2>重新進行第一次 AI 簡批？</h2><p>會重新辨識全部頁面，但仍只給對錯、分數與正解，不會開詳解。現在的批改結果會先存入稽核歷史。</p>', [
     ['取消'],
-    ['重新 AI 簡批', () => paperSourceGrade('重新 AI 簡批'), 'primary'],
+    ['重新 AI 簡批', () => paperSourceBeginExplicitRegrade(), 'primary'],
   ]);
 }
 function paperSourceCloseResult() {
@@ -9276,7 +10805,9 @@ function paperTeacherOverrideOpen(runId, no) {
   const item = run && run.aiGrade && (run.aiGrade.questions || []).find((row) => Number(row.no) === Number(no));
   const state = run && (run.review = run.review || {}) && (run.review[no] = run.review[no] || { done:false, attempts:0, logs:[] });
   if (!run || !source || !item || !state) return;
-  const currentTopic = paperReviewEffectiveTopic(state, state.topic || item.topic || '');
+  const currentTopic = paperReviewEffectiveTopic(
+    state, paperTrustedQuestionTopic(run, source, no, item),
+  );
   const currentProcess = paperReviewEffectiveProcess(state, state.aiErrorKind || state.aiDetail && state.aiDetail.errorKind || state.errorKind || '');
   const topicOptions = [`<option value="__keep__">不修改單元（目前：${escH(TOPICS[currentTopic] || '未知')}）</option>`, '<option value="">改為未知／證據不足</option>',
     ...Object.entries(TOPICS).map(([key, label]) => `<option value="${escH(key)}">${escH(label)}</option>`)].join('');
@@ -9310,7 +10841,7 @@ function paperTeacherOverrideSave(runId, no) {
   if (topic !== '__keep__') input.topic = topic;
   if (processStage !== '__keep__') input.processStage = processStage;
   const entry = paperTeacherOverrideAppend(state, input, {
-    topic:item.topic || state.topic || '',
+    topic:paperTrustedQuestionTopic(run, source, no, item),
     errorKind:state.aiErrorKind || state.aiDetail && state.aiDetail.errorKind || state.errorKind || '',
   });
   if (!entry) { alert('這次修正資料不完整，沒有保存。'); return; }
@@ -9329,11 +10860,14 @@ function paperQuestionHasDirectionGap(item, state) {
 function paperTeacherOverrideFollowups(run) {
   const evidence = learningEvidenceLedger();
   const rows = [];
+  const source = run && paperSourceById(run.sourceId);
   for (const [noText, state] of Object.entries(run && run.review || {})) {
     const override = paperTeacherOverrideLatest(state);
     if (!override) continue;
     const qid = `${run.id}:${Number(noText)}`;
-    const topic = paperReviewEffectiveTopic(state, state.topic || '');
+    const topic = paperReviewEffectiveTopic(
+      state, paperTrustedQuestionTopic(run, source, Number(noText)),
+    );
     const later = !topic ? [] : evidence.filter((row) => row.independent && Number(row.ts || 0) > Number(override.at || 0)
       && row.qid !== qid && row.topic === topic);
     const correctQuestions = new Set(later.filter((row) => Number(row.score) >= .75).map((row) => row.qid).filter(Boolean));
@@ -9372,7 +10906,9 @@ function paperTeacherSummaryHTML(run, source, grade, levels) {
   const discuss = [];
   for (const item of grade.questions || []) {
     const no = Number(item.no), state = run.review && run.review[no] || {};
-    const topic = paperReviewEffectiveTopic(state, state.topic || item.topic || '');
+    const topic = paperReviewEffectiveTopic(
+      state, paperTrustedQuestionTopic(run, source, no, item),
+    );
     const error = state.aiErrorKind || state.errorKind || [...(state.logs || [])].reverse().find((log) => log && log.errorKind)?.errorKind;
     if (topic && TOPICS[topic]) topicCounts[topic] = (topicCounts[topic] || 0) + 1;
     if (error) errorCounts[error] = (errorCounts[error] || 0) + 1;
@@ -9459,128 +10995,55 @@ function paperQuestionScanIndex(source, no) {
   if (source.id === 'paper-mock-2') return no <= 4 ? 0 : no <= 7 ? 1 : no <= 10 ? 2 : no <= 13 ? 3 : no <= 17 ? 4 : 5;
   return no <= 5 ? 0 : no <= 8 ? 1 : no <= 13 ? 2 : 3;
 }
-async function paperReviewPageComposite(page) {
-  if (!paperReview) throw new Error('隔日訂正工作階段不存在');
-  return paperCompositeImage(
-    paperReview.source,
-    paperReview.urls,
-    paperReview.baseInkPages,
-    page,
-    true,
-    paperReview.inkPages,
-    '#684d85',
-  );
-}
-function paperQuestionNosOnPage(source, page) {
-  return Array.from({ length: source.questions }, (_, index) => index + 1)
-    .filter((questionNo) => paperQuestionScanIndex(source, questionNo) === page);
-}
-function paperDetailFocusBounds(source, no) {
-  const page = paperQuestionScanIndex(source, no);
-  const nos = paperQuestionNosOnPage(source, page);
-  const index = Math.max(0, nos.indexOf(no));
-  const band = .9 / Math.max(1, nos.length);
-  let y0 = .05 + index * band - .045;
-  let y1 = .05 + (index + 1) * band + .045;
-  const run = paperReview && paperReview.run;
-  const grade = run && run.aiGrade && (run.aiGrade.questions || []).find((item) => Number(item.no) === Number(no));
-  for (const mark of grade && Array.isArray(grade.marks) ? grade.marks : []) {
-    const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
-    if (box.length === 4 && box.every(Number.isFinite)) {
-      y0 = Math.min(y0, box[1] - .12);
-      y1 = Math.max(y1, box[3] + .12);
-    }
-  }
-  const overlay = paperReview && paperReview.inkPages && paperReview.inkPages[page];
-  for (const stroke of overlay && Array.isArray(overlay.s) ? overlay.s : []) {
-    const bounds = paperInkStrokeBounds(stroke);
-    if (!stroke || stroke.dead || !bounds) continue;
-    y0 = Math.min(y0, bounds[1] - .08);
-    y1 = Math.max(y1, bounds[3] + .08);
-  }
-  y0 = Math.max(.015, y0); y1 = Math.min(.985, y1);
-  if (y1 - y0 < .25) {
-    const center = (y0 + y1) / 2;
-    y0 = Math.max(.015, center - .125); y1 = Math.min(.985, center + .125);
-  }
-  return [y0, y1];
-}
-async function paperReviewQuestionFocusImage(imageB64, source, no) {
-  const image = await paperImageLoad(`data:image/jpeg;base64,${imageB64}`);
-  const [y0, y1] = paperDetailFocusBounds(source, no);
-  const sy = Math.round(image.naturalHeight * y0);
-  const sh = Math.max(1, Math.round(image.naturalHeight * (y1 - y0)));
-  const canvas = document.createElement('canvas');
-  canvas.width = image.naturalWidth;
-  canvas.height = sh;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#fffefa'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(image, 0, sy, image.naturalWidth, sh, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', .94).split(',')[1];
-}
-async function paperAiDetailCall(source, no, imageB64, logs, focusB64, userNote) {
+async function paperAiDetailCall(source, no, logs, userNote) {
   const run = paperReview && paperReview.run;
   const q = paperQuestionMeta(run, source, no), answer = String(q && q.answer || '');
   if (!q || !answer) throw new Error('找不到交卷後保存的正式答案，已停止詳批');
-  const gradeItem = run && run.aiGrade && (run.aiGrade.questions || []).find((item) => Number(item.no) === Number(no));
   const reviewState = run && run.review && run.review[no];
-  const learnerTopic = gradeItem && gradeItem.topic || reviewState && reviewState.topic || q && q.topic || '';
+  const retryReceipt = paperCorrectionRetryReceiptRef(reviewState && reviewState.correctionRetryReceipt);
+  if (!retryReceipt) throw new Error('本題尚未核發可驗證的隔日訂正收據');
   const attempts = (logs || []).map((log, index) => ({
     attempt: index + 1,
-    direction: String(log.direction || ''),
-    topic: String(TOPICS[log.topic] || log.topic || ''),
-    concept: String(log.concept || ''),
+    direction: String(log.direction || '').slice(0, 300),
+    topic: String(TOPICS[log.topic] || log.topic || '').slice(0, 80),
+    concept: String(log.concept || '').slice(0, 200),
   }));
-  const content = [{
-    type: 'text',
-    text: `你是嚴謹但會指出學生優點的台灣學測數學訂正老師。目標不是泛泛講詳解，而是根據卷面證據，準確找出考生推理中第一個不成立的位置。
-
-成功標準：
-1. 先獨立解出印刷題目並核對正式答案，再判讀學生方法；不可拿正式答案倒推一個學生沒寫過的錯誤。
-2. 依卷面順序找出「最長的正確前綴」：goodWork 逐項列出實際做對的式子、判斷或方向，不可只寫「有努力」「觀念不錯」。
-3. firstErrorEvidence 必須逐字轉錄第一個錯誤或缺口附近、確實看得到的學生式子；firstError 說明這一步為何開始不成立；whyWrong 用代入、重算、反例或定義驗證。
-4. repair 只給修好第一個錯誤所需的下一行，不一次跳到結論。solution 才放完整正確解法。
-5. 等價但不同於參考路線的方法仍算對。每個數值、正負號、分母、選項與等號轉換都要自己重算。
-6. 看不清楚或無法唯一判定時，confidence=low、firstErrorEvidence=null、firstError=null、errorKind=null、marks=[]；寧可保留不確定，也不可編造。
-7. confidence=high 只用於手寫式與錯誤位置都清楚、且已完成獨立驗證時；medium 表示方法可讀但某一小段仍有歧義。
-8. marks 只在 confidence=high 時框住第一個錯誤的實際卷面區域，否則留空；label 固定寫「第一個錯誤」。
-
-第一張圖是完整單頁，用來理解上下文與右側留白；第二張是第 ${no} 題附近的高解析焦點圖，用來逐字核對。兩張都可能含其他題，判讀時只處理第 ${no} 題。原掃描與考試當天筆跡是底稿、紅筆是第一次簡批；紫色筆跡是考生隔日新增的重算。
-
-正式最終答案：${answer}
-題型：${q.type}
-考生隔日重想紀錄（可能尚未留下）：${JSON.stringify(attempts)}
-考生對 AI 辨識的補充／更正：${String(userNote || '（無）').slice(0, 500)}
-${learnerContextForAi(learnerTopic)}
-
-這是使用者主動要求的本題詳解，現在可以提供錯誤步驟分析與完整解法。`,
-  }, {
-    type: 'image',
-    source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 },
-  }, {
-    type: 'text',
-    text: `【第 ${no} 題高解析焦點圖】`,
-  }, {
-    type: 'image',
-    source: { type: 'base64', media_type: 'image/jpeg', data: focusB64 || imageB64 },
-  }];
   const payload = await openAiInvoke({
     responseType: 'paper_detail',
     context: {
       paperRunId: paperReview && paperReview.run && paperReview.run.id,
+      sourceId: paperReview && paperReview.source && paperReview.source.id,
       questionNo: no,
+      submitAttemptId: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.attemptId,
+      submitAttemptInkSnapshotSha256: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.inkSnapshotSha256,
+      submittedAt: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.submittedAt,
+      runCreatedAppVersion: paperReview && paperReview.run && paperReview.run.submitAttempt && paperReview.run.submitAttempt.runCreatedAppVersion,
+      correctionRetryReceiptId: retryReceipt.receiptId,
+      correctionRetryReceiptDigest: retryReceipt.canonicalDigest,
+      detailAttempts:attempts.slice(-8),
+      detailUserNote:String(userNote || '').trim().slice(0, 500),
     },
-    messages: [{ role: 'user', content }],
   }, 90000);
   if (!payload.json || typeof payload.json !== 'object') throw new Error('OpenAI 沒有回傳完整詳批資料');
-  return { json: payload.json, model: String(payload.model || '') };
+  return payload;
 }
 async function paperOfficialSolutionCall(source, no) {
   const run = paperReview && paperReview.run;
-  if (!source || !run || !run.id) throw new Error('找不到本次訂正紀錄');
+  const attempt = run && run.submitAttempt;
+  if (!source || !run || !run.id || !paperSubmitAcceptedReceiptValid(attempt, run.id, source.id)) throw new Error('找不到可驗證的本次訂正交卷收據');
+  const state = run.review && run.review[no];
+  const retryReceipt = paperCorrectionRetryReceiptRef(state && state.correctionRetryReceipt);
+  if (!retryReceipt) throw new Error('本題尚未核發可驗證的隔日訂正收據');
   const payload = await openAiInvoke({
     responseType: 'paper_solution',
-    context: { paperRunId: run.id, sourceId: source.id, questionNo: no },
+    context: {
+      paperRunId:run.id, sourceId:source.id, questionNo:no,
+      submitAttemptId:attempt.attemptId,
+      submitAttemptInkSnapshotSha256:attempt.inkSnapshotSha256,
+      submittedAt:attempt.submittedAt, runCreatedAppVersion:attempt.runCreatedAppVersion,
+      correctionRetryReceiptId:retryReceipt.receiptId,
+      correctionRetryReceiptDigest:retryReceipt.canonicalDigest,
+    },
   }, 30000);
   const rows = payload && payload.paperSolution && payload.paperSolution.images;
   if (!Array.isArray(rows)) throw new Error('官方詳解後端沒有回傳有效資料');
@@ -9669,6 +11132,205 @@ function paperNormalizeAiDetail(source, no, raw, model) {
     marks,
   };
 }
+function paperDetailPredictionHistory(state) {
+  return (state && Array.isArray(state.aiDetailHistory) ? state.aiDetailHistory : [])
+    .filter((row) => row && row.predictionMetadata && typeof row.predictionMetadata === 'object')
+    .slice().sort((a, b) => Number(a.generatedAt || 0) - Number(b.generatedAt || 0));
+}
+function paperDetailPredictionContent(detail) {
+  const marks = Array.isArray(detail && detail.marks) ? detail.marks.slice(0, 2).map((mark) => ({
+    box:Array.isArray(mark && mark.box) ? mark.box.slice(0, 4).map(Number) : [],
+    label:String(mark && mark.label || ''),
+  })) : [];
+  return {
+    schema:1,
+    no:Number(detail && detail.no),
+    model:String(detail && detail.model || ''),
+    readable:!!detail && detail.readable !== false,
+    confidence:String(detail && detail.confidence || 'low'),
+    read:String(detail && detail.read || ''),
+    goodWork:Array.isArray(detail && detail.goodWork) ? detail.goodWork.map(String) : [],
+    firstErrorEvidence:detail && detail.firstErrorEvidence != null ? String(detail.firstErrorEvidence) : null,
+    firstError:detail && detail.firstError != null ? String(detail.firstError) : null,
+    errorKind:detail && detail.errorKind != null ? String(detail.errorKind) : null,
+    whyWrong:String(detail && detail.whyWrong || ''),
+    repair:String(detail && detail.repair || ''),
+    explanation:String(detail && detail.explanation || ''),
+    solution:Array.isArray(detail && detail.solution) ? detail.solution.map(String) : [],
+    answer:String(detail && detail.answer || ''),
+    nextTime:String(detail && detail.nextTime || ''),
+    marks,
+  };
+}
+function paperDetailPredictionHistoryPush(state, detail) {
+  if (!state || !detail || !detail.predictionMetadata || !detail.predictionMetadata.predictionId) return null;
+  const history = paperDetailPredictionHistory(state);
+  const id = String(detail.predictionMetadata.predictionId);
+  const contentSha256 = String(detail.predictionContentSha256 || '').toLowerCase();
+  const sameId = history.filter((row) => String(row.predictionMetadata.predictionId) === id);
+  const conflict = sameId.some((row) => String(row.predictionContentSha256 || '').toLowerCase() !== contentSha256);
+  if (conflict) for (const row of sameId) row.predictionConflict = true;
+  if (!sameId.some((row) => String(row.predictionContentSha256 || '').toLowerCase() === contentSha256)) history.push({
+    generatedAt:Number(detail.generatedAt) || Date.now(),
+    predictionMetadata:{ ...detail.predictionMetadata },
+    predictionContentSha256:contentSha256,
+    predictionConflict:conflict,
+    detail:{
+      no:Number(detail.no), model:String(detail.model || ''), generatedAt:Number(detail.generatedAt) || null,
+      readable:detail.readable !== false, confidence:String(detail.confidence || 'low'), read:String(detail.read || ''),
+      goodWork:Array.isArray(detail.goodWork) ? detail.goodWork.slice() : [],
+      firstErrorEvidence:detail.firstErrorEvidence == null ? null : String(detail.firstErrorEvidence),
+      firstError:detail.firstError == null ? null : String(detail.firstError),
+      errorKind:detail.errorKind == null ? null : String(detail.errorKind),
+      whyWrong:String(detail.whyWrong || ''), repair:String(detail.repair || ''), explanation:String(detail.explanation || ''),
+      solution:Array.isArray(detail.solution) ? detail.solution.slice() : [], answer:String(detail.answer || ''),
+      nextTime:String(detail.nextTime || ''),
+      marks:Array.isArray(detail.marks) ? detail.marks.map((mark) => ({
+        box:Array.isArray(mark && mark.box) ? mark.box.slice() : [], label:String(mark && mark.label || ''),
+      })) : [],
+    },
+  });
+  if (history.length > 20) history.splice(0, history.length - 20);
+  state.aiDetailHistory = history;
+  return history[history.length - 1];
+}
+function paperDetailHumanReviewHistory(state) {
+  return (state && Array.isArray(state.detailGoldReviewHistory) ? state.detailGoldReviewHistory : [])
+    .filter((row) => row && row.id && row.predictionId).slice()
+    .sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
+}
+function paperDetailLatestHumanReview(state) {
+  const rows = paperDetailHumanReviewHistory(state);
+  return rows[rows.length - 1] || state && state.detailGoldReview || null;
+}
+function paperDetailTrustedEvidenceClear(state) {
+  if (!state || !state.processEvidence) return;
+  for (const stage of PROCESS_EVIDENCE_STAGES) {
+    if (!Array.isArray(state.processEvidence[stage])) continue;
+    state.processEvidence[stage] = state.processEvidence[stage].filter((row) => row && row.source !== 'trusted-ai-detail');
+  }
+}
+const PAPER_DETAIL_GOLD_VERDICTS = Object.freeze({
+  'diagnosis-correct':{ expectedMode:'diagnose', correct:true, label:'第一錯步抓對' },
+  'diagnosis-wrong':{ expectedMode:'diagnose', correct:false, label:'有第一錯步，但 AI 抓錯位置' },
+  'missed-diagnosis':{ expectedMode:'diagnose', correct:false, label:'AI 漏掉清楚的第一錯步' },
+  'abstain-correct':{ expectedMode:'abstain', correct:true, label:'看不清楚，保守不猜是對的' },
+  'should-abstain':{ expectedMode:'abstain', correct:false, label:'AI 不該硬猜第一錯步' },
+});
+function paperDetailGoldReview(no, verdict) {
+  if (!paperReview || !PAPER_DETAIL_GOLD_VERDICTS[verdict]) return false;
+  const run = paperReview.run, source = paperReview.source;
+  const state = run && run.review && run.review[no], detail = state && state.aiDetail;
+  const metadata = detail && detail.predictionMetadata;
+  const contentSha256 = String(detail && detail.predictionContentSha256 || '').toLowerCase();
+  const predictionRow = paperDetailPredictionHistory(state).find((row) =>
+    String(row.predictionMetadata.predictionId) === String(metadata && metadata.predictionId || '')
+    && String(row.predictionContentSha256 || '').toLowerCase() === contentSha256);
+  if (!state || !detail || !metadata || !metadata.predictionId || !/^[a-f0-9]{64}$/.test(contentSha256)
+    || !predictionRow || predictionRow.predictionConflict === true) {
+    alert('這份詳批是舊版或缺少雜湊，不能列入個人 gold；請重新分析本題後再判定。');
+    return false;
+  }
+  const observedMode = detail.firstError && detail.firstErrorEvidence ? 'diagnose' : 'abstain';
+  let correctedFirstErrorEvidence = '';
+  if (['diagnosis-wrong', 'missed-diagnosis'].includes(verdict)) {
+    const value = prompt('請簡短寫下真正第一個錯誤附近的式子或位置，讓之後能回查；按取消則不保存。', '');
+    if (value == null) return false;
+    correctedFirstErrorEvidence = String(value).trim().slice(0, 300);
+    if (correctedFirstErrorEvidence.length < 2) { alert('請留下至少 2 個字的可回查位置。'); return false; }
+  }
+  let note = '';
+  if (verdict === 'should-abstain') {
+    const value = prompt('可選：AI 為什麼不應定位？例如「這行看不清楚」或「卷面沒有這個式子」。', '');
+    if (value == null) return false;
+    note = String(value).trim().slice(0, 300);
+  }
+  const rule = PAPER_DETAIL_GOLD_VERDICTS[verdict], at = Date.now();
+  const entry = {
+    id:`detail-gold-review-${at}-${Math.random().toString(36).slice(2, 8)}`, at,
+    reviewer:'本人', reviewSource:'in-app-self-review', verdict,
+    expectedMode:rule.expectedMode, observedMode, diagnosisCorrect:rule.correct,
+    runId:String(run.id || ''), sourceId:String(source.id || ''), questionNo:Number(no),
+    predictionId:String(metadata.predictionId), predictionMetadataSha256:String(metadata.canonicalDigest || ''),
+    predictionContentSha256:contentSha256,
+    correctedFirstErrorEvidence, note,
+  };
+  const history = paperDetailHumanReviewHistory(state);
+  history.push(entry); if (history.length > 20) history.splice(0, history.length - 20);
+  state.detailGoldReviewHistory = history; state.detailGoldReview = entry;
+  paperDetailTrustedEvidenceClear(state);
+  state.mt = at; run.mt = at; save();
+  if (typeof syncPush === 'function') syncPush();
+  renderPaperAnswerReview();
+  return true;
+}
+function paperDetailGoldCases() {
+  const cases = [];
+  for (const run of S.paperRuns || []) {
+    if (!run || run.status === 'discarded') continue;
+    const source = paperSourceById(run.sourceId);
+    if (!source) continue;
+    for (const [key, state] of Object.entries(run.review || {})) {
+      const no = Number(key), review = paperDetailLatestHumanReview(state);
+      if (!Number.isInteger(no) || !review) continue;
+      const predictions = paperDetailPredictionHistory(state);
+      const prediction = predictions.find((row) => String(row.predictionMetadata.predictionId) === String(review.predictionId));
+      if (!prediction || String(review.runId) !== String(run.id) || String(review.sourceId) !== String(source.id)
+        || Number(review.questionNo) !== no || prediction.predictionConflict === true
+        || !/^[a-f0-9]{64}$/.test(String(prediction.predictionContentSha256 || '').toLowerCase())
+        || String(review.predictionMetadataSha256) !== String(prediction.predictionMetadata.canonicalDigest)
+        || String(review.predictionContentSha256 || '').toLowerCase() !== String(prediction.predictionContentSha256 || '').toLowerCase()) continue;
+      cases.push({
+        id:`${run.id}:${no}`, runId:String(run.id), sourceId:String(source.id), questionNo:no,
+        predictionId:String(review.predictionId), predictionMetadata:{ ...prediction.predictionMetadata },
+        predictionContentSha256:String(prediction.predictionContentSha256).toLowerCase(),
+        prediction:{ ...prediction.detail }, humanReview:{ ...review },
+      });
+    }
+  }
+  return cases.sort((a, b) => Number(a.humanReview.at || 0) - Number(b.humanReview.at || 0)
+    || a.id.localeCompare(b.id));
+}
+function paperDetailGoldSnapshot() {
+  const cases = paperDetailGoldCases(), reviewed = cases.length;
+  const predictedDiagnose = cases.filter((row) => row.humanReview.observedMode === 'diagnose');
+  const expectedDiagnose = cases.filter((row) => row.humanReview.expectedMode === 'diagnose');
+  const correctDiagnoses = predictedDiagnose.filter((row) => row.humanReview.verdict === 'diagnosis-correct').length;
+  const coveredDiagnoses = expectedDiagnose.filter((row) => row.humanReview.observedMode === 'diagnose').length;
+  const precision = predictedDiagnose.length ? correctDiagnoses / predictedDiagnose.length : null;
+  const coverage = expectedDiagnose.length ? coveredDiagnoses / expectedDiagnose.length : null;
+  const sevenReady = reviewed >= 7 && precision != null && coverage != null && precision >= .9 && coverage >= .6;
+  return { reviewed, cases, predictedDiagnose:predictedDiagnose.length, expectedDiagnose:expectedDiagnose.length,
+    correctDiagnoses, coveredDiagnoses, precision, coverage, sevenReady, thirtyReady:reviewed >= 30 && sevenReady };
+}
+async function paperDetailGoldEvidence() {
+  const snapshot = paperDetailGoldSnapshot();
+  const cases = await Promise.all(snapshot.cases.map(async (row) => ({ ...row, canonicalDigest:await capabilityCanonicalDigest(row) })));
+  const payload = {
+    kind:'matha-paper-detail-personal-gold-v1', schemaVersion:1, generatedAt:new Date().toISOString(), appVersion:APP_VER,
+    releaseAuthority:false, humanReviewed:true,
+    thresholds:{ minimumEvaluationCases:7, precision:.9, coverage:.6, longTermGoldCases:30 },
+    result:{ reviewed:snapshot.reviewed, predictedDiagnose:snapshot.predictedDiagnose,
+      expectedDiagnose:snapshot.expectedDiagnose, correctDiagnoses:snapshot.correctDiagnoses,
+      coveredDiagnoses:snapshot.coveredDiagnoses, precision:snapshot.precision, coverage:snapshot.coverage,
+      sevenReady:snapshot.sevenReady, thirtyReady:snapshot.thirtyReady },
+    cases,
+  };
+  payload.canonicalDigest = await capabilityCanonicalDigest(payload);
+  return payload;
+}
+async function exportPaperDetailGoldEvidence() {
+  try {
+    const payload = await paperDetailGoldEvidence();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
+    link.download = `數A個人詳批gold-${today()}.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    return payload;
+  } catch (error) {
+    alert(`詳批證據匯出失敗：${error && error.message || error}`); return null;
+  }
+}
 function startArchivedPaperAnswerReview(runId, confirmed = false) {
   const run = (S.paperRuns || []).find((row) => row && row.id === runId);
   const due = String(run && run.due || '');
@@ -9698,12 +11360,16 @@ async function startPaperAnswerReview(runId, allowArchived = false) {
       ? { done:false, attempts:0, logs:[] }
       : { done:true, level:1, outcome:'direct', completedAt:run.submittedAt };
     processEvidenceEnsure(run.review[no]);
-    if (!run.review[no].topic && graded && TOPICS[graded.topic]) run.review[no].topic = graded.topic;
+    const trustedTopic = paperTrustedQuestionTopic(run, source, no, graded);
+    if (!run.review[no].topic && trustedTopic) {
+      run.review[no].topic = trustedTopic;
+      run.review[no].topicSource = 'official-key';
+    }
   }
   app().innerHTML = `<div class="card"><h1>正在開啟 ${escH(source.title)}</h1><p class="dim">載入原卷，答案仍只會逐題顯示。</p></div>`;
   try {
     const urls = await paperSourceFiles(source);
-    const baseInkPages = await paperInkLoadAll(run, source);
+    const baseInkPages = await paperAcceptedInkLoadAll(run, source);
     const inkRun = paperReviewInkRun(run);
     const inkPages = await paperInkLoadAll(inkRun, source);
     const correctionMeta = { ...(paperInkLoadAll.lastMeta || {}) };
@@ -9789,28 +11455,47 @@ function paperReviewDetailLogs(state) {
   return (state && Array.isArray(state.logs) ? state.logs : [])
     .filter((log) => String(log && log.kind || '') !== 'detail-gate');
 }
-async function paperReviewDetailCallCompat(review, no, state, image, focus) {
+async function paperReviewDetailCallCompat(review, no, state) {
   // 後端與前端都只接受真實 retry log；絕不再製造空白 detail-gate 來繞過老師流程。
-  return paperAiDetailCall(review.source, no, image, paperReviewDetailLogs(state), focus, state && state.aiDetailUserNote);
+  return paperAiDetailCall(
+    review.source,
+    no,
+    paperReviewDetailLogs(state),
+    state && state.aiDetailUserNote,
+  );
 }
-function paperReviewLiveStrokeIds() {
+function paperInkLiveStrokeIdsForQuestion(data, qno) {
   const ids = new Set();
+  if (!Number.isInteger(qno) || qno < 1 || qno > 20) return ids;
+  const deleted = data && data.deleted instanceof Set ? data.deleted : new Set(data && data.deleted || []);
+  for (const stroke of data && Array.isArray(data.s) ? data.s : []) {
+    const id = paperInkStrokeId(stroke);
+    if (stroke && paperInkStrokeQuestionNo(stroke) === qno && !stroke.dead
+      && Array.isArray(stroke.pts) && stroke.pts.length > 1 && !deleted.has(id)) ids.add(id);
+  }
+  return ids;
+}
+function paperReviewLiveStrokeIds(page = null, qno = null) {
+  const ids = new Set();
+  if (!Number.isInteger(qno) || qno < 1 || qno > 20) return ids;
   const pages = paperSourceSession && paperSourceSession.inkPages || {};
-  for (const data of Object.values(pages)) {
-    const deleted = data && data.deleted instanceof Set ? data.deleted : new Set(data && data.deleted || []);
-    for (const stroke of data && Array.isArray(data.s) ? data.s : []) {
-      const id = paperInkStrokeId(stroke);
-      if (stroke && !stroke.dead && Array.isArray(stroke.pts) && stroke.pts.length > 1 && !deleted.has(id)) ids.add(id);
-    }
+  for (const [pageKey, data] of Object.entries(pages)) {
+    if (page != null && Number(pageKey) !== Number(page)) continue;
+    for (const id of paperInkLiveStrokeIdsForQuestion(data, qno)) ids.add(id);
   }
   return ids;
 }
 function paperReviewResetEffortBaseline() {
-  if (paperReview) paperReview.effortBaseline = paperReviewLiveStrokeIds();
+  if (!paperReview) return;
+  const no = paperReview.nos && paperReview.nos[paperReview.i];
+  const page = paperQuestionScanIndex(paperReview.source, no);
+  paperReview.effortBaseline = paperReviewLiveStrokeIds(page, no);
 }
 function paperReviewCurrentEffort() {
   const baseline = paperReview && paperReview.effortBaseline instanceof Set ? paperReview.effortBaseline : new Set();
-  const live = paperReviewLiveStrokeIds();
+  const no = paperReview && paperReview.nos && paperReview.nos[paperReview.i];
+  const page = paperReview ? paperQuestionScanIndex(paperReview.source, no) : null;
+  const live = paperReviewLiveStrokeIds(page, no);
   const newStrokeIds = [...live].filter((id) => !baseline.has(id));
   const direction = String(($('#paper-review-direction') || {}).value || '').trim().slice(0, 500);
   const topic = String(($('#paper-review-topic') || {}).value || '').trim();
@@ -9823,6 +11508,211 @@ function paperReviewCurrentEffort() {
     meaningful:newStrokeIds.length > 0 || direction.length >= 8 || (!!TOPICS[topic] && concept.length >= 2),
   };
 }
+function paperCorrectionRetryReceiptRef(value) {
+  const row = value && typeof value === 'object' ? value : {};
+  const receiptId = String(row.receiptId || '');
+  const canonicalDigest = String(row.canonicalDigest || '').toLowerCase();
+  return /^paper-correction-retry-[A-Za-z0-9._:-]{16,127}$/.test(receiptId)
+      && /^[a-f0-9]{64}$/.test(canonicalDigest)
+    ? { receiptId, canonicalDigest } : null;
+}
+async function paperCorrectionRetryReceiptVerified(raw, run, source, no, accepted) {
+  const row = raw && typeof raw === 'object' ? raw : {};
+  const receipt = row.receipt && typeof row.receipt === 'object' ? row.receipt : row;
+  const ref = paperCorrectionRetryReceiptRef(receipt);
+  const liveStrokes = Array.isArray(receipt.correctionLiveStrokes) ? receipt.correctionLiveStrokes : [];
+  const newStrokes = Array.isArray(receipt.correctionNewStrokes) ? receipt.correctionNewStrokes : [];
+  const snapshotInvalid = (strokes) => {
+    let totalPoints = 0;
+    const invalid = !strokes.length || strokes.length > 1000 || strokes.some((stroke) => {
+      const keys = stroke && typeof stroke === 'object' ? Object.keys(stroke).sort().join('\u0000') : '';
+      const expected = ['c', 'geometryDigest', 'id', 'pts', 'qno', 't0', 't1', 'w'].sort().join('\u0000');
+      const pts = stroke && Array.isArray(stroke.pts) ? stroke.pts : [];
+      totalPoints += pts.length;
+      return keys !== expected || !/^[A-Za-z0-9._:-]{1,300}$/.test(String(stroke && stroke.id || ''))
+        || paperInkStrokeQuestionNo(stroke) !== Number(no)
+        || !PAPER_INK_COLORS[String(stroke && stroke.c || '')]
+        || !Number.isFinite(Number(stroke && stroke.w)) || Number(stroke.w) < .35 || Number(stroke.w) > 2
+        || !Number.isSafeInteger(Number(stroke && stroke.t0)) || Number(stroke.t0) < 0
+        || !Number.isSafeInteger(Number(stroke && stroke.t1)) || Number(stroke.t1) < Number(stroke.t0)
+        || pts.length < 2 || pts.length > 10000
+        || pts.some((point) => !Array.isArray(point) || point.length !== 3
+          || point.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1))
+        || !/^[a-f0-9]{64}$/.test(String(stroke && stroke.geometryDigest || ''));
+    });
+    return invalid || totalPoints > 50000
+      || new TextEncoder().encode(JSON.stringify(strokes)).byteLength > 1000000;
+  };
+  const liveIds = Array.isArray(receipt.correctionLiveStrokeIds) ? receipt.correctionLiveStrokeIds.map(String) : [];
+  const newIds = Array.isArray(receipt.correctionNewStrokeIds) ? receipt.correctionNewStrokeIds.map(String) : [];
+  const liveDigests = Array.isArray(receipt.correctionLiveStrokeDigests)
+    ? receipt.correctionLiveStrokeDigests.map((value) => String(value).toLowerCase()) : [];
+  const newDigests = Array.isArray(receipt.correctionNewStrokeDigests)
+    ? receipt.correctionNewStrokeDigests.map((value) => String(value).toLowerCase()) : [];
+  const strokeIds = (strokes) => strokes.map((stroke) => String(stroke && stroke.id || ''));
+  const strokeDigests = (strokes) => [...new Set(strokes.map((stroke) =>
+    String(stroke && stroke.geometryDigest || '').toLowerCase()))].sort();
+  if (!ref || (row.canonical_digest != null && String(row.canonical_digest).toLowerCase() !== ref.canonicalDigest)
+    || receipt.authority !== 'supabase-immutable-paper-correction-retry-v1'
+    || String(receipt.runId || '') !== String(run && run.id || '')
+    || String(receipt.sourceId || '') !== String(source && source.id || '')
+    || Number(receipt.questionNo) !== Number(no)
+    || String(receipt.acceptedAttemptId || '') !== String(accepted && accepted.attemptId || '')
+    || String(receipt.acceptedInkSnapshotSha256 || '').toLowerCase()
+      !== String(accepted && accepted.inkSnapshotSha256 || '').toLowerCase()
+    || snapshotInvalid(liveStrokes) || snapshotInvalid(newStrokes)
+    || !liveIds.length || !newIds.length || !liveDigests.length || !newDigests.length
+    || new Set(liveIds).size !== liveIds.length || new Set(newIds).size !== newIds.length
+    || [...liveIds].sort().join('\u0000') !== liveIds.join('\u0000')
+    || [...newIds].sort().join('\u0000') !== newIds.join('\u0000')
+    || liveIds.some((id) => !/^[A-Za-z0-9._:-]{1,300}$/.test(id))
+    || new Set(liveDigests).size !== liveDigests.length || new Set(newDigests).size !== newDigests.length
+    || [...liveDigests].sort().join('\u0000') !== liveDigests.join('\u0000')
+    || [...newDigests].sort().join('\u0000') !== newDigests.join('\u0000')
+    || liveDigests.some((digest) => !/^[a-f0-9]{64}$/.test(digest))
+    || strokeIds(liveStrokes).join('\u0000') !== liveIds.join('\u0000')
+    || strokeIds(newStrokes).join('\u0000') !== newIds.join('\u0000')
+    || strokeDigests(liveStrokes).join('\u0000') !== liveDigests.join('\u0000')
+    || strokeDigests(newStrokes).join('\u0000') !== newDigests.join('\u0000')
+    || newIds.some((id) => !liveIds.includes(id))
+    || newDigests.some((digest) => !liveDigests.includes(digest))) return null;
+  const core = { ...receipt };
+  delete core.canonicalDigest;
+  if (await capabilityCanonicalDigest(core) !== ref.canonicalDigest) return null;
+  for (const stroke of liveStrokes) {
+    if (await capabilityCanonicalDigest({ pts:stroke.pts, c:stroke.c, w:stroke.w })
+      !== String(stroke.geometryDigest).toLowerCase()) return null;
+  }
+  for (const stroke of newStrokes) {
+    const live = liveStrokes.find((candidate) => String(candidate.id) === String(stroke.id)
+      && String(candidate.geometryDigest).toLowerCase() === String(stroke.geometryDigest).toLowerCase());
+    if (!live || await capabilityCanonicalDigest(live) !== await capabilityCanonicalDigest(stroke)) return null;
+  }
+  const cloneSnapshot = (stroke) => ({
+    id:String(stroke.id), qno:Number(stroke.qno), pts:stroke.pts.map((point) => point.map(Number)),
+    c:String(stroke.c), w:Number(stroke.w), t0:Number(stroke.t0), t1:Number(stroke.t1),
+    geometryDigest:String(stroke.geometryDigest).toLowerCase(),
+  });
+  return { ...ref, correctionLiveStrokes:liveStrokes.map(cloneSnapshot),
+    correctionNewStrokes:newStrokes.map(cloneSnapshot) };
+}
+async function paperCorrectionRetryReceiptReadback(requestId, run, source, no, accepted) {
+  if (!supa || !syncState.user || !requestId) return null;
+  let query = supa.from('paper_correction_retry_receipts')
+    .select('receipt,canonical_digest')
+    .eq('receipt_id', requestId)
+    .eq('run_id', run.id)
+    .eq('source_id', source.id)
+    .eq('question_no', Number(no))
+    .eq('accepted_attempt_id', accepted.attemptId);
+  if (query && typeof query.limit === 'function') query = query.limit(2);
+  const response = await paperAwaitWithTimeout(query, 12000, '隔日訂正收據回讀');
+  if (response && response.error) throw response.error;
+  const rows = Array.isArray(response && response.data) ? response.data : [];
+  if (!rows.length) return null;
+  if (rows.length !== 1) throw new Error('隔日訂正收據回讀不唯一');
+  const ref = await paperCorrectionRetryReceiptVerified(rows[0], run, source, no, accepted);
+  if (!ref) throw new Error('隔日訂正收據回讀與本題不一致');
+  return ref;
+}
+function paperCorrectionRetryRequestId() {
+  const entropy = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  return `paper-correction-retry-${entropy}`;
+}
+async function paperCorrectionCloudManifest(review, no, session = paperSourceSession) {
+  if (!review || !session || session.run !== review.run || !session.inkRun) return null;
+  const page = paperQuestionScanIndex(review.source, no);
+  const data = session.inkPages && session.inkPages[page];
+  if (!data || paperInkLiveStrokeIdsForQuestion(data, Number(no)).size < 1) return null;
+  const stored = await paperInkPersistPage(page, data, true, session);
+  if (!stored && data.dirty) return null;
+  if (!await paperInkCloudFlushBarrier(session)) return null;
+  const checkpoint = paperInkCheckpointRecord(page, data, session);
+  if (!checkpoint) return null;
+  const rows = await paperInkCloudRows(session.inkRun.id);
+  const matches = rows.filter((row) => row && row.client_id === checkpoint.client_id && row.qid === checkpoint.qid);
+  if (matches.length !== 1) return null;
+  const cloud = matches[0], proc = cloud.proc || {}, strokes = cloud.strokes || {};
+  const revision = Number(proc.revision);
+  const updatedMs = Date.parse(String(cloud.updated_at || ''));
+  const serverUpdatedMs = Date.parse(String(cloud.server_updated_at || ''));
+  const localSha256 = await capabilityCanonicalDigest(checkpoint.strokes);
+  const cloudSha256 = await capabilityCanonicalDigest(strokes);
+  if (proc.overlay !== true || proc.mode !== 'paper-correction' || proc.event != null
+    || Number(proc.page) !== page || !Number.isInteger(revision) || revision < 0
+    || revision !== Number(strokes.revision) || strokes.paper !== true
+    || Number(strokes.questionTagSchema) !== 1
+    || paperInkLiveStrokeIdsForQuestion(strokes, Number(no)).size < 1
+    || localSha256 !== cloudSha256 || !Number.isFinite(updatedMs)
+    || !Number.isFinite(serverUpdatedMs)) return null;
+  return [{ page, qid:checkpoint.qid, clientId:checkpoint.client_id, revision,
+    cloudSha256, updatedAt:new Date(updatedMs).toISOString(),
+    serverUpdatedAt:new Date(serverUpdatedMs).toISOString() }];
+}
+async function paperCorrectionRetryReceiptAcquire(review, no, state) {
+  const run = review && review.run, source = review && review.source;
+  const accepted = run && run.submitAttempt;
+  if (!run || !source || !state || !supa || !syncState.user
+    || !paperSubmitAcceptedReceiptValid(accepted, run.id, source.id)) {
+    throw new Error('本題缺少可驗證的 accepted 交卷收據');
+  }
+  for (let round = 0; round < 2; round++) {
+    const pageManifest = await paperCorrectionCloudManifest(review, no);
+    if (!pageManifest) throw new Error('訂正頁尚未完成雲端回讀，沒有核發詳解收據');
+    let requestId = String(state.correctionRetryReceiptRequestId || '');
+    if (!/^paper-correction-retry-[A-Za-z0-9._:-]{16,127}$/.test(requestId)) {
+      requestId = paperCorrectionRetryRequestId();
+      state.correctionRetryReceiptRequestId = requestId;
+      state.mt = Date.now(); run.mt = state.mt; save();
+    }
+    let response = null, failure = null;
+    try {
+      response = await paperAwaitWithTimeout(supa.rpc('matha_paper_correction_retry_accept', {
+        p_receipt_id:requestId,
+        p_run_id:run.id,
+        p_source_id:source.id,
+        p_question_no:Number(no),
+        p_accepted_attempt_id:accepted.attemptId,
+        p_page_manifest:pageManifest,
+      }), 18000, '隔日訂正收據確認');
+      if (response && response.error) failure = response.error;
+    } catch (error) {
+      failure = error;
+    }
+    if (failure) {
+      // RPC 可能已 commit 但回應在 timeout 中遺失。先讀回同 ID，絕不用改寫後的 manifest
+      // 把一張已核發收據隱藏；只有 DB 確定無此列時才換 ID 重試一次。
+      let recovered;
+      try {
+        recovered = await paperCorrectionRetryReceiptReadback(requestId, run, source, no, accepted);
+      } catch (readbackError) {
+        const message = (readbackError && readbackError.message) || String(readbackError);
+        throw new Error(`${(failure && failure.message) || failure}；${message}`);
+      }
+      if (recovered) {
+        state.correctionRetryReceipt = paperCorrectionRetryReceiptRef(recovered);
+        delete state.correctionRetryReceiptRequestId;
+        state.mt = Date.now(); run.mt = state.mt; save();
+        return recovered;
+      }
+      if (round === 0) {
+        delete state.correctionRetryReceiptRequestId;
+        state.mt = Date.now(); run.mt = state.mt; save();
+        continue;
+      }
+      throw failure;
+    }
+    const raw = Array.isArray(response && response.data) ? response.data[0] : response && response.data;
+    const ref = await paperCorrectionRetryReceiptVerified(raw, run, source, no, accepted);
+    if (!ref) throw new Error('隔日訂正收據與本題或 accepted 交卷不一致');
+    state.correctionRetryReceipt = paperCorrectionRetryReceiptRef(ref);
+    delete state.correctionRetryReceiptRequestId;
+    state.mt = Date.now(); run.mt = state.mt; save();
+    return ref;
+  }
+  throw new Error('隔日訂正收據無法確認');
+}
 async function paperReviewDetailed(force = false) {
   if (!paperReview || paperReview.detailLoading) return;
   const review = paperReview;
@@ -9834,16 +11724,16 @@ async function paperReviewDetailed(force = false) {
     if (msg) msg.textContent = '詳解會在隔日訂正開始後開放。';
     return;
   }
-  if (!state.aiDetail && (Number(state.attempts) || 0) < 1) {
-    review.detailError = '請先在卷面留下新的重算，或保存一個具體方向／單元判斷；完成一次真實重想後才開放詳解。';
-    renderPaperAnswerReview();
-    return;
-  }
   if (state.aiDetail && !force) {
     paperReviewRecordDetailOpen(state);
     review.detailOpen = true;
     review.detailError = '';
     await paperOfficialSolutionLoad(review, no);
+    renderPaperAnswerReview();
+    return;
+  }
+  if (!paperCorrectionRetryReceiptRef(state.correctionRetryReceipt)) {
+    review.detailError = '請先在本題所在頁新增筆跡，並按「仍沒算出」或「AI 再批改」完成雲端回讀與隔日訂正收據。';
     renderPaperAnswerReview();
     return;
   }
@@ -9856,17 +11746,28 @@ async function paperReviewDetailed(force = false) {
     ]);
     if (!journalOk || (!snapshotOk && paperInkPage() && paperInkPage().dirty)) throw new Error('訂正筆跡尚未安全保存，請稍後再試。');
     await syncPush();
-    const page = paperQuestionScanIndex(review.source, no);
-    const image = await paperReviewPageComposite(page);
-    const focus = await paperReviewQuestionFocusImage(image, review.source, no);
+    const retryRef = paperCorrectionRetryReceiptRef(state.correctionRetryReceipt);
+    const retryReceipt = retryRef && await paperCorrectionRetryReceiptReadback(
+      retryRef.receiptId, review.run, review.source, no, review.run.submitAttempt,
+    );
+    if (!retryReceipt || retryReceipt.canonicalDigest !== retryRef.canonicalDigest) {
+      throw new Error('隔日訂正收據的不可變筆跡無法安全回讀');
+    }
     if (paperReview !== review) return;
     const [response] = await Promise.all([
-      paperReviewDetailCallCompat(review, no, state, image, focus),
+      paperReviewDetailCallCompat(review, no, state),
       paperOfficialSolutionLoad(review, no),
     ]);
     if (paperReview !== review) return;
     state.aiDetail = paperNormalizeAiDetail(review.source, no, response.json, response.model);
-    processEvidenceRecordAiDetail(state, state.aiDetail);
+    state.aiDetail.requestId = String(response.requestId || '');
+    state.aiDetail.usage = response.usage && typeof response.usage === 'object' ? { ...response.usage } : null;
+    state.aiDetail.budget = response.budget && typeof response.budget === 'object' ? { ...response.budget } : null;
+    state.aiDetail.predictionMetadata = response.metadata && typeof response.metadata === 'object' ? { ...response.metadata } : null;
+    state.aiDetail.predictionContentSha256 = await capabilityCanonicalDigest(paperDetailPredictionContent(state.aiDetail));
+    paperDetailPredictionHistoryPush(state, state.aiDetail);
+    /* 模型自己的 OCR、第一錯步與錯因分類都不能互相背書。「第一錯步抓對」只建立
+       診斷位置 gold，不會把未另行評估的 errorKind 寫入長期弱點；錯因需老師覆核。 */
     state.solutionUnlockedAt = Number(state.solutionUnlockedAt) || Date.now();
     paperReviewRecordDetailOpen(state);
     review.detailOpen = true;
@@ -9911,6 +11812,17 @@ function paperReviewDetailDrawerHTML(state) {
     ? `<div class='paper-detail-error-card'>${detail.firstErrorEvidence ? `<blockquote>${rtAi(detail.firstErrorEvidence)}</blockquote>` : ''}<p class='badc'>${rtAi(detail.firstError)}</p>${detail.whyWrong ? `<p>${rtAi(detail.whyWrong)}</p>` : ''}${detail.errorKind ? `<span class='paper-detail-kind'>${escH(detail.errorKind)}</span>` : ''}</div>`
     : `<p class='dim'>AI 目前無法用卷面證據唯一定位第一個錯誤；這次不會把猜測寫進你的弱點模型。</p>`;
   const userNote = escH(state && state.aiDetailUserNote || '');
+  const detailReview = paperDetailLatestHumanReview(state);
+  const detailReviewLabel = detailReview && PAPER_DETAIL_GOLD_VERDICTS[detailReview.verdict]
+    ? PAPER_DETAIL_GOLD_VERDICTS[detailReview.verdict].label : '';
+  const goldReview = !detail.predictionMetadata
+    ? `<section class='paper-detail-gold-review warn'><h3>詳批品質校對</h3><p>這是舊版詳批，缺少題面與請求雜湊；重新分析後才能列入 7／30 題個人 gold。</p></section>`
+    : `<section class='paper-detail-gold-review'><h3>這次第一錯步判得準嗎？</h3>
+      ${detailReviewLabel ? `<p class='okc'>已記錄：${escH(detailReviewLabel)}。再次選擇會保留前次歷史並更新目前判定。</p>` : '<p>只要按一次。這會讓每次正常訂正自然累積成 7 題詳批驗收與 30 題個人 gold，不需另外重跑 AI。</p>'}
+      <div class='paper-detail-gold-actions'>${detail.firstError && detail.firstErrorEvidence
+        ? `<button class='btn primary' onclick="paperDetailGoldReview(${no},'diagnosis-correct')">第一錯步抓對</button><button class='btn' onclick="paperDetailGoldReview(${no},'diagnosis-wrong')">有錯步，但位置抓錯</button><button class='btn' onclick="paperDetailGoldReview(${no},'should-abstain')">其實不該硬猜</button>`
+        : `<button class='btn primary' onclick="paperDetailGoldReview(${no},'abstain-correct')">保守不猜是對的</button><button class='btn' onclick="paperDetailGoldReview(${no},'missed-diagnosis')">其實有清楚第一錯步</button>`}
+      </div></section>`;
   return `<aside class='paper-detail-drawer' aria-label='第 ${no} 題 AI 詳解'>
     <div class='paper-detail-drawer-head'><div><span class='eyebrow'>第 ${no} 題逐步診斷｜GPT‑5.5</span><h2>做到哪裡、從哪裡開始錯</h2><span class='paper-detail-confidence' data-level='${escH(detail.confidence || 'low')}'>${confidenceLabel}</span></div><button class='paper-icon-btn' onclick='paperReviewDetailToggle(false)' aria-label='收起詳解'>${uiIcon('x')}</button></div>
     <div class='paper-detail-drawer-body'>
@@ -9923,6 +11835,7 @@ function paperReviewDetailDrawerHTML(state) {
       ${officialSolution}
       <details class='paper-detail-full-solution'${officialSolution ? '' : ' open'}><summary>AI 拆解與補充</summary>${detail.solution.length ? `<ol class='paper-detail-steps'>${detail.solution.map((step) => `<li>${rtAi(step)}</li>`).join('')}</ol>` : '<p class="warnc">AI 沒有產生足夠步驟，請補充辨識後重新詳批。</p>'}<p class='blind-answer'>正式答案：<b>${escH(detail.answer)}</b></p></details>
       ${detail.nextTime ? `<div class='next-step'><b>下次看到什麼要立刻反應</b>${rtAi(detail.nextTime)}</div>` : ''}
+      ${goldReview}
       <details class='paper-detail-correction'><summary>AI 看錯我的手寫</summary><label>補一句正確辨識，重新詳批<textarea id='paper-detail-user-note' rows='2' placeholder='例如：第二行其實寫的是 2x−3，不是 2x+3。'>${userNote}</textarea></label><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新分析中…' : '帶著更正重新分析'}</button></details>
       <div class='actr'><button class='btn primary' onclick='paperReviewFinishDetailed()'>看完並回卷面重算</button><button class='btn' onclick='paperReviewDetailed(true)' ${paperReview.detailLoading ? 'disabled' : ''}>${paperReview.detailLoading ? '重新分析中…' : '重新分析這一題'}</button></div>
     </div>
@@ -9984,7 +11897,7 @@ function renderPaperAnswerReviewWorkspace() {
   const scan = paperReview.source.scans[page];
   const answer = String(q && q.answer || '');
   const detailAvailable = !!state.aiDetail;
-  const detailUnlocked = detailAvailable || (Number(state.attempts) || 0) > 0;
+  const detailUnlocked = detailAvailable || !!paperCorrectionRetryReceiptRef(state.correctionRetryReceipt);
   const detailButtonLabel = paperReview.detailLoading ? '正在產生詳解…' : detailAvailable ? `打開第 ${no} 題詳解` : detailUnlocked ? `看第 ${no} 題詳解` : '先留下一次重想';
   const detailShortcut = `<button id='paper-detail-shortcut' class='paper-detail-shortcut' onclick='paperReviewDetailed()' ${paperReview.detailLoading || !detailUnlocked ? 'disabled' : ''} aria-disabled='${paperReview.detailLoading || !detailUnlocked}'>${uiIcon('book')}<span>${detailButtonLabel}</span></button>`;
   let actions = '';
@@ -10006,49 +11919,95 @@ function renderPaperAnswerReviewWorkspace() {
     paperRecoveryHeartbeat();
   });
 }
-async function paperAiCorrectionCall(source, no, imageB64) {
+async function paperCorrectionGradePayloadVerified(payload, source, no, retryReceipt) {
+  const run = paperReview && paperReview.run;
+  const accepted = run && run.submitAttempt;
+  const json = payload && payload.json;
+  const receipt = payload && payload.correctionGradeReceipt;
+  const job = payload && payload.correctionGradeJob;
+  const status = String(json && json.status || '');
+  if (!run || !source || !accepted || !retryReceipt || !receipt || !job
+    || !['correct', 'incorrect', 'unanswered', 'uncertain'].includes(status)
+    || typeof (json && json.read) !== 'string' || String(json.read).length > 240
+    || receipt.authority !== 'supabase-immutable-paper-correction-grade-result-v1'
+    || String(receipt.jobId || '') !== String(job.jobId || '')
+    || String(receipt.runId || '') !== String(run.id || '')
+    || String(receipt.sourceId || '') !== String(source.id || '')
+    || Number(receipt.questionNo) !== Number(no)
+    || String(receipt.retryReceiptId || '') !== String(retryReceipt.receiptId || '')
+    || String(receipt.retryReceiptDigest || '') !== String(retryReceipt.canonicalDigest || '')
+    || String(receipt.modelInputBindingSha256 || '') !== String(job.modelInputBindingSha256 || '')
+    || String(job.status || '') !== 'completed'
+    || !/^[a-f0-9]{64}$/.test(String(receipt.modelInputBindingSha256 || ''))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.normalizedResultSha256 || ''))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.modelMetadataSha256 || ''))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.canonicalDigest || ''))
+    || Date.parse(String(receipt.completedAt || '')) < Number(run.submittedAt || 0)) return null;
+  const metadata = {
+    model:String(payload.model || ''), requestId:String(payload.requestId || ''),
+    usage:payload.usage || null, budget:payload.budget || null,
+  };
+  const core = {
+    authority:receipt.authority, jobId:receipt.jobId, runId:receipt.runId,
+    sourceId:receipt.sourceId, questionNo:Number(receipt.questionNo),
+    retryReceiptId:receipt.retryReceiptId,
+    retryReceiptDigest:receipt.retryReceiptDigest,
+    modelInputBindingSha256:receipt.modelInputBindingSha256,
+    normalizedResultSha256:receipt.normalizedResultSha256,
+    modelMetadataSha256:receipt.modelMetadataSha256,
+    completedAt:receipt.completedAt,
+  };
+  if (await capabilityCanonicalDigest(json) !== receipt.normalizedResultSha256
+    || await capabilityCanonicalDigest(metadata) !== receipt.modelMetadataSha256
+    || await capabilityCanonicalDigest(core) !== receipt.canonicalDigest) return null;
+  return { json, receipt, job, metadata };
+}
+async function paperAiCorrectionCall(source, no, retryReceipt) {
   const run = paperReview && paperReview.run;
   const q = paperQuestionMeta(run, source, no), answer = String(q && q.answer || '');
   if (!q || !answer) throw new Error('找不到交卷後保存的正式答案，已停止訂正批改');
-  const gradeItem = run && run.aiGrade && (run.aiGrade.questions || []).find((item) => Number(item.no) === Number(no));
-  const reviewState = run && run.review && run.review[no];
-  const learnerTopic = gradeItem && gradeItem.topic || reviewState && reviewState.topic || q && q.topic || '';
-  const content = [{
-    type: 'image',
-    source: { type:'base64', media_type:'image/jpeg', data:imageB64 },
-  }, {
-    type: 'text',
-    text: `你是台灣學測數學的訂正閱卷老師。這張完整單頁已分層合成：印刷題目與考試當天筆跡是底稿、紅筆是第一次簡批、紫色筆跡才是學生今天新增的隔日訂正。請只判斷第 ${no} 題的紫色訂正，不要把舊作答或紅筆當成新答案。\n\n正式答案：${answer}\n題型：${q.type}\n${learnerContextForAi(learnerTopic)}\n\n規則：\n1. 紫色訂正只要方法與最終答案成立，即使寫法不同或未化成相同外觀也算對。\n2. 必須看到足夠的紫色重算或明確最終答案；只有抄正式答案、沒有可辨識推導時判錯。\n3. correct 只回傳這次訂正是否成立；read 簡短轉錄紫色作答。\n4. marks 只框紫色筆跡中的最終答案，答對標「訂正正確」，答錯標「答案未對」。此輪不要在圖上指出第一個算式錯誤，也不要提供下一步。\n5. firstError、errKind、praise、nextTime 仍依 schema 回傳，但介面在第二次詳批前不顯示錯誤分析；stuck 固定空陣列。`,
-  }];
-  return aiJSON(content, 'grade');
+  const context = {
+    paperRunId:run && run.id, sourceId:source && source.id, questionNo:Number(no),
+    submitAttemptId:run && run.submitAttempt && run.submitAttempt.attemptId,
+    submitAttemptInkSnapshotSha256:run && run.submitAttempt && run.submitAttempt.inkSnapshotSha256,
+    submittedAt:run && run.submitAttempt && run.submitAttempt.submittedAt,
+    runCreatedAppVersion:run && run.submitAttempt && run.submitAttempt.runCreatedAppVersion,
+    correctionRetryReceiptId:retryReceipt && retryReceipt.receiptId,
+    correctionRetryReceiptDigest:retryReceipt && retryReceipt.canonicalDigest,
+  };
+  let lastPayload = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const payload = await openAiInvoke({ responseType:'paper_correction_grade', context }, 90000);
+    lastPayload = payload;
+    const verified = await paperCorrectionGradePayloadVerified(payload, source, no, retryReceipt);
+    if (verified) return verified;
+    if (!(payload && payload.correctionGradeJob && payload.correctionGradeJob.status === 'dispatched')) break;
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  if (lastPayload && lastPayload.correctionGradeJob) {
+    throw new Error('本題訂正結果尚未安全封存；系統不會重複送模型。請保留目前筆跡，稍後再按一次批改。');
+  }
+  throw new Error('訂正批改沒有回傳可驗證的伺服器收據');
 }
 function paperNormalizeCorrectionGrade(source, no, raw) {
-  const correct = aiCorrect(raw);
-  const kind = correct ? 'check' : 'cross';
-  let marks = (Array.isArray(raw && raw.marks) ? raw.marks : []).slice(0, 2).map((mark) => {
-    const box = Array.isArray(mark && mark.box) ? mark.box.map(Number) : [];
-    if (box.length !== 4 || box.some((value) => !Number.isFinite(value))) return null;
-    return { box:box.map((value) => Math.max(0, Math.min(1, value))), kind, option:0, label:correct ? '訂正正確' : '答案未對' };
-  }).filter(Boolean);
-  if (!marks.length) {
+  const json = raw && raw.json || {};
+  const status = String(json.status || 'uncertain');
+  const correct = status === 'correct';
+  const uncertain = status === 'uncertain';
+  const unanswered = status === 'unanswered';
+  const kind = correct ? 'check' : uncertain ? 'uncertain' : unanswered ? 'unanswered' : 'cross';
+  let marks = [];
+  if (!uncertain) {
     const page = paperQuestionScanIndex(source, no) + 1;
-    marks = [paperFallbackMark(source, no, page, correct ? '訂正正確' : '答案未對', kind, 0, 0)];
+    marks = [paperFallbackMark(source, no, page,
+      correct ? '訂正正確' : unanswered ? '未看到訂正答案' : '答案未對', kind, 0, 0)];
   }
   return {
-    correct, uncertain:false, gradedAt:Date.now(),
-    read:String(raw && raw.read || '').trim().slice(0, 240),
-    errKind:String(raw && raw.errKind || '').trim().slice(0, 80),
-    hiddenFirstError:raw && raw.firstError == null ? null : String(raw.firstError).trim().slice(0, 300),
-    marks,
+    correct, uncertain, unanswered, status, gradedAt:Date.now(),
+    read:String(json.read || '').trim().slice(0, 240), errKind:'',
+    hiddenFirstError:null, marks,
+    serverReceipt:raw.receipt, serverJob:raw.job,
   };
-}
-function paperCorrectionErrorKind(value) {
-  const text = String(value || '');
-  if (/計算|正負|移項|代入|化簡|約分|符號/.test(text)) return '計算或符號失誤';
-  if (/審題|條件|看錯/.test(text)) return '條件翻譯不完整';
-  if (/公式|定義/.test(text)) return '定義或公式不熟';
-  if (/方法|方向/.test(text)) return '建式方向錯誤';
-  return '推理中間有缺口';
 }
 async function paperReviewGrade(targetLevel = 2) {
   if (!paperReview || !paperSourceSession || paperReview.grading) return;
@@ -10062,19 +12021,33 @@ async function paperReviewGrade(targetLevel = 2) {
     return;
   }
   review.grading = true; review.gradeError = ''; renderPaperAnswerReview();
+  let retryReceipt = null;
   try {
     paperInkCommitCurrent();
     const [journalOk, snapshotOk] = await Promise.all([paperInkJournalDrain(session), paperInkPersist(true)]);
     if (!journalOk || (!snapshotOk && paperInkPage() && paperInkPage().dirty)) throw new Error('訂正筆跡尚未安全保存，請等右上顯示已保存後再批改。');
+    const pendingRef = paperCorrectionRetryReceiptRef(state.correctionGradePendingReceipt);
+    retryReceipt = pendingRef
+      ? await paperCorrectionRetryReceiptReadback(
+        pendingRef.receiptId, review.run, review.source, no, review.run.submitAttempt,
+      )
+      : await paperCorrectionRetryReceiptAcquire(review, no, state);
+    if (!retryReceipt) throw new Error('找不到這一次訂正的完整伺服器收據');
+    state.correctionGradePendingReceipt = paperCorrectionRetryReceiptRef(retryReceipt);
+    state.mt = Date.now(); review.run.mt = state.mt; save();
     const page = paperQuestionScanIndex(review.source, no);
-    const image = await paperReviewPageComposite(page);
-    if (paperReview !== review) return;
-    const raw = await paperAiCorrectionCall(review.source, no, image);
+    const raw = await paperAiCorrectionCall(review.source, no, retryReceipt);
     if (paperReview !== review) return;
     const grade = paperNormalizeCorrectionGrade(review.source, no, raw);
     state.correctionGrade = grade; state.correctionGradedAt = grade.gradedAt; state.mt = Date.now();
+    delete state.correctionGradePendingReceipt;
     if (grade.correct) {
       state.pendingLevel = Number(targetLevel) === 3 ? 3 : 2;
+    } else if (grade.uncertain || grade.unanswered) {
+      state.pendingLevel = null;
+      review.gradeError = grade.unanswered
+        ? '伺服器沒有在本題訂正層辨識到完整答案；請把最終答案寫清楚後再批改。'
+        : '伺服器無法可靠辨識這次訂正；本次不會寫入你的弱點資料，請把關鍵算式寫清楚後再試。';
     } else {
       state.pendingLevel = null;
       state.logs = state.logs || [];
@@ -10082,16 +12055,11 @@ async function paperReviewGrade(targetLevel = 2) {
         ts:Date.now(), kind:'retry',
         direction:effort.direction || `已在原卷訂正層新增 ${effort.strokes} 筆手寫重算，AI 再批改仍未完整成立。`,
         topic:effort.topic, concept:effort.concept,
-        errorKind:paperCorrectionErrorKind(grade.errKind),
         aiRead:grade.read,
       };
       processEvidenceRecordEffort(log, effort, { ts:log.ts, source:'learner' });
-      processEvidenceRecordClassification(log, log.errorKind, {
-        ts:log.ts, source:'ai-correction-summary', confidence:'unverified',
-      });
       state.logs.push(log);
       state.attempts = (Number(state.attempts) || 0) + 1;
-      state.errorKind = state.errorKind || paperCorrectionErrorKind(grade.errKind);
       paperReviewResetEffortBaseline();
     }
     review.run.reviewCurrentNo = no; review.run.reviewPage = page; review.run.mt = Date.now();
@@ -10102,11 +12070,29 @@ async function paperReviewGrade(targetLevel = 2) {
     if (paperReview === review) { review.grading = false; renderPaperAnswerReview(); }
   }
 }
+function paperCorrectionGradeStoredValid(grade, run, source, no, retryRef) {
+  const receipt = grade && grade.serverReceipt, job = grade && grade.serverJob;
+  return !!(grade && grade.correct && receipt && job && retryRef
+    && receipt.authority === 'supabase-immutable-paper-correction-grade-result-v1'
+    && String(receipt.jobId || '') === String(job.jobId || '')
+    && String(job.status || '') === 'completed'
+    && String(receipt.runId || '') === String(run && run.id || '')
+    && String(receipt.sourceId || '') === String(source && source.id || '')
+    && Number(receipt.questionNo) === Number(no)
+    && String(receipt.retryReceiptId || '') === String(retryRef.receiptId || '')
+    && String(receipt.retryReceiptDigest || '') === String(retryRef.canonicalDigest || '')
+    && String(receipt.modelInputBindingSha256 || '') === String(job.modelInputBindingSha256 || '')
+    && /^[a-f0-9]{64}$/.test(String(receipt.canonicalDigest || '')));
+}
 function paperReviewAcceptCorrection() {
   if (!paperReview) return;
   const no = paperReview.nos[paperReview.i], state = paperReview.run.review[no];
   const level = Number(state && state.pendingLevel);
-  if (!state || !state.correctionGrade || !state.correctionGrade.correct || ![2, 3].includes(level)) return;
+  const retryRef = paperCorrectionRetryReceiptRef(state && state.correctionRetryReceipt);
+  if (!state || ![2, 3].includes(level)
+    || !paperCorrectionGradeStoredValid(
+      state.correctionGrade, paperReview.run, paperReview.source, no, retryRef,
+    )) return;
   state.logs = state.logs || [];
   const log = {
     ts:Date.now(), kind:'complete',
@@ -10121,7 +12107,6 @@ function paperReviewAcceptCorrection() {
   state.done = true; state.level = level; state.pendingLevel = null;
   state.outcome = level === 3 ? 'ai-detail-verified' : 'answer-only-verified';
   state.completedAt = Date.now(); state.mt = state.completedAt;
-  if (level === 3 && state.aiDetail) state.aiErrorKind = state.aiDetail.errorKind || '';
   paperReview.run.mt = Date.now();
   paperRunRefreshLearningTags(paperReview.run); paperSourceUpdateExtMock(paperReview.source, paperReview.run); save();
   paperReview.i++; paperReview.renderedNo = null; paperReview.detailOpen = true;
@@ -10130,8 +12115,8 @@ function paperReviewAcceptCorrection() {
 async function paperReviewStuckWorkspace() {
   if (!paperReview || !paperSourceSession) return;
   const effort = paperReviewCurrentEffort();
-  if (!effort.meaningful) {
-    paperReview.gradeError = '請先留下真實重想：在卷面新增算式／方向；若完全沒有方向，至少選可能單元並寫出卡住的觀念。';
+  if (effort.strokes < 1) {
+    paperReview.gradeError = '請先在本題所在頁留下至少一筆可辨識的新算式或方向；單元與卡點文字可補充說明，但不能單獨解鎖詳批。';
     renderPaperAnswerReview();
     return;
   }
@@ -10143,7 +12128,18 @@ async function paperReviewStuckWorkspace() {
     renderPaperAnswerReview();
     return;
   }
-  const no = paperReview.nos[paperReview.i], state = paperReview.run.review[no];
+  const review = paperReview;
+  const no = review.nos[review.i], state = review.run.review[no];
+  try {
+    await paperCorrectionRetryReceiptAcquire(review, no, state);
+  } catch (error) {
+    if (paperReview === review) {
+      review.gradeError = (error && error.message) || String(error);
+      renderPaperAnswerReview();
+    }
+    return;
+  }
+  if (paperReview !== review) return;
   state.logs = state.logs || [];
   const log = {
     ts:Date.now(), kind:'retry',
@@ -10407,14 +12403,21 @@ function paperLearningSummaryCard() {
   let l1 = 0, l2 = 0, l3 = 0, open = 0;
   const recovery = { lost:0, reconstructed:0, answerOnly:0, solution:0, retained:0, open:0 };
   for (const run of runs) {
+    const source = paperSourceById(run.sourceId);
     const levels = paperRunLevelCounts(run);
     l1 += levels.l1; l2 += levels.l2; l3 += levels.l3; open += levels.open;
     const runRecovery = paperRunRecoveryPoints(run);
     for (const key of Object.keys(recovery)) recovery[key] += runRecovery[key];
-    for (const state of Object.values(run.review || {})) {
+    for (const [noText, state] of Object.entries(run.review || {})) {
       if (!state || typeof state !== 'object') continue;
-      const topic = paperReviewEffectiveTopic(state, state.topic || [...(state.logs || [])].reverse().find((log) => log && log.topic)?.topic || '');
-      const error = state.aiErrorKind || state.errorKind || [...(state.logs || [])].reverse().find((log) => log && log.errorKind)?.errorKind;
+      const item = paperGradeQuestion(run, Number(noText));
+      const topic = paperReviewEffectiveTopic(
+        state, paperTrustedQuestionTopic(run, source, Number(noText), item),
+      );
+      const processOverride = paperTeacherOverrideField(state, 'processStage');
+      const verifiedBlocked = processEvidenceRows(state).find((row) => row.status === 'blocked');
+      const error = processOverride.found ? PROCESS_STAGE_LABELS[processOverride.value]
+        : verifiedBlocked ? learningErrorClass(verifiedBlocked.note) : '';
       if (topic && TOPICS[topic]) topicCount[topic] = (topicCount[topic] || 0) + 1;
       if (error) errorCount[error] = (errorCount[error] || 0) + 1;
     }
@@ -10504,6 +12507,9 @@ function questionFeedbackCard() {
 function learnerModelCard() {
   const model = learnerModel(), cal = model.calibration;
   const capability = capabilityGoalSnapshot();
+  const detailGold = paperDetailGoldSnapshot();
+  const freshProgress = capability.freshCalibration || { count:0, requiredRuns:6 };
+  const strictPasses = (capability.selected || []).filter((row) => Number(row.score) >= CAPABILITY_EVIDENCE_MIN_SCORE).length;
   const topicRows = Object.values(model.topics);
   const directionN = topicRows.reduce((sum, row) => sum + row.directionN, 0);
   const directionWeight = topicRows.reduce((sum, row) => sum + row.directionWeight, 0);
@@ -10514,7 +12520,7 @@ function learnerModelCard() {
   const directionText = directionN >= 10 ? `${Math.round(directionEarned / Math.max(.001, directionWeight) * 100)}%` : `${directionN}/10 筆`;
   const retentionText = retentionN >= 6 ? `${Math.round(retentionEarned / Math.max(.001, retentionWeight) * 100)}%` : `${retentionN}/6 次`;
   const goal = capability.stable
-    ? `最近三回不同來源的正式新鮮卷都站上 72 分參考線；此結論已符合可匯出的能力證據門檻。`
+    ? `本機候選顯示最近三回不同來源的正式新鮮卷都站上 72 分參考線；仍須由伺服器逐回核對批改收據、交卷內容與私有回讀，尚不宣稱已達正式能力證據門檻。`
     : !cal.count
     ? `${model.baselineResetAt ? '舊制成績已歸零。' : ''}還缺一回完整 20 題、100 分鐘模考，才能建立目前級分基準。`
     : cal.acc < SCORE_GOAL.targetAcc
@@ -10560,12 +12566,12 @@ function learnerModelCard() {
     <header><div><span class="eyebrow">每次作答都會更新</span><h2>AI 對你的理解</h2><p>${escH(goal)}</p></div><div class="learner-confidence"><small>整體證據信心</small><b data-level="${overallConfidence.key}">${overallConfidence.label}</b></div></header>
     <div class="learner-facts"><span><b>${model.evidenceCount}</b> 筆學習證據</span><span><b>${model.recentEvidence}</b> 筆來自近 30 天</span><span><b>${model.calibratedTopics}/14</b> 單元已有初步證據</span><span><b>${model.sourceCount}</b> 種練習來源</span></div>
     <div class="learner-diagnosis"><span class="eyebrow">目前最需要知道的事</span><p>${escH(diagnosis)}</p></div>
-    <div class="learner-milestones" aria-label="距離穩定十三級分的訓練里程碑"><span>新制完整模考 <b>${cal.count ? `${cal.count} 回` : '待 1 回'}</b></span><span>破題方向證據 <b>${directionText}</b></span><span>二／七日保留 <b>${retentionText}</b></span><span>72 分以上穩定度 <b>${cal.passes || 0}/3 回</b></span></div>
+    <div class="learner-milestones" aria-label="五道交付後真實證據的本機候選進度"><span>未看過的正式卷候選 <b>${freshProgress.count}/${freshProgress.requiredRuns || 6} 回</b></span><span>不同來源達 72 分候選 <b>${strictPasses}/3 回</b></span><span>破題方向證據 <b>${directionText}</b></span><span>二／七日保留 <b>${retentionText}</b></span><span>詳批品質驗收候選 <b>${Math.min(detailGold.reviewed, 7)}/7 題</b></span><span>個人錯題 gold 候選 <b>${Math.min(detailGold.reviewed, 30)}/30 題</b></span></div>
     <div class="learner-model-grid"><div><h3>目前較有把握的強項</h3>${strengths}</div><div><h3>現在最值得補的地方</h3>${priorities}</div></div>
     <div class="learner-errors"><h3>解題流程斷點</h3><div>${processHTML}</div></div>
     <div class="learner-errors"><h3>反覆出現的卡點</h3><div>${errorRows}</div></div>
     <p class="learner-model-note">這不是固定標籤。獨立作答、題型辨認、眼刷方向、隔日三級、詳解後重算、2／7 日保留、大綱與觀念自述會分開計權；一次錯誤不會被宣布成弱項。下一輪教材精選與 AI 詳批會直接讀取這份模型。${model.baselineResetAt ? `目前基準自 ${escH(learningBaselineDate())} 起算，較早資料只保留原稿。` : ''}</p>
-    <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button><button class="btn subtle" onclick="exportCapabilityGoalEvidence()">下載能力目標證據</button><button class="btn subtle" onclick="resetLearningBaseline()">重新建立學習基準</button></div>
+    <div class="actr"><button class="btn primary" onclick="startAdaptiveTextbook(10)">依目前模型選 10 題</button><button class="btn subtle" onclick="exportCapabilityGoalEvidence()">下載模考驗收證據</button><button class="btn subtle" onclick="exportPaperDetailGoldEvidence()">下載詳批 gold 證據</button><button class="btn subtle" onclick="resetLearningBaseline()">重新建立學習基準</button></div>
   </section>`;
 }
 const SYSTEM_READINESS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -10735,7 +12741,7 @@ async function runSystemReadiness(sourceId) {
       await refreshInkLocalStatus();
       if (syncState.pushErr || syncState.revision == null) add('sync', '狀態與筆跡雲端同步', 'fail', syncState.msg || '同步沒有完成');
       else if (inkLocalStatus.pending > 0) add('sync', '狀態與筆跡雲端同步', 'fail', `仍有 ${inkLocalStatus.pending} 份本機筆跡待補傳`);
-      else add('sync', '狀態與筆跡雲端同步', 'pass', `狀態 revision ${syncState.revision}；待補傳 0 份`);
+      else add('sync', '狀態與筆跡雲端同步', 'pass', `狀態 revision ${syncState.revision}；待補傳 0 份；交卷後本機隔離 ${inkLocalStatus.rejected || 0} 份`);
 
       try {
         const count = await systemReadinessPaperAssets(paperSource);
@@ -10973,6 +12979,14 @@ function syncPill() {
   }
   if (!supa) { show('離線版（無法同步）', 'off'); return; }
   if (!syncState.user) { show('未登入——紀錄只存本機', 'warn'); return; }
+  if (!syncState.pushErr && inkLocalStatus.pending > 0) {
+    show(`待同步 ${inkLocalStatus.pending} 份${inkLocalStatus.rejected > 0 ? `｜交卷後隔離 ${inkLocalStatus.rejected} 份` : ''}`, 'mid');
+    return;
+  }
+  if (!syncState.pushErr && inkLocalStatus.rejected > 0) {
+    show(`已同步｜交卷後本機隔離 ${inkLocalStatus.rejected} 份`, 'mid');
+    return;
+  }
   show(syncState.msg || '已登入', syncState.pushErr ? 'mid' : 'ok');
 }
 let syncGateAsked = false; // 一個 session 只更新一次提醒；不以原生確認框阻擋離線開練
@@ -10984,6 +12998,21 @@ function syncGate() {
   try { syncPill(); } catch (_) {} // 啟動極早期或測試 DOM 尚未完整時也不阻擋開練
   return true;
 }
+function paperStateMergePreservingActiveSession(left, right) {
+  const active = paperSourceSession && paperSourceSession.run;
+  const merged = mergeState(left, right);
+  if (!active || !active.id || !Array.isArray(merged.paperRuns)) return merged;
+  const index = merged.paperRuns.findIndex((run) => run && run.id === active.id);
+  if (index < 0) return merged;
+  const canonical = merged.paperRuns[index];
+  if (canonical !== active) {
+    for (const key of Object.keys(active)) if (!Object.prototype.hasOwnProperty.call(canonical, key)) delete active[key];
+    Object.assign(active, canonical);
+    merged.paperRuns[index] = active;
+  }
+  paperSourceSession.run = active;
+  return merged;
+}
 async function syncPush() {
   if (!supa || !syncState.user) return;
   if (syncPushPromise) { syncPushAgain = true; return syncPushPromise; }
@@ -10994,7 +13023,11 @@ async function syncPush() {
       for (let attempt = 0; attempt < 5 && !committed; attempt++) {
         const uid = syncState.user && syncState.user.id;
         if (!uid) return;
-        const remoteRes = await supa.from('app_state').select('data,revision').eq('user_id', uid).maybeSingle();
+        const remoteRes = await paperAwaitWithTimeout(
+          supa.from('app_state').select('data,revision').eq('user_id', uid).maybeSingle(),
+          12000,
+          '雲端狀態讀取',
+        );
         if (remoteRes.error) throw remoteRes.error;
         const remote = remoteRes.data;
         const remoteRev = Number(remote && remote.revision) || 0;
@@ -11002,18 +13035,26 @@ async function syncPush() {
         const nextRev = remoteRev + 1;
         let writeRes;
         if (remote) {
-          writeRes = await supa.from('app_state')
-            .update({ data: merged, revision: nextRev, updated_at: new Date().toISOString() })
-            .eq('user_id', uid).eq('revision', remoteRev).select('revision').maybeSingle();
+          writeRes = await paperAwaitWithTimeout(
+            supa.from('app_state')
+              .update({ data: merged, revision: nextRev, updated_at: new Date().toISOString() })
+              .eq('user_id', uid).eq('revision', remoteRev).select('revision').maybeSingle(),
+            12000,
+            '雲端狀態更新',
+          );
           if (!writeRes.error && !writeRes.data) continue; // 另一台搶先更新：重拉、合併、再試
         } else {
-          writeRes = await supa.from('app_state')
-            .insert({ user_id: uid, data: merged, revision: nextRev, updated_at: new Date().toISOString() })
-            .select('revision').maybeSingle();
+          writeRes = await paperAwaitWithTimeout(
+            supa.from('app_state')
+              .insert({ user_id: uid, data: merged, revision: nextRev, updated_at: new Date().toISOString() })
+              .select('revision').maybeSingle(),
+            12000,
+            '雲端狀態建立',
+          );
           if (writeRes.error && (writeRes.error.code === '23505' || /duplicate|unique/i.test(writeRes.error.message || ''))) continue;
         }
         if (writeRes.error) throw writeRes.error;
-        S = mergeState(S, merged); // 網路等待期間本頁若又有新紀錄，也不能被剛提交的快照蓋掉
+        S = paperStateMergePreservingActiveSession(S, merged); // 網路等待期間本頁若又有新紀錄，也不能被剛提交的快照蓋掉
         S._mt = Date.now();
         try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {}
         await stateWrite(S).catch(() => { statePersistErr = true; });
@@ -11042,7 +13083,7 @@ async function syncPull() {
     const { data, error } = await supa.from('app_state').select('data,revision').eq('user_id', syncState.user.id).maybeSingle();
     if (error) { syncState.msg = '下載失敗：' + error.message; return; }
     if (data && data.data) {
-      S = mergeState(S, data.data);
+      S = paperStateMergePreservingActiveSession(S, data.data);
       S._mt = Date.now();
       syncState.revision = Number(data.revision) || 0;
       if (splitOn()) await migrateContentFromS(); // 另一台舊裝置 merge 進來的內容 → 搬進內容層、S 保持輕
@@ -11095,6 +13136,37 @@ function mergePaperReviewState(A, B) {
     if (!overrideIds.has(key)) { overrideIds.add(key); teacherOverrideHistory.push(row); }
   }
   teacherOverrideHistory.sort((x, y) => Number(x.at || 0) - Number(y.at || 0));
+  const aiDetailHistory = [], predictionVersions = new Set(), predictionContentById = new Map();
+  for (const row of [
+    ...paperDetailPredictionHistory(A), ...(A && A.aiDetail && A.aiDetail.predictionMetadata ? [{ generatedAt:A.aiDetail.generatedAt, predictionMetadata:A.aiDetail.predictionMetadata, detail:A.aiDetail }] : []),
+    ...paperDetailPredictionHistory(B), ...(B && B.aiDetail && B.aiDetail.predictionMetadata ? [{ generatedAt:B.aiDetail.generatedAt, predictionMetadata:B.aiDetail.predictionMetadata, detail:B.aiDetail }] : []),
+  ]) {
+    const id = String(row && row.predictionMetadata && row.predictionMetadata.predictionId || '');
+    const contentSha256 = String(row && (row.predictionContentSha256
+      || row.detail && row.detail.predictionContentSha256) || '').toLowerCase();
+    if (!id) continue;
+    const versionKey = `${id}|${contentSha256}`;
+    if (predictionVersions.has(versionKey)) continue;
+    predictionVersions.add(versionKey);
+    const priorHashes = predictionContentById.get(id) || new Set();
+    priorHashes.add(contentSha256); predictionContentById.set(id, priorHashes);
+    aiDetailHistory.push({ ...row, predictionContentSha256:contentSha256 });
+  }
+  for (const row of aiDetailHistory) {
+    const id = String(row && row.predictionMetadata && row.predictionMetadata.predictionId || '');
+    if ((predictionContentById.get(id) || new Set()).size > 1) row.predictionConflict = true;
+  }
+  aiDetailHistory.sort((x, y) => Number(x.generatedAt || 0) - Number(y.generatedAt || 0));
+  const detailGoldReviewHistory = [], detailReviewIds = new Set();
+  for (const row of [
+    ...paperDetailHumanReviewHistory(A), ...(A && A.detailGoldReview ? [A.detailGoldReview] : []),
+    ...paperDetailHumanReviewHistory(B), ...(B && B.detailGoldReview ? [B.detailGoldReview] : []),
+  ]) {
+    const id = String(row && row.id || '');
+    if (!id || detailReviewIds.has(id)) continue;
+    detailReviewIds.add(id); detailGoldReviewHistory.push(row);
+  }
+  detailGoldReviewHistory.sort((x, y) => Number(x.at || 0) - Number(y.at || 0));
   return {
     ...(older || {}), ...(newer || {}),
     attempts: Math.max(
@@ -11106,6 +13178,9 @@ function mergePaperReviewState(A, B) {
     processEvidence:mergeProcessEvidence(A && A.processEvidence, B && B.processEvidence),
     teacherOverrideHistory,
     teacherOverride:teacherOverrideHistory[teacherOverrideHistory.length - 1] || null,
+    aiDetailHistory:aiDetailHistory.slice(-20),
+    detailGoldReviewHistory:detailGoldReviewHistory.slice(-20),
+    detailGoldReview:detailGoldReviewHistory[detailGoldReviewHistory.length - 1] || null,
     done: !!(A && A.done || B && B.done),
     completedAt: Math.max(Number(A && A.completedAt || 0), Number(B && B.completedAt || 0)) || null,
     solutionUnlockedAt: Math.max(
@@ -11149,9 +13224,41 @@ function paperGradeMergeItemStamp(item, grade, audits) {
   const changed = paperGradeAuditShowsManualChange(audits, item, adjustedAt);
   return changed === false ? gradedAt : adjustedAt;
 }
+function paperGradeMergeAuthority(grade) {
+  const receipt = grade && grade.serverGradeReceipt && typeof grade.serverGradeReceipt === 'object'
+    ? grade.serverGradeReceipt : null;
+  const generation = Number(grade && grade.gradeGeneration);
+  const receiptGeneration = Number(receipt && receipt.gradeGeneration);
+  const digest = String(receipt && receipt.canonicalDigest || '').toLowerCase();
+  const valid = !!receipt && receipt.authority === 'supabase-service-role-storage-readback'
+    && Number.isInteger(generation) && generation >= 0 && generation === receiptGeneration
+    && /^[a-f0-9]{64}$/.test(digest);
+  return { valid, generation: valid ? generation : 0, digest: valid ? digest : '' };
+}
+function paperGradeGenerationWinner(grade) {
+  if (!grade) return grade;
+  return paperGradeRecalculate({ ...grade,
+    questions:Array.isArray(grade.questions) ? grade.questions.map((item) => ({ ...item })) : [] });
+}
 function mergePaperGrade(A, B, auditsA, auditsB) {
   if (!A) return B;
   if (!B) return A;
+  const authorityA = paperGradeMergeAuthority(A), authorityB = paperGradeMergeAuthority(B);
+  if (authorityA.valid !== authorityB.valid) {
+    return paperGradeGenerationWinner(authorityA.valid ? A : B);
+  }
+  if (authorityA.valid && authorityA.generation !== authorityB.generation) {
+    return paperGradeGenerationWinner(authorityA.generation > authorityB.generation ? A : B);
+  }
+  if (authorityA.valid && authorityA.digest !== authorityB.digest) {
+    // The DB contract makes this impossible for honest copies of one job.  Do
+    // not splice questions from conflicting receipts; choose deterministically
+    // and surface the conflict for fail-closed diagnostics.
+    const chosen = authorityA.digest < authorityB.digest ? A : B;
+    const result = paperGradeGenerationWinner(chosen);
+    result.gradeJobConflict = true;
+    return result;
+  }
   const gradeStamp = (grade) => Number(grade && (grade.adjustedAt || grade.gradedAt) || 0);
   const newer = gradeStamp(B) >= gradeStamp(A) ? B : A;
   const older = newer === A ? B : A;
@@ -11172,6 +13279,268 @@ function mergePaperGrade(A, B, auditsA, auditsB) {
   const questions = [...byNo.values()].map((row) => row.item).sort((x, y) => Number(x.no) - Number(y.no));
   return paperGradeRecalculate({ ...older, ...newer, questions });
 }
+const PAPER_RUN_STATUS_RANK = Object.freeze({
+  active:1,
+  paused:1,
+  grading:2,
+  'awaiting-key':3,
+  'awaiting-correction':4,
+  completed:5,
+  discarded:6,
+});
+function mergePaperSubmitAttempts(A, B) {
+  const rows = [], seen = new Set();
+  const append = (source) => {
+    if (!source || typeof source !== 'object') return;
+    const row = paperSubmitAttemptRow(source);
+    if (!row || !row.attemptId) return;
+    const key = `${row.attemptId}|${row.status}|${row.updatedAt || row.acceptedAt || row.canceledAt || ''}`;
+    if (!seen.has(key)) { seen.add(key); rows.push(row); }
+    // A superseded device receives the complete accepted winner in the same
+    // receipt.  Flatten it into history so merge can never turn the loser back
+    // into an active/paused paper when the other device already submitted.
+    if (row.winner) append(row.winner);
+  };
+  for (const source of [
+    ...(A && Array.isArray(A.submitAttemptHistory) ? A.submitAttemptHistory : []), A && A.submitAttempt,
+    ...(B && Array.isArray(B.submitAttemptHistory) ? B.submitAttemptHistory : []), B && B.submitAttempt,
+  ]) append(source);
+  rows.sort((x, y) => paperRunTimestamp(x.updatedAt || x.acceptedAt || x.canceledAt || x.createdAt)
+    - paperRunTimestamp(y.updatedAt || y.acceptedAt || y.canceledAt || y.createdAt));
+  const byAttempt = new Map();
+  for (const row of rows) {
+    const group = byAttempt.get(row.attemptId) || [];
+    group.push(row); byAttempt.set(row.attemptId, group);
+  }
+  const terminalConflict = [...byAttempt.values()].some((group) => {
+    const terminal = new Set(group.map((row) => row.status).filter((status) => ['accepted', 'canceled'].includes(status)));
+    return terminal.size > 1;
+  });
+  const acceptedIds = new Set(rows.filter((row) => row.status === 'accepted').map((row) => row.attemptId));
+  let current = rows[rows.length - 1] || null;
+  if (terminalConflict || acceptedIds.size > 1) current = current ? { ...current, status:'reconciling', protocolConflict:true } : null;
+  else if (acceptedIds.size === 1) current = [...rows].reverse().find((row) => row.status === 'accepted') || current;
+  return { current, history:rows.slice(-12) };
+}
+function paperRunStatusMerge(A, B, newer) {
+  const a = String(A && A.status || ''), b = String(B && B.status || '');
+  if (!a) return b;
+  if (!b) return a;
+  const aRank = Object.prototype.hasOwnProperty.call(PAPER_RUN_STATUS_RANK, a) ? PAPER_RUN_STATUS_RANK[a] : null;
+  const bRank = Object.prototype.hasOwnProperty.call(PAPER_RUN_STATUS_RANK, b) ? PAPER_RUN_STATUS_RANK[b] : null;
+  // 未知的新狀態仍依時間戳處理；已知流程則只能往批改、訂正、完成或明確捨棄前進。
+  if (aRank == null || bRank == null || aRank === bRank) return String(newer && newer.status || a || b);
+  return aRank > bRank ? a : b;
+}
+function paperRunPendingGrade(A, B, completedGrade) {
+  const completedGeneration = paperGradeMergeAuthority(completedGrade).generation;
+  let pending = null;
+  const issuing = [];
+  for (const run of [A, B]) {
+    const generation = Number(run && run.pendingGradeGeneration);
+    const job = run && run.gradeJob && typeof run.gradeJob === 'object' ? run.gradeJob : null;
+    const jobGeneration = Number(job && job.generation);
+    if (Number.isInteger(generation) && generation >= 0 && generation > completedGeneration
+      && job && jobGeneration === generation && job.status !== 'completed') {
+      if (!pending || generation > pending.generation
+        || (generation === pending.generation && Number(run.mt || 0) >= Number(pending.run.mt || 0))) {
+        pending = { phase:'job', generation, job, run };
+      }
+    }
+    const requestId = String(run && run.gradeGenerationRequestId || '');
+    if (String(run && run.status || '') !== 'grading') continue;
+    const storedPrevious = Number(run && run.gradePreviousGeneration);
+    const previousGeneration = Number.isInteger(storedPrevious) && storedPrevious >= completedGeneration
+      ? storedPrevious : completedGeneration;
+    const conflictRequests = paperGradeGenerationConflictRequests(run);
+    if (conflictRequests.length > 1) {
+      for (const conflict of conflictRequests) issuing.push({
+        phase:'issuing', requestId:conflict.requestId,
+        previousGeneration:conflict.previousGeneration, run,
+      });
+      continue;
+    }
+    if (!paperGradeGenerationRequestValid(requestId)) continue;
+    issuing.push({ phase:'issuing', requestId, previousGeneration, run });
+  }
+  const pendingGeneration = pending ? pending.generation : -1;
+  const relevantIssuing = issuing.filter((row) => row.previousGeneration >= pendingGeneration);
+  if (relevantIssuing.length) {
+    const previousValues = [...new Set(relevantIssuing.map((row) => row.previousGeneration))].sort((a, b) => a - b);
+    const highestPrevious = Math.max(...relevantIssuing.map((row) => row.previousGeneration));
+    const top = relevantIssuing.filter((row) => row.previousGeneration === highestPrevious);
+    const ids = [...new Set(top.map((row) => row.requestId))].sort();
+    if (previousValues.length > 1) {
+      const newest = top.reduce((winner, row) => !winner
+        || Number(row.run.mt || 0) >= Number(winner.run.mt || 0) ? row : winner, null);
+      return { phase:'issuance-conflict', conflict:true,
+        requestIds:[...new Set(relevantIssuing.map((row) => row.requestId))].sort(),
+        requests:relevantIssuing.map((row) => ({ requestId:row.requestId,
+          previousGeneration:row.previousGeneration })),
+        previousGeneration:highestPrevious, run:newest.run, pending };
+    }
+    const chosenId = ids[0];
+    const chosen = top.filter((row) => row.requestId === chosenId).reduce((winner, row) => !winner
+      || Number(row.run.mt || 0) >= Number(winner.run.mt || 0) ? row : winner, null);
+    return { ...chosen, requestId:chosenId,
+      convergedRequestIds:ids.length > 1 ? ids : undefined };
+  }
+  return pending;
+}
+function paperRunTimestamp(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+function paperRunObjectPreferred(A, B, score, timeKeys = []) {
+  if (!A || typeof A !== 'object') return B && typeof B === 'object' ? B : null;
+  if (!B || typeof B !== 'object') return A;
+  const aScore = Number(score(A)) || 0, bScore = Number(score(B)) || 0;
+  if (aScore !== bScore) return bScore > aScore ? B : A;
+  const stamp = (value) => Math.max(0, ...timeKeys.map((key) => paperRunTimestamp(value[key])));
+  return stamp(B) >= stamp(A) ? B : A;
+}
+function paperRuntimeAuditDurabilityScore(value) {
+  if (!value || typeof value !== 'object') return 0;
+  const pages = Array.isArray(value.pages) ? value.pages : [];
+  return ['journalDrained', 'allPagesPersisted', 'cloudFlushed', 'revisionsUnchanged']
+    .reduce((sum, key) => sum + (value[key] === true ? 8 : 0), 0)
+    + (Number(value.pendingAtSubmit) === 0 ? 8 : 0)
+    + Math.min(100, Number(value.verifiedPages) || 0) * 2
+    + Math.min(100, Number(value.expectedPages) || 0)
+    + pages.reduce((sum, page) => sum + (page && page.matched === true ? 8 : 0)
+      + (/^[a-f0-9]{64}$/.test(String(page && page.localSha256 || '')) ? 3 : 0)
+      + (page && page.localSha256 === page.cloudSha256 ? 3 : 0)
+      + (page && page.qid && page.clientId ? 2 : 0), 0)
+    + (paperRunTimestamp(value.readbackVerifiedAt) ? 1 : 0);
+}
+function paperRuntimeAuditPdfScore(value) {
+  if (!value || typeof value !== 'object') return 0;
+  return (value.format === 'application/pdf' ? 4 : 0)
+    + (value.magic === '%PDF-' ? 4 : 0)
+    + (value.eof === '%%EOF' ? 4 : 0)
+    + (/^[a-f0-9]{64}$/.test(String(value.sha256 || '')) ? 8 : 0)
+    + (Number(value.bytes) > 1000 ? 3 : 0)
+    + (Number(value.pageCount) > 0 ? 3 : 0)
+    + (['graded', 'answer'].includes(value.kind) ? 2 : 0)
+    + (value.kind === 'graded' ? 1 : 0)
+    + (value.storageVerified === true ? 12 : 0)
+    + (value.bucket && value.path ? 6 : 0)
+    + (/^[a-f0-9]{64}$/.test(String(value.contentBindingSha256 || '')) ? 12 : 0)
+    + (Number(value.contentBindingVersion) === 1 ? 3 : 0)
+    + (value.sourceAssetVersion ? 3 : 0)
+    + (paperRunTimestamp(value.serverVerifiedAt) ? 3 : 0);
+}
+function paperRuntimeAuditArchiveScore(value) {
+  if (!value || typeof value !== 'object') return 0;
+  return (/^[a-f0-9]{64}$/.test(String(value.sha256 || '')) ? 10 : 0)
+    + (value.path ? 5 : 0) + (value.bucket ? 2 : 0)
+    + (paperRunTimestamp(value.archivedAt || value.createdAt) ? 2 : 0)
+    + Math.min(8, Object.keys(value).length);
+}
+function paperRuntimeAuditPixelQaScore(value) {
+  if (!value || typeof value !== 'object') return 0;
+  return (value.confirmed === true ? 12 : 0)
+    + (value.source === 'owner-visual-review' ? 4 : 0)
+    + (value.reviewer === 'authenticated-owner' ? 4 : 0)
+    + (/^[a-f0-9]{64}$/.test(String(value.pdfSha256 || '')) ? 4 : 0)
+    + (/^[a-f0-9]{64}$/.test(String(value.contentBindingSha256 || '')) ? 4 : 0)
+    + (paperRunTimestamp(value.confirmedAt) ? 2 : 0);
+}
+function paperRuntimeAuditAttestationScore(value) {
+  if (!value || typeof value !== 'object') return 0;
+  return (value.confirmed === true ? 20 : 0)
+    + (value.model === 'Samsung Galaxy Tab S10 Ultra' ? 8 : value.model ? 2 : 0)
+    + (value.source ? 2 : 0) + (value.browserReportedModel ? 2 : 0)
+    + (paperRunTimestamp(value.confirmedAt) ? 1 : 0);
+}
+function paperRuntimeAuditCoreScore(value) {
+  if (!value || typeof value !== 'object') return -1;
+  const length = (key) => Array.isArray(value[key]) ? value[key].length : 0;
+  return Number(value.schema || 0) * 100000
+    + length('pageSwitches') * 5 + length('visitedPages') * 4 + length('samples') * 2
+    + length('localSaveMs') * 3 + length('cloudSyncMs') * 2 + length('recoveryEvents') * 6
+    + length('localSaveFailureIds') * 2
+    + ['sessions', 'crashRecoveries', 'strokesCommitted', 'activeElapsedMs', 'maxSingleCanvasPixels']
+      .reduce((sum, key) => sum + (Number(value[key]) > 0 ? 1 : 0), 0);
+}
+function paperRuntimeAuditRowsMerge(A, B, keyFn, cap) {
+  const rows = [], seen = new Set();
+  for (const row of [...(Array.isArray(A) ? A : []), ...(Array.isArray(B) ? B : [])]) {
+    if (!row || typeof row !== 'object') continue;
+    const key = keyFn(row);
+    if (seen.has(key)) continue;
+    seen.add(key); rows.push(row);
+  }
+  rows.sort((x, y) => paperRunTimestamp(x.at || x.recoveredAt) - paperRunTimestamp(y.at || y.recoveredAt));
+  return rows.slice(-cap);
+}
+function mergePaperRuntimeAudit(A, B, runId, sourceId) {
+  const valid = (audit) => !!audit && typeof audit === 'object'
+    && String(audit.runId || '') === String(runId || '')
+    && String(audit.sourceId || '') === String(sourceId || '');
+  const a = valid(A) ? A : null, b = valid(B) ? B : null;
+  if (!a && !b) return null;
+  if (!a || !b) return { ...(a || b) };
+  // 不同 schema 的量測定義不能拼接成一份假通過證據；完整保留較高 schema 的那份。
+  if (Number(a.schema || 0) !== Number(b.schema || 0)) return { ...(Number(b.schema || 0) > Number(a.schema || 0) ? b : a) };
+  const core = paperRunObjectPreferred(a, b, paperRuntimeAuditCoreScore,
+    ['submittedAt', 'lastSampleAt', 'lastPausedAt', 'lastSessionStartedAt']);
+  const merged = { ...core };
+  const maxFields = ['sessions', 'crashRecoveries', 'strokesCommitted', 'localSaveFailures', 'activeElapsedMs',
+    'lastStrokeElapsedMs', 'maxSingleCanvasPixels', 'maxLiveCanvasCount', 'maxPendingJournals', 'maxPendingCloud',
+    'maxSaveTimers', 'maxHeapBytes'];
+  for (const key of maxFields) merged[key] = Math.max(Number(a[key]) || 0, Number(b[key]) || 0);
+  const maxTimes = ['lastSessionStartedAt', 'lastRecoveredAt', 'lastRecoveredFrom', 'lastSampleAt', 'lastStrokeAt',
+    'lastLocalSaveAt', 'lastPausedAt', 'submittedAt'];
+  for (const key of maxTimes) {
+    const value = Math.max(paperRunTimestamp(a[key]), paperRunTimestamp(b[key]));
+    if (value) merged[key] = value;
+  }
+  const firstTimes = ['createdAt', 'startedAt'];
+  for (const key of firstTimes) {
+    const values = [paperRunTimestamp(a[key]), paperRunTimestamp(b[key])].filter(Boolean);
+    if (values.length) merged[key] = Math.min(...values);
+  }
+  merged.visitedPages = [...new Set([...(Array.isArray(a.visitedPages) ? a.visitedPages : []),
+    ...(Array.isArray(b.visitedPages) ? b.visitedPages : [])]
+    .map(Number).filter((page) => Number.isInteger(page) && page >= 0))].sort((x, y) => x - y);
+  merged.pageSwitches = paperRuntimeAuditRowsMerge(a.pageSwitches, b.pageSwitches,
+    (row) => `${row.at || ''}|${row.from}|${row.to}|${row.method || ''}|${row.ms}|${row.painted === true ? 1 : 0}`,
+    PAPER_RUNTIME_AUDIT_EVENT_CAP);
+  merged.samples = paperRuntimeAuditRowsMerge(a.samples, b.samples,
+    (row) => `${row.at || ''}|${row.elapsedMs || ''}|${row.canvasCount || ''}|${row.heapBytes || ''}`,
+    PAPER_RUNTIME_AUDIT_SAMPLE_CAP);
+  merged.recoveryEvents = paperRuntimeAuditRowsMerge(a.recoveryEvents, b.recoveryEvents,
+    (row) => `${row.recoveredAt || ''}|${row.checkpointUpdatedAt || ''}|${row.sourceId || ''}|${row.page || 0}`,
+    20);
+  merged.localSaveFailureIds = [...new Set([...(Array.isArray(a.localSaveFailureIds) ? a.localSaveFailureIds : []),
+    ...(Array.isArray(b.localSaveFailureIds) ? b.localSaveFailureIds : [])])].slice(-50);
+  merged.localSaveFailures = Math.max(Number(merged.localSaveFailures) || 0, merged.localSaveFailureIds.length);
+  for (const key of ['localSaveMs', 'cloudSyncMs']) {
+    const left = Array.isArray(a[key]) ? a[key] : [], right = Array.isArray(b[key]) ? b[key] : [];
+    const preferred = Array.isArray(core[key]) ? core[key] : left;
+    merged[key] = (right.length > left.length ? right : left.length > right.length ? left : preferred).slice(-PAPER_RUNTIME_AUDIT_EVENT_CAP);
+  }
+  const durability = paperRunObjectPreferred(a.submitDurability, b.submitDurability, paperRuntimeAuditDurabilityScore, ['readbackVerifiedAt']);
+  const pdf = paperRunObjectPreferred(a.pdfArtifact, b.pdfArtifact, paperRuntimeAuditPdfScore, ['serverVerifiedAt', 'generatedAt']);
+  const pixelQa = paperRunObjectPreferred(a.pdfPixelQa, b.pdfPixelQa, paperRuntimeAuditPixelQaScore, ['confirmedAt']);
+  const archive = paperRunObjectPreferred(a.archive, b.archive, paperRuntimeAuditArchiveScore, ['archivedAt', 'createdAt']);
+  const attestation = paperRunObjectPreferred(a.deviceAttestation, b.deviceAttestation, paperRuntimeAuditAttestationScore, ['confirmedAt']);
+  if (durability) merged.submitDurability = { ...durability, pages:Array.isArray(durability.pages) ? durability.pages.map((page) => ({ ...page })) : [] };
+  if (pdf) merged.pdfArtifact = { ...pdf };
+  if (pixelQa && pdf && pixelQa.pdfSha256 === pdf.sha256
+    && pixelQa.contentBindingSha256 === pdf.contentBindingSha256) merged.pdfPixelQa = { ...pixelQa };
+  else delete merged.pdfPixelQa;
+  if (archive) merged.archive = { ...archive };
+  if (attestation) {
+    merged.deviceAttestation = { ...attestation };
+    const owner = attestation === a.deviceAttestation ? a : b;
+    if (owner.device && typeof owner.device === 'object') merged.device = { ...owner.device };
+  }
+  return merged;
+}
 function mergePaperRunRecord(A, B) {
   if (!A) return B;
   if (!B) return A;
@@ -11190,14 +13559,89 @@ function mergePaperRunRecord(A, B) {
   const topics = [...new Set([...(A.topics || []), ...(B.topics || [])])];
   const errors = [...new Set([...(A.errors || []), ...(B.errors || [])])];
   const aiGrade = mergePaperGrade(A.aiGrade, B.aiGrade, A.gradeAudit, B.gradeAudit);
+  let status = paperRunStatusMerge(A, B, newer);
+  const pendingGrade = paperRunPendingGrade(A, B, aiGrade);
+  const submit = mergePaperSubmitAttempts(A, B);
+  if (submit.current && ['accepted', 'reconciling'].includes(String(submit.current.status || ''))
+      && status === 'discarded') {
+    status = aiGrade ? 'awaiting-correction' : 'grading';
+  }
+  if (!aiGrade && submit.current && submit.current.status === 'accepted') status = 'grading';
+  else if (!aiGrade && submit.current && submit.current.status === 'reconciling') status = 'grading';
+  else if (!aiGrade && submit.current && submit.current.status === 'canceled') {
+    // Only the explicit client-cancel tombstone is allowed to reopen ink.  A
+    // superseded or malformed cancellation remains locked/fail-closed.
+    status = submit.current.decisionReason === 'client-canceled-before-accept'
+      ? (['active', 'paused'].includes(String(newer && newer.status || '')) ? newer.status : 'paused')
+      : 'grading';
+  }
+  const statusRank = Object.prototype.hasOwnProperty.call(PAPER_RUN_STATUS_RANK, status) ? PAPER_RUN_STATUS_RANK[status] : null;
+  if (aiGrade && (!status || (statusRank != null && statusRank < PAPER_RUN_STATUS_RANK['awaiting-correction']))) status = 'awaiting-correction';
+  // A server generation or its still-unanswered issuance request may be in
+  // flight on the other device.  Keep the old completed grade only as audit
+  // fallback; the workflow must stay grading.  Conflicting pre-issuance IDs
+  // are retained as a fail-closed conflict rather than choosing one and
+  // potentially allocating two paid generations.
+  if (pendingGrade) status = 'grading';
   const merged = {
     ...older, ...newer,
     mt: Math.max(Number(A.mt || 0), Number(B.mt || 0)),
+    status,
     review,
     gradeAudit: audits.slice(-20),
     paperInkClients: { ...(older.paperInkClients || {}), ...(newer.paperInkClients || {}) },
     topics, errors, aiGrade,
   };
+  if (submit.current) {
+    merged.submitAttempt = { ...submit.current };
+    merged.submitAttemptHistory = submit.history.map((row) => ({ ...row }));
+  }
+  if (aiGrade && aiGrade.serverGradeReceipt && typeof aiGrade.serverGradeReceipt === 'object') {
+    merged.serverGradeReceipt = { ...aiGrade.serverGradeReceipt };
+    merged.gradeGeneration = Number(aiGrade.gradeGeneration) || 0;
+    if (aiGrade.gradeJob && typeof aiGrade.gradeJob === 'object') merged.gradeJob = { ...aiGrade.gradeJob };
+  }
+  if (pendingGrade && pendingGrade.phase === 'job') {
+    merged.pendingGradeGeneration = pendingGrade.generation;
+    merged.gradeJob = { ...pendingGrade.job };
+    if (pendingGrade.run.gradeGenerationRequestId) {
+      merged.gradeGenerationRequestId = pendingGrade.run.gradeGenerationRequestId;
+    }
+    if (Number.isInteger(Number(pendingGrade.run.gradePreviousGeneration))) {
+      merged.gradePreviousGeneration = Number(pendingGrade.run.gradePreviousGeneration);
+    }
+    delete merged.gradeGenerationRequestConflict;
+  } else if (pendingGrade && pendingGrade.phase === 'issuing') {
+    delete merged.pendingGradeGeneration;
+    merged.gradeGenerationRequestId = pendingGrade.requestId;
+    merged.gradePreviousGeneration = pendingGrade.previousGeneration;
+    delete merged.gradeGenerationRequestConflict;
+  } else if (pendingGrade && pendingGrade.conflict) {
+    delete merged.gradeGenerationRequestId;
+    merged.gradePreviousGeneration = pendingGrade.previousGeneration;
+    merged.gradeGenerationRequestConflict = {
+      kind:'concurrent-paper-grade-generation-issuance',
+      requestIds:pendingGrade.requestIds.slice(),
+      requests:pendingGrade.requests.map((row) => ({ ...row })),
+      previousGeneration:pendingGrade.previousGeneration,
+    };
+    if (pendingGrade.pending) {
+      merged.pendingGradeGeneration = pendingGrade.pending.generation;
+      merged.gradeJob = { ...pendingGrade.pending.job };
+    } else {
+      delete merged.pendingGradeGeneration;
+    }
+  }
+  const created = [paperRunTimestamp(A.createdAt), paperRunTimestamp(B.createdAt)].filter(Boolean);
+  if (created.length) merged.createdAt = Math.min(...created);
+  for (const key of ['submittedAt', 'freshnessConfirmedAt', 'recoveredAt', 'discardedAt']) {
+    const value = Math.max(paperRunTimestamp(A[key]), paperRunTimestamp(B[key]));
+    if (value) merged[key] = value;
+  }
+  const runtimeAudit = mergePaperRuntimeAudit(A.runtimeAudit, B.runtimeAudit, merged.id, merged.sourceId);
+  if (runtimeAudit) merged.runtimeAudit = runtimeAudit;
+  else delete merged.runtimeAudit;
+  if ((PAPER_RUN_STATUS_RANK[status] || 0) >= PAPER_RUN_STATUS_RANK.grading) merged.resumeAt = null;
   if (aiGrade) {
     merged.score = aiGrade.score;
     merged.wrongNos = aiGrade.wrongNos.slice();
@@ -11393,6 +13837,13 @@ function mergeState(a, b) {
 }
 let inkFlushBusy = false;
 let inkFlushRetryTimer = null;
+function paperAcceptedInkFreezeRun(error) {
+  const code = String(error && (error.code || error.sqlState || '') || '');
+  const message = String(error && error.message || '');
+  if (code !== '55000' && !/accepted paper ink is immutable for run/i.test(message)) return '';
+  const match = message.match(/accepted paper ink is immutable for run (paper-run-[0-9]{10,20})/i);
+  return match ? match[1] : '';
+}
 async function flushInkQueue() {
   if (!supa || !syncState.user || inkFlushBusy) return false;
   inkFlushBusy = true;
@@ -11410,13 +13861,46 @@ async function flushInkQueue() {
         strokes: local.strokes,
         updated_at: new Date(Number(local.updatedAt) || Date.now()).toISOString(),
       }));
-      const { error } = await supa.from('ink_sessions').upsert(rows, { onConflict: 'user_id,client_id' });
+      const { error } = await paperAwaitWithTimeout(
+        supa.from('ink_sessions').upsert(rows, { onConflict: 'user_id,client_id' }),
+        12000,
+        '雲端筆跡寫入',
+      );
       if (error) {
-        syncState.msg = '筆跡已保存在本機，雲端補傳尚未成功';
-        syncState.pushErr = true;
-        if (paperSourceSession && paperSourceSession.durability) {
-          paperSourceSession.durability.cloudError = true;
-          paperInkStatusRender();
+        const frozenRunId = paperAcceptedInkFreezeRun(error);
+        const frozenRows = frozenRunId ? pending.filter((row) => String(row && row.qid || '')
+          .match(new RegExp(`^paper:${frozenRunId}:v[0-9]+:[0-9]+$`))) : [];
+        if (frozenRunId && frozenRows.length) {
+          const frozenVersions = frozenRows.map((row) => ({
+            clientId:row.client_id, sentUpdatedAt:Number(row.updatedAt) || 0,
+          }));
+          const frozenIds = await inkRecordMarkCloudRejected(frozenVersions,
+            `accepted-paper-ink-frozen:${frozenRunId}`, syncState.user.id);
+          const run = (S.paperRuns || []).find((item) => item && item.id === frozenRunId);
+          if (run) {
+            run.status = 'grading'; run.resumeAt = null; run.serverAcceptedInkFreeze = true;
+            run.mt = Date.now(); save();
+          }
+          if (paperSourceSession && paperSourceSession.run && paperSourceSession.run.id === frozenRunId) {
+            paperSourceSession.submitLocked = true; paperSourceSession.readOnly = true;
+            paperSourceSession.grading = false;
+            if (paperSourceSession.durability && paperSourceSession.durability.pendingClientIds instanceof Set) {
+              for (const id of frozenIds) paperSourceSession.durability.pendingClientIds.delete(id);
+              paperSourceSession.durability.cloudError = false;
+            }
+            stopTicker(); sessionMode = 'paper-submit-reconcile'; paperInkStatusRender();
+          }
+          syncState.msg = '另一分頁已接受交卷；本機後續筆跡已隔離，未覆蓋正式卷';
+          syncState.pushErr = false;
+          shouldContinue = true;
+          setTimeout(() => syncPull(), 0);
+        } else {
+          syncState.msg = '筆跡已保存在本機，雲端補傳尚未成功';
+          syncState.pushErr = true;
+          if (paperSourceSession && paperSourceSession.durability) {
+            paperSourceSession.durability.cloudError = true;
+            paperInkStatusRender();
+          }
         }
       } else {
         const markedIds = [];
@@ -11507,7 +13991,7 @@ function syncCard() {
     <p class="dim">這個網頁環境封鎖外部連線（claude.ai artifact），雲端同步自動停用——資料照常存本機，可用下方備份匯出。
     要用同步版請開本機版 index.html 或自架網址。</p></div>`;
   if (!syncState.user) return `<div class="card"><h2>☁️ 雲端同步</h2>
-    <p class="dim">帳號打使用者名稱就好。這台已保存 ${inkLocalStatus.total} 份筆跡${inkLocalStatus.pending ? `，其中 ${inkLocalStatus.pending} 份會在登入後補傳` : ''}。</p>
+    <p class="dim">帳號打使用者名稱就好。這台已保存 ${inkLocalStatus.total} 份筆跡${inkLocalStatus.pending ? `，其中 ${inkLocalStatus.pending} 份會在登入後補傳` : ''}${inkLocalStatus.rejected ? `；${inkLocalStatus.rejected} 份為交卷後隔離、仍可救援但不會上傳` : ''}。</p>
     <label for="sy-email" class="field-label">帳號</label>
     <input id="sy-email" class="ans-input" autocomplete="username" aria-describedby="sy-email-hint" placeholder="不用打 @gmail.com" value="${escH((() => { try { return (localStorage.getItem('mathA13_email') || '').replace(/@gmail\.com$/, ''); } catch (e) { return ''; } })())}">
     <small id="sy-email-hint" class="dim">輸入 Gmail 使用者名稱即可。</small>
@@ -11520,7 +14004,7 @@ function syncCard() {
     ${syncState.msg ? `<p class="dim">${escH(syncState.msg)}</p>` : ''}</div>`;
   return `<div class="card"><h2>☁️ 雲端同步 <span class="okc">已登入</span></h2>
     <p class="dim">${escH(syncState.user.email || '')}｜${escH(syncState.msg || '自動同步中：每次做完題幾秒內上傳')}</p>
-    <p class="dim fs13">本機筆跡 ${inkLocalStatus.total} 份｜待同步 ${inkLocalStatus.pending} 份｜雲端狀態 revision ${syncState.revision == null ? '—' : syncState.revision}</p>
+    <p class="dim fs13">本機筆跡 ${inkLocalStatus.total} 份｜已上傳 ${inkLocalStatus.uploaded || 0} 份｜待同步 ${inkLocalStatus.pending} 份｜交卷後隔離 ${inkLocalStatus.rejected || 0} 份｜雲端狀態 revision ${syncState.revision == null ? '—' : syncState.revision}</p>
     <div class="actr"><button class="btn" onclick="syncLogout(false)">登出這台</button>
     <button class="btn err" onclick="syncLogout(true)">撤銷所有登入／配對連結</button>
     <button class="btn" onclick="makePairLink()">產生一次性配對連結</button>

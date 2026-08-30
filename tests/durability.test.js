@@ -152,8 +152,10 @@ test('下一份未作答模考的正式答案不進公開前端，只能由交�
   assert.doesNotMatch(third, /\bkey:\s*\[/);
   assert.match(app, /await syncPush\(\);[\s\S]*paperAnswerKeyAfterSubmit\(source, run\)/);
   assert.match(proxy, /Deno\.env\.get\("PAPER_ANSWER_KEYS_JSON"\)/);
-  assert.match(proxy, /paperKeyGateAllows\(data, runId, sourceId\)/);
-  assert.match(proxy, /String\(run\.status \|\| ""\) === "grading"/);
+  assert.match(proxy, /verifiedAcceptedPaperContext\(userId, context\)/);
+  assert.match(proxy, /paperKeyGateAllows\(data, runId, sourceId, accepted\)/);
+  assert.match(proxy, /loadAcceptedPaperSubmitAttempt/);
+  assert.match(proxy, /paperGradeAcceptedSubmitAttempt\(rawAttempt\)/);
   const thirdInventory = inventory.papers.find((paper) => paper.id === 'paper-mock-3');
   assert.deepEqual(thirdInventory.activationBlockers, ['freshness-confirmation', 'galaxy-tab-preflight']);
   assert.doesNotMatch(inventory.nextP0, /PAPER_SOURCES\.key|public client/i);
@@ -179,12 +181,13 @@ test('逐題詳解由後端驗證已到隔日且題目屬於該次訂正，不�
     + fs.readFileSync(path.join(ROOT, 'supabase', 'functions', 'openai-proxy', 'lib.ts'), 'utf8');
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   assert.match(proxy, /verifyPaperDetailGate\(userId, body\.context\)/);
-  assert.match(proxy, /paperDetailGateAllows\(data, runId, questionNo, taipeiDate\(\)\)/, '隔日判定必須以台北時區為準（改成 UTC 會讓解鎖時刻偏移最多 8 小時）');
-  assert.match(proxy, /String\(run\.due \|\| ""\) > today/);
-  assert.match(proxy, /const state = review\[String\(questionNo\)\]/);
-  assert.match(proxy, /attempts >= 1 && hasRetryLog/);
-  assert.match(proxy, /String\(\(log as Record<string, unknown>\)\.kind \|\| ""\) === "retry"/);
+  assert.match(proxy, /verifiedAcceptedPaperContext\(userId, context\)/);
+  assert.match(proxy, /loadPaperCorrectionRetryReceipt/);
+  assert.match(proxy, /paperCorrectionRetryReceipt\(raw\)/);
+  assert.match(proxy, /correctionRetryReceiptDigest/);
   assert.match(app, /context:\s*\{[\s\S]*paperRunId:[\s\S]*questionNo: no/);
+  assert.match(app, /correctionRetryReceiptId:\s*retryReceipt\.receiptId/);
+  assert.match(app, /correctionRetryReceiptDigest:\s*retryReceipt\.canonicalDigest/);
   const detailed = app.match(/async function paperReviewDetailed[\s\S]*?\n\}/)?.[0] || '';
   const compat = app.match(/async function paperReviewDetailCallCompat[\s\S]*?\n\}/)?.[0] || '';
   assert.match(detailed, /await syncPush\(\);[\s\S]*paperReviewDetailCallCompat/,

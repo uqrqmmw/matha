@@ -6,12 +6,12 @@ const { webcrypto } = require('node:crypto');
 const { TextEncoder } = require('node:util');
 const { loadApp, plain } = require('./helpers/load-app');
 
-test('能力目標證據匯出只接受重置後三回互異正式卷且輸出可重算、無敏感資料', async () => {
+test('能力目標證據分開累積六回新鮮卷與最近三回達標，且輸出可重算、無敏感資料', async () => {
   const { run, context } = loadApp();
   context.crypto = webcrypto;
   context.TextEncoder = TextEncoder;
   const result = plain(await run(`(async () => {
-    const formal = PAPER_SOURCES.filter((source) => source.questions === 20 && source.minutes === 100 && source.calibrationEligible !== false).slice(-4);
+    const formal = PAPER_SOURCES.filter((source) => source.questions === 20 && source.minutes === 100 && source.calibrationEligible !== false).slice(-7);
     const practice = PAPER_SOURCES.find((source) => source.calibrationEligible === false || source.questions !== 20);
     const makeRun = (id, source, score, submittedAt, freshnessConfirmedAt, day) => {
       const questions = Array.from({ length:20 }, (_, index) => ({
@@ -54,6 +54,19 @@ test('能力目標證據匯出只接受重置後三回互異正式卷且輸出�
     const duplicateSource = await evidence(duplicateRuns, duplicateRuns.map((row, index) => extFor(row, index < 2 ? formal[0] : formal[1])));
     const goodRuns = formal.slice(0, 3).map((source, index) => makeRun('good-' + index, source, [75, 80, 85][index], 4200 + index * 100, 4100 + index * 100, '2026-08-2' + (3 + index)));
     const stable = await evidence(goodRuns, goodRuns.map((row, index) => extFor(row, formal[index])));
+    const sixRuns = formal.slice(0, 6).map((source, index) => makeRun('six-' + index, source, [65, 70, 75, 80, 85, 90][index], 6200 + index * 100, 6100 + index * 100, '2026-08-' + String(10 + index).padStart(2, '0')));
+    const freshComplete = await evidence(sixRuns, sixRuns.map((row, index) => extFor(row, formal[index])));
+    const archiveSha = 'a'.repeat(64);
+    const archive = {
+      authority:'supabase-service-role-storage-readback', bucket:PAPER_AUDIT_PRIVATE_BUCKET, sha256:archiveSha,
+      path:'capability-evidence/matha_' + 'b'.repeat(32) + '/matha-capability-goal-' + archiveSha.slice(0, 16) + '.json',
+      bytes:1234, readbackVerifiedAt:'2026-08-30T00:00:00.000Z',
+      evidenceCanonicalDigest:freshComplete.canonicalDigest,
+    };
+    const acceptedEnvelope = capabilityServerEnvelope({ capabilityEvidence:freshComplete, capabilityArchive:archive });
+    const driftEvidence = JSON.parse(JSON.stringify(freshComplete));
+    driftEvidence.runs = driftEvidence.freshRuns.slice(0, 3);
+    const rejectedDriftEnvelope = capabilityServerEnvelope({ capabilityEvidence:driftEvidence, capabilityArchive:archive });
     const originalNow = Date.now; Date.now = () => 9999;
     const stableCard = learnerModelCard(); Date.now = originalNow;
     const unansweredRuns = formal.slice(0, 3).map((source, index) => {
@@ -71,12 +84,14 @@ test('能力目標證據匯出只接受重置後三回互異正式卷且輸出�
     S.mocks = [1, 2, 3].map((index) => ({ n:20, acc:.8, mt:6000 + index, d:'2026-08-2' + index }));
     const looseCard = learnerModelCard();
     return { empty, practiceOnly, noFreshness, beforeReset, belowGoal, duplicateSource,
-      unansweredWithPoints, stable, recomputed, stableCard, looseCard };
+      unansweredWithPoints, stable, freshComplete, acceptedEnvelope, rejectedDriftEnvelope,
+      recomputed, stableCard, looseCard };
   })()`));
 
   for (const blocked of [result.empty, result.practiceOnly, result.noFreshness, result.beforeReset,
     result.belowGoal, result.duplicateSource, result.unansweredWithPoints]) {
-    assert.equal(blocked.kind, 'matha-capability-goal-evidence-v1');
+    assert.equal(blocked.kind, 'matha-capability-goal-evidence-v2');
+    assert.equal(blocked.schemaVersion, 2);
     assert.equal(blocked.stable, false);
     assert.equal(blocked.status, 'blocked');
   }
@@ -84,15 +99,27 @@ test('能力目標證據匯出只接受重置後三回互異正式卷且輸出�
   assert.match(result.duplicateSource.blockers.join(','), /eligible-distinct-formal-runs:2\/3/);
   assert.equal(result.stable.stable, true);
   assert.equal(result.stable.status, 'stable');
+  assert.equal(result.stable.freshCalibration.count, 3);
+  assert.equal(result.stable.freshCalibration.complete, false);
   assert.deepEqual(result.stable.runs.map((row) => row.score), [75, 80, 85]);
   assert.equal(new Set(result.stable.runs.map((row) => row.runId)).size, 3);
   assert.equal(new Set(result.stable.runs.map((row) => row.sourceId)).size, 3);
   assert.equal(result.stable.runs.every((row) => row.total === 100 && row.gradeSummary.questionCount === 20
     && row.gradeSummary.maxPoints === 100 && row.gradeSummary.awardedPoints === row.score), true);
   assert.equal(result.recomputed.every((row) => row.expected === row.actual), true);
+  assert.equal(result.freshComplete.freshCalibration.count, 6);
+  assert.equal(result.freshComplete.freshCalibration.complete, true);
+  assert.equal(result.freshComplete.freshRuns.length, 6);
+  assert.equal(new Set(result.freshComplete.freshRuns.map((row) => row.runId)).size, 6);
+  assert.equal(new Set(result.freshComplete.freshRuns.map((row) => row.sourceId)).size, 6);
+  assert.deepEqual(result.freshComplete.runs.map((row) => row.score), [80, 85, 90]);
+  assert.deepEqual(result.freshComplete.runs.map((row) => row.runId),
+    result.freshComplete.freshRuns.slice(-3).map((row) => row.runId));
+  assert.equal(result.acceptedEnvelope.serverArchive.authority, 'supabase-service-role-storage-readback');
+  assert.equal(result.rejectedDriftEnvelope, null);
   const serialized = JSON.stringify(result.stable).toLowerCase();
   assert.doesNotMatch(serialized, /private-read|private-answer|strokes|token|@example\.com/);
-  assert.match(result.stableCard, /下載能力目標證據/);
+  assert.match(result.stableCard, /下載模考驗收證據/);
   assert.match(result.stableCard, /三回不同來源的正式新鮮卷/);
   assert.match(result.looseCard, /目前不宣稱穩定 13 級分/);
 });
@@ -115,12 +142,13 @@ test('統一證據層涵蓋作答、眼刷、訂正、保留、大綱、觀念�
     S.conceptAttempts = [{ id:'ca1', conceptId:'concept-function', ts:19, d:today(), understood:false }];
     S.outlineAttempts = [{ id:'oa1', unitId:'outline-1', ts:20, d:today(), coverage:60 }];
     S.paperRuns = [{ id:'pr1', sourceId:source.id, d:today(), submittedAt:21, status:'awaiting-correction',
-      aiGrade:{ gradedAt:21, questions:[{ no:1, status:'incorrect', points:0, topic:'num' }] }, review:{} }];
+      aiGrade:{ gradedAt:21, questions:[{ no:1, status:'incorrect', points:0, maxPoints:5,
+        topic:'num', topicSource:'official-key' }] }, review:{} }];
     const evidence = learningEvidenceLedger();
     return { stages:[...new Set(evidence.map((x) => x.stage))], sources:[...new Set(evidence.map((x) => x.source))], count:evidence.length };
   })()`));
   for (const stage of ['solve', 'direction', 'correction', 'retention', 'concept', 'recall']) assert.ok(result.stages.includes(stage), stage);
-  for (const source of ['adaptive-textbook', 'vision', 'correction', 'paper-mock']) assert.ok(result.sources.includes(source), source);
+  for (const source of ['adaptive-textbook', 'vision', 'correction', 'paper-practice']) assert.ok(result.sources.includes(source), source);
   assert.ok(result.count >= 10);
 });
 
@@ -273,10 +301,10 @@ test('新作答明確保存六段流程欄位與證據來源，不再只靠之�
   assert.equal(result.setup.length, 1);
   assert.equal(result.setup[0].status, 'blocked');
   assert.equal(result.stage, 'setup');
-  assert.equal(result.source, 'answer-result');
+  assert.equal(result.source, 'learner-error-choice');
 });
 
-test('只有有逐字卷面證據的 AI 詳批能寫入結構化流程斷點', () => {
+test('AI 詳批即使有逐字卷面證據，也不能自行把未經評估的錯因寫入流程斷點', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
     const state = {};
@@ -284,20 +312,19 @@ test('只有有逐字卷面證據的 AI 詳批能寫入結構化流程斷點', (
     const rejected = processEvidenceRecordAiDetail(state, {
       generatedAt:11, confidence:'low', firstErrorEvidence:null, firstError:null, errorKind:null,
     });
-    const accepted = processEvidenceRecordAiDetail(state, {
+    const stillRejected = processEvidenceRecordAiDetail(state, {
       generatedAt:12, confidence:'high', firstErrorEvidence:'2x=10', firstError:'移項時漏掉負號', errorKind:'正負號計算錯誤',
     });
-    return { evidence:state.processEvidence, rejected, accepted };
+    return { evidence:state.processEvidence, rejected, stillRejected };
   })()`));
   assert.equal(result.rejected, null);
+  assert.equal(result.stillRejected, null);
   assert.equal(result.evidence.recognition.length, 1);
   assert.equal(result.evidence.direction.length, 1);
-  assert.equal(result.evidence.calculation.length, 1);
-  assert.equal(result.evidence.calculation[0].source, 'trusted-ai-detail');
-  assert.equal(result.evidence.calculation[0].evidence, '2x=10');
+  assert.equal(result.evidence.calculation.length, 0);
 });
 
-test('學習證據優先採持久化結構欄位，保留舊文字只作相容備援', () => {
+test('舊版 trusted-ai-detail 會在讀取前清除，不污染長期弱點模型', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {
     const q = BANK.find((item) => item.topic === 'num');
@@ -306,12 +333,84 @@ test('學習證據優先採持久化結構欄位，保留舊文字只作相容�
     processEvidenceAppend(attempt, 'calculation', {
       ts:20, status:'blocked', source:'trusted-ai-detail', confidence:'high', note:'正負號計算錯誤', evidence:'2x=10',
     });
+    processEvidenceEnsure(attempt);
     S.attempts = [attempt];
-    return learningEvidenceLedger()[0];
+    return { evidence:attempt.processEvidence, ledger:learningEvidenceLedger()[0] };
   })()`));
-  assert.equal(result.processStage, 'calculation');
-  assert.equal(result.processEvidenceSource, 'trusted-ai-detail');
-  assert.equal(result.processEvidenceStatus, 'blocked');
+  assert.equal(result.evidence.calculation.length, 0);
+  assert.notEqual(result.ledger.processEvidenceSource, 'trusted-ai-detail');
+});
+
+test('兩題未經人類確認的 AI 錯因摘要不會形成長期流程弱點或錯因趨勢', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    S.attempts = []; S.paperRuns = [];
+    const questions = BANK.filter((item) => item.topic === 'num').slice(0, 2);
+    for (const [index, q] of questions.entries()) recordAttempt(q, false, 60000, null, 'practice', null, {
+      errKind:'計算', firstError:'AI 說第 ' + (index + 1) + ' 題算錯', nextTime:'重算',
+    });
+    const source = PAPER_SOURCES[0];
+    const review = {};
+    for (const no of [1, 2]) {
+      const state = { aiErrorKind:'正負號計算錯誤', logs:[], processEvidence:processEvidenceBlank() };
+      processEvidenceRecordClassification(state, '正負號計算錯誤', {
+        ts:no, source:'ai-correction-summary', confidence:'unverified',
+      });
+      review[no] = state;
+    }
+    S.paperRuns = [{ id:'ai-only-run', sourceId:source.id, d:today(), submittedAt:10, status:'completed',
+      aiGrade:{ gradedAt:10, questions:[
+        { no:1, status:'incorrect', points:0, maxPoints:5, topic:'num' },
+        { no:2, status:'incorrect', points:0, maxPoints:5, topic:'num' },
+      ] }, review }];
+    const model = learnerModel();
+    return {
+      topProcess:model.topProcess,
+      topErrors:model.topErrors,
+      aiRows:learningEvidenceLedger().filter((row) => row.processEvidenceSource && /^ai/.test(row.processEvidenceSource)),
+    };
+  })()`));
+  assert.equal(result.topProcess, null);
+  assert.equal(result.aiRows.length, 0);
+  assert.equal(result.topErrors.some((row) => /計算|符號/.test(row.kind)), false);
+});
+
+test('AI 首輪單元分類只留作未驗證旁註，正式 key 或老師修正才可影響弱點與選題', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const source = {
+      id:'topic-proof-source', title:'topic proof', questions:1, scans:['page-1'],
+      calibrationEligible:false, questionPages:[0],
+    };
+    const key = [{ type:'single', ans:[0], points:5, topic:'num' }];
+    const normalized = paperNormalizeAiGrade(source, { questions:[{
+      no:1, status:'incorrect', points:0, selectedOptions:[2], topic:'prob',
+      read:'(2)', marks:[{ box:[.1,.1,.2,.2], kind:'cross', option:2 }],
+    }] }, 'gpt-5.5', key);
+
+    PAPER_SOURCES.push({ ...source, id:'untrusted-topic-source' });
+    S.paperRuns = [{
+      id:'untrusted-topic-run', sourceId:'untrusted-topic-source', d:today(),
+      submittedAt:Date.now(), status:'completed', review:{},
+      aiGrade:{ gradedAt:Date.now(), questions:[
+        { no:1, status:'incorrect', points:0, maxPoints:5, topic:'prob', topicSource:'ai' },
+      ] },
+    }];
+    const paperRows = learningEvidenceLedger().filter((row) => row.qid === 'untrusted-topic-run:1');
+    const signals = learningSignalIndex();
+    return {
+      normalizedTopic:normalized.questions[0].topic,
+      normalizedSource:normalized.questions[0].topicSource,
+      aiTopic:normalized.questions[0].aiTopic,
+      untrustedRows:paperRows,
+      hasProbabilitySignal:!!signals.topics.prob,
+    };
+  })()`));
+  assert.equal(result.normalizedTopic, 'num');
+  assert.equal(result.normalizedSource, 'official-key');
+  assert.equal(result.aiTopic, 'prob');
+  assert.equal(result.untrustedRows.length, 0);
+  assert.equal(result.hasProbabilitySignal, false);
 });
 
 test('老師具名修正保留 AI 原判與每次歷史，最新逐欄修正進入學習模型', () => {
@@ -354,6 +453,8 @@ test('跨裝置合併逐筆聯集老師修正與流程證據，不讓較新整�
     paperTeacherOverrideAppend(left, { at:100, reviewer:'王老師', source:'面談', reason:'單元應改為機率', topic:'prob' }, { topic:'num' });
     paperTeacherOverrideAppend(right, { at:200, reviewer:'王老師', source:'卷面', reason:'第一錯步是建式', processStage:'setup' }, { topic:'num' });
     processEvidenceAppend(left, 'direction', { ts:90, status:'attempted', source:'learner', confidence:'verified', note:'先列出事件' });
+    processEvidenceAppend(left, 'calculation', { ts:95, status:'blocked', source:'trusted-ai-detail', confidence:'high', note:'AI 舊判斷' });
+    processEvidenceAppend(right, 'calculation', { ts:96, status:'blocked', source:'trusted-ai-detail', confidence:'high', note:'舊裝置復活資料' });
     const merged = mergePaperReviewState(left, right);
     return {
       history:merged.teacherOverrideHistory,
@@ -361,6 +462,7 @@ test('跨裝置合併逐筆聯集老師修正與流程證據，不讓較新整�
       process:paperReviewEffectiveProcess(merged, 'direction'),
       direction:merged.processEvidence.direction,
       setup:merged.processEvidence.setup,
+      calculation:merged.processEvidence.calculation,
     };
   })()`));
   assert.equal(result.history.length, 2);
@@ -368,6 +470,30 @@ test('跨裝置合併逐筆聯集老師修正與流程證據，不讓較新整�
   assert.equal(result.process, 'setup');
   assert.equal(result.direction.length, 1);
   assert.equal(result.setup.length, 1);
+  assert.equal(result.calculation.length, 0, '跨裝置合併不可復活已停用的 AI 錯因分類');
+});
+
+test('跨裝置同一 predictionId 若 AI 內容雜湊不同就隔離，不能 first-wins 污染本人 gold', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    const metadata = { predictionId:'detail-pred-same', canonicalDigest:'${'A'.repeat(64)}' };
+    const left = { mt:100, aiDetailHistory:[{
+      generatedAt:100, predictionMetadata:metadata, predictionContentSha256:'${'B'.repeat(64)}',
+      detail:{ no:1, model:'gpt-5.5', readable:true, confidence:'high', read:'a', goodWork:[],
+        firstErrorEvidence:'x', firstError:'left', errorKind:'calc', whyWrong:'', repair:'', explanation:'',
+        solution:[], answer:'1', nextTime:'', marks:[] },
+    }] };
+    const right = { mt:200, aiDetailHistory:[{
+      generatedAt:200, predictionMetadata:metadata, predictionContentSha256:'${'C'.repeat(64)}',
+      detail:{ no:1, model:'gpt-5.5', readable:true, confidence:'high', read:'a', goodWork:[],
+        firstErrorEvidence:'x', firstError:'right', errorKind:'calc', whyWrong:'', repair:'', explanation:'',
+        solution:[], answer:'1', nextTime:'', marks:[] },
+    }] };
+    return mergePaperReviewState(left, right).aiDetailHistory;
+  })()`));
+  assert.equal(result.length, 2);
+  assert.deepEqual(result.map((row) => row.predictionContentSha256).sort(), ['B'.repeat(64).toLowerCase(), 'C'.repeat(64).toLowerCase()]);
+  assert.equal(result.every((row) => row.predictionConflict === true), true);
 });
 
 test('流程斷點至少跨兩題才進個人化提示，不被同一題重複紀錄灌大', () => {
