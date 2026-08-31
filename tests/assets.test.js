@@ -51,6 +51,11 @@ test('雙擊本機 index 會轉正式站，安全檢查不再永久等待 Servic
   assert.match(app, /paperAwaitWithTimeout\(systemReadinessPaperAssets\(paperSource\),\s*20000/);
 });
 
+test('Pages 公開白名單包含舒適作答逐題裁圖索引', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'pages.yml'), 'utf8');
+  assert.match(workflow, /cp index\.html[^\n]*paper-question-crops\.js[^\n]*_site\//);
+});
+
 test('KaTeX 的 woff2 離線字型完整，PWA theme color 一致', () => {
   const cssPath = path.join(ROOT, 'vendor', 'katex', 'katex.min.css');
   const css = fs.readFileSync(cssPath, 'utf8');

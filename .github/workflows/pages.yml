@@ -45,7 +45,7 @@ jobs:
       - name: Build public site allowlist
         run: |
           mkdir -p _site
-          cp index.html app.js bank.js practice-bank.js textbook-catalog.js style.css sw.js manifest.webmanifest icon-192.png icon-512.png _site/
+          cp index.html app.js bank.js practice-bank.js textbook-catalog.js paper-question-crops.js style.css sw.js manifest.webmanifest icon-192.png icon-512.png _site/
           cp -R vendor _site/vendor
           touch _site/.nojekyll
       - name: Upload site
