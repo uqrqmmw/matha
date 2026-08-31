@@ -111,9 +111,9 @@ test('隔日訂正沿用全頁原卷工作台，新筆跡與第一次紅筆分�
   const css = read('style.css');
   const source = read('app.js');
   assert.match(source, /class='paper-session-shell paper-review-session'/);
-  assert.match(source, /id='paper-base-ink-canvas'/);
-  assert.match(source, /id='paper-ink-canvas'/);
-  assert.match(source, /id='paper-ai-canvas'/);
+  assert.match(source, /id=["']paper-base-ink-canvas["']/);
+  assert.match(source, /id=["']paper-ink-canvas["']/);
+  assert.match(source, /id=["']paper-ai-canvas["']/);
   assert.match(source, /id='paper-detail-shortcut'/);
   assert.match(source, /看第 \$\{no\} 題詳解/);
   assert.match(css, /\.paper-review-session #paper-ink-canvas\s*\{\s*z-index:\s*3/);
@@ -144,21 +144,33 @@ test('原卷、批改與訂正共用舒適作答模式，保留整頁原卷切�
   assert.match(source, /function paperWorkspaceNavigationHTML\(source, page, scan, lockedQuestionNo = null\)/);
   assert.match(source, /function paperWorkspaceQuestion\(delta\)/);
   assert.match(source, /function paperWorkspaceComfortFocus\(force = false\)/);
-  assert.match(source, /paperWorkspaceSetZoom\(1\.3\)/);
+  assert.match(source, /function paperWorkspaceCropData\(/);
+  assert.match(source, /function paperWorkspaceSheetHTML\(/);
+  assert.match(source, /--paper-crop-shift/);
   assert.match(source, /data-paper-view="\$\{paperWorkspaceViewData\(\)\}"/);
   assert.match(source, /data-paper-view='\$\{paperWorkspaceViewData\(\)\}'/);
   assert.match(source, /舒適作答/);
   assert.match(source, /整頁原卷/);
+  assert.match(source, /const PAPER_LAYOUT_VERSION = 2;/);
+  assert.match(source, /function paperQuestionWorkspacePage\(source, no\)/);
+  assert.match(source, /paperSourceSession\.page = paperQuestionWorkspacePage\(source, next\)/);
   assert.match(css, /\.paper-session-shell \.paper-spread\s*\{[\s\S]*?padding-top:[\s\S]*?padding-bottom:/);
   assert.match(css, /\.paper-view-toggle\[aria-pressed="true"\]/);
   assert.match(css, /\.paper-question-label b\s*\{[^}]*font-size:\s*15px/);
+  assert.match(css, /data-paper-view="comfort"[^}]*\.paper-spread[\s\S]*?aspect-ratio:\s*var\(--paper-crop-ratio,\s*\.83314\)/);
 
-  const { run } = loadApp();
+  const { context, run } = loadApp();
   const mapped = JSON.parse(JSON.stringify(run(`(() => {
     const source = { questions:8, questionPageMap:[1,1,1,2,2,2,3,3], scans:[{}, {}, {}] };
     return [paperPageQuestionNos(source, 0), paperPageQuestionNos(source, 1), paperPageQuestionNos(source, 2)];
   })()`)));
   assert.deepEqual(mapped, [[1, 2, 3], [4, 5, 6], [7, 8]]);
+  context.window.PAPER_QUESTION_CROPS = { papers:{ sample:{ questions:{ '2':[{ page:0, top:.2, bottom:.4 }] } } } };
+  const cropPageWins = run(`(() => {
+    const source = { id:'sample', questions:2, questionPageMap:[1,2], scans:[{}, {}] };
+    return paperQuestionWorkspacePage(source, 2);
+  })()`);
+  assert.equal(cropPageWins, 0, '實際逐題裁圖頁碼應優先於舊的粗略頁碼表');
 });
 
 test('私人教材作答頁會實際掛載已驗證的原 PDF 題目裁圖', () => {

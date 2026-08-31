@@ -1055,6 +1055,25 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 .new-progress-grid section { min-height: 118px; padding: 15px; display: flex; flex-direction: column; background: #f5f3ee; border: 1px solid var(--border); }
 .new-progress-grid span, .new-progress-grid small { color: var(--dim); }
 .new-progress-grid b { margin: 9px 0 5px; font-size: 24px; font-weight: 580; }
+.report-head.compact { align-items: center; margin-bottom: 12px; }
+.report-head.compact h1 { margin-bottom: 4px; }
+.report-head.compact p { margin: 0; }
+.stats-focus .next-action-card { margin-bottom: 12px; }
+.stats-learner-brief { display: grid; gap: 18px; margin-bottom: 14px; padding: clamp(18px, 3vw, 28px); }
+.stats-learner-brief h2 { max-width: 820px; margin: 5px 0 0; font-size: clamp(19px, 2.2vw, 25px); line-height: 1.45; }
+.stats-brief-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.stats-brief-numbers span { padding: 12px 14px; border: 1px solid var(--border); background: #f7f5f0; color: var(--dim); }
+.stats-brief-numbers b { display: block; margin-bottom: 2px; color: var(--text); font-size: 22px; }
+.stats-brief-tags { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.stats-brief-tags > div { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.stats-brief-tags small { width: 100%; color: var(--dim); }
+.stats-brief-tags span { padding: 7px 10px; border-radius: 999px; background: #ece9e2; font-size: 13px; }
+.stats-advanced { margin: 12px 0 36px; border: 1px solid var(--border); background: #fbfaf7; }
+.stats-advanced > summary { padding: 16px 18px; cursor: pointer; font-weight: 700; }
+.stats-advanced-body { padding: 0 12px 12px; }
+@media (max-width: 720px) {
+  .stats-brief-numbers, .stats-brief-tags { grid-template-columns: 1fr; }
+}
 .learner-model-card { margin-bottom: 18px; border-color: #c9c2b7; background: #fbfaf7; }
 .system-readiness-card { margin-bottom: 18px; border-color: #c8c1b5; background: #faf9f6; }
 .system-readiness-card > h2 { margin: 5px 0 8px; }
@@ -1574,8 +1593,34 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
 }
 .paper-question-label b { font-size: 15px; }
 .paper-question-label small { margin-top: 3px; color: var(--dim); font-size: 10px; white-space: nowrap; }
-.paper-session-shell[data-paper-view="comfort"] .paper-write-sheet { background: #fffefa; }
+.paper-session-shell[data-paper-view="comfort"] .paper-page-viewport {
+  padding: max(128px, calc(env(safe-area-inset-top) + 128px)) 0 max(82px, calc(env(safe-area-inset-bottom) + 82px));
+  background: #efede7;
+}
+.paper-session-shell[data-paper-view="comfort"] .paper-spread {
+  position: relative; min-height: 0; padding: 0; overflow: hidden; aspect-ratio: var(--paper-crop-ratio, .83314);
+  margin: 0 auto 24px; background: #fffefa; border: 1px solid #c8c2b8; border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(42, 38, 34, .14);
+}
+.paper-session-shell[data-paper-view="comfort"] .paper-write-sheet {
+  position: absolute; inset: 0 auto auto 0; width: 100%; max-width: none; margin: 0;
+  transform: translateY(var(--paper-crop-shift, 0%)); transform-origin: top left; background: #fffefa;
+}
 .paper-session-shell[data-paper-view="comfort"] .paper-question-crop { box-shadow: 0 0 0 1px rgba(88,78,67,.08); }
+.paper-session-shell[data-paper-view="comfort"].paper-ui-hidden .paper-page-viewport { padding-top: max(10px, env(safe-area-inset-top)); }
+.paper-continuation {
+  width: min(100% - 24px, 1120px); margin: 0 auto 28px; padding: 12px; box-sizing: border-box;
+  border: 1px solid #c8c2b8; border-radius: 8px; background: #fffefa; box-shadow: 0 6px 20px rgba(42,38,34,.1);
+}
+.paper-continuation > b { display: block; margin: 0 0 8px; color: var(--accent-deep); font-size: 13px; }
+.paper-continuation-window { position: relative; width: 100%; overflow: hidden; background: #fff; }
+.paper-continuation-window img {
+  position: absolute; top: var(--continuation-shift); left: 0; width: 100%; height: auto; max-width: none;
+  filter: grayscale(.92) contrast(1.1) brightness(1.035); user-select: none; -webkit-user-drag: none;
+}
+.paper-continuation-window[data-side="left"] img,
+.paper-continuation-window[data-side="right"] img { width: 200%; }
+.paper-continuation-window[data-side="right"] img { left: -100%; }
 @media (max-width: 1100px) and (orientation: landscape) {
   .paper-session-shell .paper-save-status {
     width: 44px; max-width: 44px; padding: 0; justify-content: center; font-size: 0;

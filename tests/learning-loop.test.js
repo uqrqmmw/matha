@@ -640,7 +640,8 @@ test('原版工作台把筆跡畫布直接覆蓋在題目與右側留白，不�
   assert.match(html, /paper-write-sheet/);
   assert.match(html, /paper-question-crop/);
   assert.match(html, /paper-note-margin/);
-  assert.match(html, /整個畫面皆可直接書寫並左右滑動翻頁/);
+  assert.match(html, /本題可直接書寫；手指拖動畫面，觸控筆作答/);
+  assert.match(html, /舒適作答/);
   assert.match(html, /id="paper-ai-canvas"/);
   assert.match(html, /id="paper-pen-width" type="range" min="35" max="200" step="5"/);
   assert.match(html, /id="paper-color-black"/);
@@ -662,7 +663,7 @@ test('原版題本預設使用 cover 尺寸，直向滿高、橫向滿寬且不�
     const pane = { clientWidth:924, clientHeight:1480 };
     const sheet = { style:{} };
     document.querySelector = (selector) => selector === '.paper-page-viewport' ? pane : selector === '#paper-write-sheet' ? sheet : null;
-    paperSourceSession = { zoom:1, inkPages:{ 0:{ s:[], loaded:true } }, page:0 };
+    paperSourceSession = { zoom:1, viewMode:'original', inkPages:{ 0:{ s:[], loaded:true } }, page:0 };
     paperWorkspaceFit();
     const portrait = { fit:paperSourceSession.fitWidth, width:sheet.style.width, max:sheet.style.maxWidth };
     pane.clientWidth = 1707; pane.clientHeight = 791; sheet.style = {};
@@ -1501,8 +1502,8 @@ test('原版隔日訂正使用全頁可寫工作台，每題保留詳解入口�
     return { locked, detailed };
   })()`));
   assert.match(result.locked, /paper-session-shell paper-review-session/);
-  assert.match(result.locked, /id='paper-base-ink-canvas'/);
-  assert.match(result.locked, /id='paper-ink-canvas'/);
+  assert.match(result.locked, /id=["']paper-base-ink-canvas["']/);
+  assert.match(result.locked, /id=["']paper-ink-canvas["']/);
   assert.match(result.locked, /id='paper-ai-toggle'/);
   assert.match(result.locked, /隱藏紅筆/);
   assert.match(result.locked, /id='paper-detail-shortcut'/);

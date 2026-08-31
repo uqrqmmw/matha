@@ -26,6 +26,31 @@ test('HTML、manifest 與 service-worker shell 引用的本機資產都存在', 
   assert.deepEqual(missing, []);
 });
 
+test('舒適作答的原像素題號定位完整涵蓋 17 回 339 題', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'paper-question-crops.js'), 'utf8');
+  const match = source.match(/Object\.freeze\((\{[\s\S]*\})\);/);
+  assert.ok(match, '找不到逐題裁切 payload');
+  const payload = JSON.parse(match[1]);
+  const papers = Object.values(payload.papers || {});
+  assert.equal(papers.length, 17);
+  assert.equal(papers.reduce((sum, paper) => sum + Object.keys(paper.questions || {}).length, 0), 339);
+  for (const paper of papers) for (const segments of Object.values(paper.questions || {})) {
+    assert.equal(Array.isArray(segments) && segments.length > 0, true);
+    for (const segment of segments) {
+      assert.equal(Number.isInteger(segment.page), true);
+      assert.equal(segment.top >= 0 && segment.bottom > segment.top && segment.bottom <= 1, true);
+    }
+  }
+});
+
+test('雙擊本機 index 會轉正式站，安全檢查不再永久等待 Service Worker', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  assert.match(html, /location\.protocol === 'file:'[\s\S]*?location\.replace\('https:\/\/uqrqmmw\.github\.io\/matha\//);
+  assert.match(app, /paperAwaitWithTimeout\(navigator\.serviceWorker\.ready,\s*4500/);
+  assert.match(app, /paperAwaitWithTimeout\(systemReadinessPaperAssets\(paperSource\),\s*20000/);
+});
+
 test('KaTeX 的 woff2 離線字型完整，PWA theme color 一致', () => {
   const cssPath = path.join(ROOT, 'vendor', 'katex', 'katex.min.css');
   const css = fs.readFileSync(cssPath, 'utf8');

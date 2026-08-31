@@ -10,11 +10,16 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#75675c">
   <title>數A 特訓</title>
+  <script>
+    // 直接雙擊舊的 Desktop/index.html 會失去 Service Worker 與私有雲端安全條件；
+    // 立即帶到唯一正式站，避免停在永遠不會完成的「開考前安全檢查」。
+    if (location.protocol === 'file:') location.replace('https://uqrqmmw.github.io/matha/' + location.search + location.hash);
+  </script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png?v=4">
   <link rel="apple-touch-icon" href="icon-192.png?v=4">
   <link rel="stylesheet" href="vendor/katex/katex.min.css"><!-- KaTeX 0.16.11 自架同源：離線可用（斷網也能排版數學）＋免 CDN 供應鏈風險。字型在 vendor/katex/fonts/ -->
-  <link rel="stylesheet" href="style.css?v=0901a">
+  <link rel="stylesheet" href="style.css?v=0901b">
 </head>
 <body>
   <!-- 自製單色 SVG 圖示系統：全站只使用這組線性圖示，不載圖庫、不顯示 emoji。 -->
@@ -77,10 +82,11 @@
   <script src="vendor/supabase.js"></script><!-- 自架同源（原 CDN @2）：認證庫不再依賴 CDN，杜絕供應鏈竄改讀走密碼，且離線可用。版本 2.110.2 UMD，更新時重新下載 dist/umd/supabase.js -->
   <script defer src="vendor/katex/katex.min.js"></script>
   <script defer src="vendor/katex/auto-render.min.js"></script>
-  <script src="bank.js?v=0901a"></script>
-  <script src="practice-bank.js?v=0901a"></script>
-  <script src="textbook-catalog.js?v=0901a"></script>
-  <script src="app.js?v=0901a"></script>
+  <script src="bank.js?v=0901b"></script>
+  <script src="practice-bank.js?v=0901b"></script>
+  <script src="textbook-catalog.js?v=0901b"></script>
+  <script src="paper-question-crops.js?v=0901b"></script>
+  <script src="app.js?v=0901b"></script>
   <script>
     // PWA：正式站註冊 service worker（artifact/file 環境會靜默跳過）
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
