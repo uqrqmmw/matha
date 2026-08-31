@@ -23,6 +23,10 @@ const BOOK_BY_ID = new Map(CATALOG_BOOKS.map((book) => [book.id, book]));
 const UNTRUSTED_REVIEWER_RE = /(?:draft|smoke|not[-_\s]*a[-_\s]*human|not[-_\s]*human|not[-_\s]*importable|qa[-_\s]*only|forced|unsigned)/i;
 const RELEASE_NON_HUMAN_RE = /(?:claude|codex|chatgpt|gpt|gemini|agent|bot|automation|自動|模型|人工智慧|\bai\b)/i;
 const OWNER_DELEGATED_POLICY = 'owner-delegated-agent-direct-pixel-v1';
+/* 題庫是整批啟動時載入；若依每頁 src 分包，1,294 題會膨脹成近千個
+   Storage 請求。以教材為單位、每包最多 64 題，保留可讀的教材邊界，
+   同時把首次冷啟動縮成數十個內容位址化檔案。 */
+const PRIVATE_PACK_MAX_ITEMS = 64;
 /* 逐頁核對後確認：題文已把印刷表格的全部欄列與數值完整序列化，位置/顏色/合併格不影響解題。
    這是 build-time 信任清單；外部 qpack 自報 visualComplete 或仿造 evidence 都不會取得 curated trust。 */
 const VERIFIED_TEXT_COMPLETE_IDS = new Set([
@@ -349,21 +353,36 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
       return blocked;
     })()
     : sanitizeBank(sourceItems, builtin);
-  const bySource = new Map();
+  const byBook = new Map();
   for (const q of items) {
-    const source = q.src || '未標來源';
-    if (!bySource.has(source)) bySource.set(source, []);
-    bySource.get(source).push(q);
+    const key = q.bookId || `source-${sha(q.src || '未標來源').slice(0, 16)}`;
+    if (!byBook.has(key)) byBook.set(key, {
+      name: q.bookTitle || q.src || q.bookId || '未標來源',
+      items: [],
+    });
+    byBook.get(key).items.push(q);
   }
   fs.mkdirSync(outputDir, { recursive: true });
-  const packs = [...bySource.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-Hant')).map(([name, packItems], index) => {
-    const envelope = { kind: 'qpack', name, version: 2, items: packItems };
-    const json = `${JSON.stringify(envelope)}\n`;
-    const digest = sha(json);
-    const file = sourceFileName(name, index, digest);
-    fs.writeFileSync(path.join(outputDir, file), json);
-    return { id: `curated-${sha(name).slice(0, 16)}`, name, file, count: packItems.length, sha256: digest };
-  });
+  const packs = [];
+  for (const [bookKey, group] of [...byBook.entries()].sort(([a], [b]) => a.localeCompare(b, 'en'))) {
+    const chunkCount = Math.ceil(group.items.length / PRIVATE_PACK_MAX_ITEMS);
+    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+      const packItems = group.items.slice(
+        chunkIndex * PRIVATE_PACK_MAX_ITEMS,
+        (chunkIndex + 1) * PRIVATE_PACK_MAX_ITEMS,
+      );
+      const name = chunkCount > 1 ? `${group.name}（${chunkIndex + 1}/${chunkCount}）` : group.name;
+      const envelope = { kind: 'qpack', name, version: 2, items: packItems };
+      const json = `${JSON.stringify(envelope)}\n`;
+      const digest = sha(json);
+      const file = sourceFileName(`${bookKey}-${chunkIndex + 1}`, packs.length, digest);
+      fs.writeFileSync(path.join(outputDir, file), json);
+      packs.push({
+        id: `curated-${sha(`${bookKey}#${chunkIndex + 1}`).slice(0, 16)}`,
+        name, file, count: packItems.length, sha256: digest,
+      });
+    }
+  }
   const generatedAt = new Date().toISOString();
   const corpusGeneration = String(raw.corpusGeneration || 'legacy-unverified');
   const sourceInventorySha256 = String(raw.sourceInventorySha256 || '');
@@ -425,6 +444,7 @@ function buildPrivateBank(sourceFile, outputDir, repoRoot) {
       pendingBooks: TEXTBOOK_LIBRARY.books.filter((book) => book.ingestion !== 'released').length,
     },
     pendingVisuals: { file: 'pending-visuals.json', count: pendingVisuals.length, sha256: sha(pendingVisualJson) },
+    packStrategy: { kind: 'book-chunks-v1', maxItems: PRIVATE_PACK_MAX_ITEMS },
     packs,
   };
   /* 待補圖檔是私有製作佇列，不上 GitHub Pages；缺圖題逐題可追，不再被粗暴省略。 */

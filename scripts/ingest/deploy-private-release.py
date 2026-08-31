@@ -245,8 +245,15 @@ def validate_plan(plan_file: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
     alias = safe_storage_path(plan.get("manifestAlias"), "manifest alias")
     if alias != EXPECTED_ALIAS:
         raise DeploymentError("upload plan does not target the formal manifest alias")
-    expected_manifest = f"releases/{release_id}/manifest.json"
-    if plan.get("versionedManifest") != expected_manifest:
+    expected_manifest = safe_storage_path(
+        plan.get("versionedManifest"), "versioned manifest",
+    )
+    legacy_manifest = f"releases/{release_id}/manifest.json"
+    addressed_manifest = re.fullmatch(
+        rf"releases/{re.escape(release_id)}/manifests/manifest-([a-f0-9]{{16}})\.json",
+        expected_manifest,
+    )
+    if expected_manifest != legacy_manifest and addressed_manifest is None:
         raise DeploymentError("upload plan versioned manifest path is invalid")
     summary = plan.get("summary")
     question_count = summary.get("questions") if isinstance(summary, dict) else None
@@ -346,18 +353,24 @@ def validate_plan(plan_file: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
                 (content_rows if bucket == "matha-content" else figure_rows).append(item)
     if alias_row is None:
         raise DeploymentError("upload plan does not contain the manifest alias")
-    pending_path = f"{prefix}content/pending-visuals.json"
     content_paths = {row["path"] for row in content_rows}
+    pending_rows = [
+        row for row in content_rows
+        if re.fullmatch(
+            rf"{re.escape(prefix)}content/pending-visuals(?:-([a-f0-9]{{16}}))?\.json",
+            row["path"],
+        )
+    ]
     pack_rows = [
         row for row in content_rows
-        if row["path"].startswith(f"{prefix}content/") and row["path"] != pending_path
+        if row["path"].startswith(f"{prefix}content/") and row not in pending_rows
     ]
     question_ids = [row.get("questionId") for row in figure_rows]
     if (len(all_files) != versioned_object_count
             or len(content_rows) != content_file_count - 1
             or len(pack_rows) != pack_count
             or any(not row["path"].endswith(".json") for row in pack_rows)
-            or expected_manifest not in content_paths or pending_path not in content_paths
+            or expected_manifest not in content_paths or len(pending_rows) != 1
             or len(figure_rows) != question_count
             or any(not row["path"].startswith(f"{prefix}stems/")
                    or not row["path"].endswith(".png")
@@ -368,10 +381,19 @@ def validate_plan(plan_file: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
         raise DeploymentError(
             "upload plan does not exactly match its signed question source and declared counts"
         )
+    pending_match = re.fullmatch(
+        rf"{re.escape(prefix)}content/pending-visuals(?:-([a-f0-9]{{16}}))?\.json",
+        pending_rows[0]["path"],
+    )
+    if pending_match and pending_match.group(1) is not None \
+            and pending_match.group(1) != pending_rows[0]["sha256"][:16]:
+        raise DeploymentError("content-addressed pending queue path does not match its bytes")
     manifest_row = next(row for row in content_rows if row["path"] == expected_manifest)
     if (alias_row["sha256"], alias_row["bytes"]) != (
             manifest_row["sha256"], manifest_row["bytes"]):
         raise DeploymentError("manifest alias does not equal the versioned manifest")
+    if addressed_manifest is not None and addressed_manifest.group(1) != alias_row["sha256"][:16]:
+        raise DeploymentError("content-addressed manifest path does not match its bytes")
     return plan, all_files, alias_row
 
 
@@ -518,21 +540,38 @@ def rollback(record_file: Path, output_file: Path, base_url: str, service_key: s
         raise DeploymentError("deployment record does not contain the exact versioned object set")
     content_uploaded = [row for row in uploaded if row["bucket"] == "matha-content"]
     figure_uploaded = [row for row in uploaded if row["bucket"] == "matha-figures"]
-    versioned_manifest = f"{prefix}manifest.json"
-    pending_path = f"{prefix}content/pending-visuals.json"
+    manifest_rows = [
+        row for row in content_uploaded
+        if row["path"] == f"{prefix}manifest.json" or re.fullmatch(
+            rf"{re.escape(prefix)}manifests/manifest-([a-f0-9]{{16}})\.json",
+            row["path"],
+        )
+    ]
+    pending_rows = [
+        row for row in content_uploaded
+        if re.fullmatch(
+            rf"{re.escape(prefix)}content/pending-visuals(?:-([a-f0-9]{{16}}))?\.json",
+            row["path"],
+        )
+    ]
     pack_uploaded = [
         row for row in content_uploaded
-        if row["path"].startswith(f"{prefix}content/") and row["path"] != pending_path
+        if row["path"].startswith(f"{prefix}content/") and row not in pending_rows
     ]
-    manifest_rows = [row for row in content_uploaded if row["path"] == versioned_manifest]
     question_count = len(figure_uploaded)
     pack_count = len(pack_uploaded)
     if (question_count < 1 or pack_count < 1
             or len(content_uploaded) != pack_count + 2
             or any(not row["path"].endswith(".json") for row in pack_uploaded)
-            or not any(row["path"] == pending_path for row in content_uploaded)
+            or len(pending_rows) != 1
             or len(manifest_rows) != 1
             or manifest_rows[0]["sha256"] != alias["newSha256"]
+            or ("manifest-" in manifest_rows[0]["path"]
+                and manifest_rows[0]["path"].split("manifest-")[-1].split(".json")[0]
+                != manifest_rows[0]["sha256"][:16])
+            or ("pending-visuals-" in pending_rows[0]["path"]
+                and pending_rows[0]["path"].split("pending-visuals-")[-1].split(".json")[0]
+                != pending_rows[0]["sha256"][:16])
             or any(not row["path"].startswith(f"{prefix}stems/")
                    or not row["path"].endswith(".png") for row in figure_uploaded)):
         raise DeploymentError("deployment record object distribution is not the formal release")

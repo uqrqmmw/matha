@@ -100,7 +100,8 @@ def assemble(source_file: Path, promotion_root: Path, output_root: Path) -> dict
         pack["file"] = versioned
         content_files.append({"path": versioned, "sha256": sha256(target), "bytes": target.stat().st_size})
     pending_source = build_root / "pending-visuals.json"
-    pending_versioned = f"{release_prefix}/content/pending-visuals.json"
+    pending_digest = sha256(pending_source)
+    pending_versioned = f"{release_prefix}/content/pending-visuals-{pending_digest[:16]}.json"
     pending_target = safe_join(content_root, pending_versioned)
     pending_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(pending_source, pending_target)
@@ -110,7 +111,12 @@ def assemble(source_file: Path, promotion_root: Path, output_root: Path) -> dict
     if isinstance(manifest.get("pendingVisuals"), dict):
         manifest["pendingVisuals"]["file"] = pending_versioned
     manifest_bytes = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    versioned_manifest_path = f"{release_prefix}/manifest.json"
+    # The signed question release id identifies the reviewed content, while a
+    # packaging-only optimization may legitimately produce a new manifest for
+    # the exact same source.  Content-address the versioned manifest so the old
+    # package remains immutable and rollbackable instead of overwriting it.
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    versioned_manifest_path = f"{release_prefix}/manifests/manifest-{manifest_digest[:16]}.json"
     versioned_manifest = safe_join(content_root, versioned_manifest_path)
     versioned_manifest.parent.mkdir(parents=True, exist_ok=True)
     versioned_manifest.write_bytes(manifest_bytes)

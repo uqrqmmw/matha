@@ -25,6 +25,8 @@
 - 版本化 bundle、原子 alias 切換與回滾：`scripts/ingest/assemble-private-release.py`、`scripts/ingest/deploy-private-release.py`
 - 1,294 題正式 release：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v6-1294-owner-delegated-release-20260831`
 - 1,294 題不可變 bundle：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v6-1294-owner-delegated-bundle-20260831`
+- 31 包效能重組 bundle：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v6-1294-performance-bundle-v2-20260901`
+- 31 包效能重組部署記錄：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v6-1294-performance-deployment-v2-20260901.json`
 - 部署／回滾／讀回／App 實載證據：`C:\Users\yenke\Desktop\數學檔案\matha-starter-v6-1294-final-delivery-20260831`
 - Storage 全量真值回讀：`scripts/ingest/verify-private-release-runtime.py`
 - 真實登入使用者 App 載入：`scripts/ingest/verify-private-app-loader.py`
@@ -50,7 +52,7 @@
 
 ## 目前正式狀態與下一道關卡
 
-1,294 題 release `starter-13ab6826a1942e90` 已安全部署：14 單元均有題，角色為例題 780、簡單 177、中等 302、困難 35。相同 bundle 已實際完成 D1、回滾至 374 題前版與較晚的 D2；D2 後逐位元回讀 2,229 個版本化物件、933 題包與 1,294 題，啟用中的 App 使用者亦已用 JWT／RLS 實載 1,294/1,294 題圖。正式 alias 現指向 1,294 題版，沒有重跑或重付任何 OCR／去筆跡服務。
+1,294 題 release `starter-13ab6826a1942e90` 已安全部署：14 單元均有題，角色為例題 780、簡單 177、中等 302、困難 35。原版相同 bundle 已實際完成 D1、回滾至 374 題前版與較晚的 D2；D2 後逐位元回讀 2,229 個版本化物件、933 題包與 1,294 題，啟用中的 App 使用者亦已用 JWT／RLS 實載 1,294/1,294 題圖。2026-09-01 再以逐題 JSON 比對確認內容完全相同後，依教材重組為 31 包；新版也完成首次部署、實際回滾至 933 包舊 alias 與不同記錄的最終重部署。最終部署後全量讀回 1,327 個版本物件，並以一般使用者 JWT／RLS 讀回 31 包與 1,294/1,294 題圖；全新 Chrome context 冷載為 3.334 秒。正式 alias 仍是同一 1,294 題 release，沒有重跑或重付任何 OCR／去筆跡服務。
 
 M4 的 1,200 題最低門檻已完成；若未來要擴到 1,500 題，仍差 206 題，但不阻塞本次工程交付。後續只能沿用相同的 hash-bound、直接像素 QA、答案 QA、fail-closed 隔離與不可變 bundle 流程；有圖題只在必要圖線、灰階或題面資訊受損時隔離，不因「有圖」本身排除。
 

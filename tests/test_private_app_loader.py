@@ -183,7 +183,10 @@ class PrivateAppLoaderTests(unittest.TestCase):
         self.assertEqual(cursor, 217)
 
         pending_data = b'{"kind":"pending-visual-queue","items":[]}\n'
-        pending_path = f"releases/{self.RELEASE_ID}/content/pending-visuals.json"
+        pending_path = (
+            f"releases/{self.RELEASE_ID}/content/"
+            f"pending-visuals-{digest(pending_data)[:16]}.json"
+        )
         rows["matha-content"].append({
             "path": pending_path,
             "sha256": digest(pending_data),
@@ -531,7 +534,7 @@ class PrivateAppLoaderTests(unittest.TestCase):
             root = Path(temp)
             plan, deployment, runtime, store = self.fixture(root)
             key = next(key for key in store if key[0] == "matha-content" and "/content/" in key[1]
-                       and not key[1].endswith("pending-visuals.json"))
+                       and "pending-visuals-" not in key[1])
             store[key] = b"changed-pack-bytes"
             with self.assertRaisesRegex(loader.AppLoaderVerificationError, "question pack drift"):
                 self.verify(root, FakeBackend(store), plan, deployment, runtime)

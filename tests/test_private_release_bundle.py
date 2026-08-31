@@ -78,15 +78,23 @@ class PrivateReleaseBundleTests(unittest.TestCase):
             self.assertEqual(result["releaseId"], release_id)
             plan = json.loads((output / "upload-plan.json").read_text("utf-8"))
             content_paths = [row["path"] for row in plan["buckets"]["matha-content"]["files"]]
-            self.assertIn(f"releases/{release_id}/manifest.json", content_paths)
+            versioned_manifest = plan["versionedManifest"]
+            self.assertIn(versioned_manifest, content_paths)
+            self.assertRegex(
+                versioned_manifest,
+                rf"^releases/{release_id}/manifests/manifest-[a-f0-9]{{16}}\.json$",
+            )
             self.assertIn(bundle.MANIFEST_ALIAS, content_paths)
+            pending_paths = [path for path in content_paths if "/pending-visuals-" in path]
+            self.assertEqual(len(pending_paths), 1)
+            self.assertRegex(pending_paths[0], r"/pending-visuals-[a-f0-9]{16}\.json$")
             self.assertTrue(all(
                 path == bundle.MANIFEST_ALIAS or path.startswith(f"releases/{release_id}/")
                 for path in content_paths
             ))
             self.assertEqual(
                 (output / "matha-content" / bundle.MANIFEST_ALIAS).read_bytes(),
-                (output / "matha-content" / "releases" / release_id / "manifest.json").read_bytes(),
+                (output / "matha-content" / versioned_manifest).read_bytes(),
             )
             manifest = json.loads(
                 (output / "matha-content" / bundle.MANIFEST_ALIAS).read_text("utf-8")

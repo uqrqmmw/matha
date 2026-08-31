@@ -1782,10 +1782,15 @@ def release_object_rows(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
     if not isinstance(release_id, str) or not release_id:
         raise ReadinessError("上傳計畫缺少 releaseId")
     alias_path = plan.get("manifestAlias")
-    versioned_manifest = f"releases/{release_id}/manifest.json"
+    versioned_manifest = plan.get("versionedManifest")
+    legacy_manifest = f"releases/{release_id}/manifest.json"
+    addressed_manifest = re.fullmatch(
+        rf"releases/{re.escape(release_id)}/manifests/manifest-[a-f0-9]{{16}}\.json",
+        str(versioned_manifest or ""),
+    )
     if alias_path != EXPECTED_MANIFEST_ALIAS:
         raise ReadinessError("上傳計畫不是 App 使用的固定 alias")
-    if plan.get("versionedManifest") != versioned_manifest:
+    if versioned_manifest != legacy_manifest and addressed_manifest is None:
         raise ReadinessError("上傳計畫的版本化 manifest 路徑不符")
     summary = plan.get("summary")
     question_count = summary.get("questions") if isinstance(summary, dict) else None

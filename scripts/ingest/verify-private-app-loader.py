@@ -1199,7 +1199,11 @@ def verify_app_loader(
     expected_pack_paths = {
         row["path"] for row in versioned
         if row["bucket"] == "matha-content" and "/content/" in row["path"]
-        and not row["path"].endswith("/pending-visuals.json")
+        and re.fullmatch(
+            rf"releases/{re.escape(release_id)}/content/"
+            r"pending-visuals(?:-[a-f0-9]{16})?\.json",
+            row["path"],
+        ) is None
     }
     manifest_pack_paths = {pack["file"] for pack in packs}
     if manifest_pack_paths != expected_pack_paths:

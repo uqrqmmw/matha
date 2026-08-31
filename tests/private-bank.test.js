@@ -29,6 +29,28 @@ test('私有題包檔名包含內容雜湊，更新內容不會被同名 Storage
   assert.match(manifest.packs[0].file, new RegExp(`${manifest.packs[0].sha256.slice(0, 10)}\\.json$`));
 });
 
+test('私有題庫依教材合併分包，避免每頁各一包拖慢首次載入', (t) => {
+  const root = path.resolve(__dirname, '..');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'matha-book-chunks-'));
+  t.after(() => fs.rmSync(temp, { recursive:true, force:true }));
+  const source = path.join(temp, 'source.json');
+  const output = path.join(temp, 'out');
+  const questions = Array.from({ length:130 }, (_, index) => q(
+    `book-chunk-${index + 1}`,
+    `同一本教材的第 ${index + 1} 題`,
+    {
+      src:`測試教材｜PDF 第 ${index + 1} 頁`,
+      bookId:'matha-114-real-number-line', bookTitle:'測試教材', page:index + 1,
+    },
+  ));
+  fs.writeFileSync(source, JSON.stringify(questions), 'utf8');
+  const manifest = buildPrivateBank(source, output, root);
+  assert.deepEqual(manifest.packs.map((pack) => pack.count), [64, 64, 2]);
+  assert.equal(manifest.packStrategy.kind, 'book-chunks-v1');
+  assert.equal(manifest.packStrategy.maxItems, 64);
+  assert.equal(new Set(manifest.packs.map((pack) => pack.id)).size, 3);
+});
+
 test('只有新版來源清冊與三項人工校驗都齊全時才產生可發布 manifest', (t) => {
   const root = path.resolve(__dirname, '..');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'matha-release-contract-'));

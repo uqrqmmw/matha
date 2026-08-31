@@ -25,6 +25,8 @@
 - 2026-08-31 同一 upload plan 已實際完成 D1 → 綁定 D1 的回滾 → 時間較晚且記錄不同的 D2。回滾成功恢復 374 題前版 alias，D2 再切到 1,294 題正式 alias，未重跑或重付任何 OCR／去筆跡服務。
 - D2 後 Storage verifier 已全量回讀固定 alias 與 2,229 個版本化物件，核對 1,294 題、933 題包、14 單元、角色分布、全部題圖引用及 33 批簽核鏈；結果 `status: verified`、雜湊錯配 0。
 - 啟用中的真實登入使用者已用 JWT／RLS 讀回 933 題包與 1,294/1,294 題圖；17 張 signed URL 樣本覆蓋 14 單元與例題／簡單／中等／困難 4 種角色。此 App loader 證據與 Storage 證據均綁 D2、`APP_VER 0831a`、`app.js` SHA 與正式 alias SHA。
+- 2026-09-01 對同一簽核題源做內容等價重包：逐題 ID 與 JSON 比對 1,294/1,294 一致，題包由 933 降為 31。manifest 與待補圖佇列改為內容位址化版本路徑，舊 package 不被覆寫；新版實際完成首次部署→回滾至 933 包舊 alias→不同記錄最終重部署。最終部署後 Storage 全量讀回 1,327 個版本物件，登入使用者 JWT／RLS 讀回 31 包與 1,294/1,294 題圖，雜湊錯配 0。
+- 正式站使用全新 Chrome context 與一次性一般使用者重新走完整人類操作 QA；私有題庫冷載由 52.767 秒降為 3.334 秒，31/31 包與 1,294 題就緒，自適應 10 題及原 PDF 題圖成功，request／HTTP／console 錯誤皆為 0。
 
 ## 平板資料安全壓測
 
@@ -48,7 +50,7 @@
 
 ## 自動測試
 
-- 2026-09-01 本地 1,294 題封存版：Web／PWA 324 項（322 通過、2 項按設計跳過、0 失敗）；Python 383/383 通過；PostgreSQL 23 項（22 通過、1 項按設計跳過、0 失敗）；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
+- 2026-09-01 本地 1,294 題效能重組版：Web／PWA 325 項（323 通過、2 項按設計跳過、0 失敗）；Python 383/383 通過；PostgreSQL 23 項（22 通過、1 項按設計跳過、0 失敗）；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
 - 人類操作 QA 另以實際登入與接近平板的直／橫向視窗走過開卷、書寫、翻頁、重整復原、全新瀏覽器雲端復原、批改、訂正、逐題詳解與 10 題私有教材流程；結果與限制見 `docs/HUMAN-QA-20260901.md`。
 - CI 與 Pages 現在都明確執行 `npm test`、`npm run test:figures`、`npm run test:edge`；不再由 CI 只跑部分 Edge 檔。
 - 核心交付使用 `python scripts/audit-blueprint-readiness.py --require-delivery-ready`。`--require-complete` 是整份藍圖關卡，會在 5 道真實使用證據尚未完成時刻意失敗。

@@ -315,8 +315,15 @@ def _plan_rows(plan: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], di
     alias_path = safe_object_path(plan.get("manifestAlias"), "alias")
     if alias_path != EXPECTED_ALIAS:
         raise RuntimeVerificationError("upload plan does not target the formal private alias")
-    expected_manifest = f"releases/{release_id}/manifest.json"
-    if plan.get("versionedManifest") != expected_manifest:
+    expected_manifest = safe_object_path(
+        plan.get("versionedManifest"), "versioned manifest",
+    )
+    legacy_manifest = f"releases/{release_id}/manifest.json"
+    addressed_manifest = re.fullmatch(
+        rf"releases/{re.escape(release_id)}/manifests/manifest-([a-f0-9]{{16}})\.json",
+        expected_manifest,
+    )
+    if expected_manifest != legacy_manifest and addressed_manifest is None:
         raise RuntimeVerificationError("upload plan versioned manifest path is invalid")
     summary = plan.get("summary")
     question_count = summary.get("questions") if isinstance(summary, dict) else None
@@ -387,16 +394,22 @@ def _plan_rows(plan: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], di
         row["path"] for row in rows if row["bucket"] == "matha-content"
     }
     figure_rows = [row for row in rows if row["bucket"] == "matha-figures"]
-    expected_pending = f"releases/{release_id}/content/pending-visuals.json"
+    pending_rows = [
+        row for row in rows
+        if row["bucket"] == "matha-content" and re.fullmatch(
+            rf"releases/{re.escape(release_id)}/content/pending-visuals(?:-([a-f0-9]{{16}}))?\.json",
+            row["path"],
+        )
+    ]
     pack_paths = {
         path for path in content_paths
         if path.startswith(f"releases/{release_id}/content/")
-        and path != expected_pending
+        and not any(row["path"] == path for row in pending_rows)
     }
     if (
         len(content_paths) != content_file_count - 1
         or expected_manifest not in content_paths
-        or expected_pending not in content_paths
+        or len(pending_rows) != 1
         or len(pack_paths) != pack_count
         or any(not path.endswith(".json") for path in pack_paths)
         or len(figure_rows) != question_count
@@ -406,6 +419,15 @@ def _plan_rows(plan: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], di
         or len({row["questionId"] for row in figure_rows}) != question_count
     ):
         raise RuntimeVerificationError("upload plan versioned object counts are invalid")
+    pending_match = re.fullmatch(
+        rf"releases/{re.escape(release_id)}/content/pending-visuals(?:-([a-f0-9]{{16}}))?\.json",
+        pending_rows[0]["path"],
+    )
+    if pending_match and pending_match.group(1) is not None \
+            and pending_match.group(1) != pending_rows[0]["sha256"][:16]:
+        raise RuntimeVerificationError(
+            "content-addressed pending queue path does not match its bytes"
+        )
     manifest_row = next(
         row for row in rows
         if row["bucket"] == "matha-content" and row["path"] == expected_manifest
@@ -415,6 +437,10 @@ def _plan_rows(plan: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]], di
     ):
         raise RuntimeVerificationError(
             "upload plan alias does not equal the versioned manifest"
+        )
+    if addressed_manifest is not None and addressed_manifest.group(1) != alias_row["sha256"][:16]:
+        raise RuntimeVerificationError(
+            "content-addressed manifest path does not match its bytes"
         )
     return release_id, alias_path, rows, alias_row
 
@@ -1211,12 +1237,23 @@ def _validate_manifest(
         raise RuntimeVerificationError("manifest textbook inventory is invalid")
 
     versioned_manifest = plan.get("versionedManifest")
-    expected_manifest_path = f"releases/{release_id}/manifest.json"
-    if versioned_manifest != expected_manifest_path:
+    expected_manifest_path = safe_object_path(
+        versioned_manifest, "versioned manifest",
+    )
+    legacy_manifest_path = f"releases/{release_id}/manifest.json"
+    addressed_manifest = re.fullmatch(
+        rf"releases/{re.escape(release_id)}/manifests/manifest-([a-f0-9]{{16}})\.json",
+        expected_manifest_path,
+    )
+    if expected_manifest_path != legacy_manifest_path and addressed_manifest is None:
         raise RuntimeVerificationError("upload plan versioned manifest path is invalid")
     manifest_bytes = values.get(("matha-content", expected_manifest_path))
     if manifest_bytes is None:
         raise RuntimeVerificationError("versioned manifest was not read back")
+    if addressed_manifest is not None and addressed_manifest.group(1) != hashlib.sha256(manifest_bytes).hexdigest()[:16]:
+        raise RuntimeVerificationError(
+            "content-addressed manifest path does not match readback bytes"
+        )
 
     row_map = {(row["bucket"], row["path"]): row for row in versioned}
     packs = manifest.get("packs")
@@ -1317,7 +1354,10 @@ def _validate_manifest(
     expected_pack_paths = {
         row["path"] for row in versioned
         if row["bucket"] == "matha-content" and "/content/" in row["path"]
-        and not row["path"].endswith("/pending-visuals.json")
+        and re.fullmatch(
+            rf"releases/{re.escape(release_id)}/content/pending-visuals(?:-[a-f0-9]{{16}})?\.json",
+            row["path"],
+        ) is None
     }
     expected_figure_paths = {
         row["path"] for row in versioned if row["bucket"] == "matha-figures"
