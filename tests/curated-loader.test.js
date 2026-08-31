@@ -27,6 +27,38 @@ function trustedManifest(fields) {
   return JSON.stringify({ ...TRUSTED_MANIFEST_FIELDS, generatedAt: '2026-08-26T00:00:00Z', packs: [], ...(fields || {}) });
 }
 
+test('大量私有題包採有上限的並行驗證，避免首次登入逐包串行卡住', async () => {
+  const { context, run } = loadApp();
+  context.__active = 0;
+  context.__maxActive = 0;
+  context.__worker = async (value) => {
+    context.__active++;
+    context.__maxActive = Math.max(context.__maxActive, context.__active);
+    await new Promise((resolve) => setTimeout(resolve, 4));
+    context.__active--;
+    return value * 2;
+  };
+  const output = await run('curatedConcurrentMap(Array.from({ length:12 }, (_, index) => index + 1), __worker, 3)');
+  assert.deepEqual(Array.from(output), Array.from({ length:12 }, (_, index) => (index + 1) * 2));
+  assert.equal(context.__maxActive, 3);
+  assert.equal(run('CURATED_DOWNLOAD_CONCURRENCY'), 8);
+});
+
+test('首次私有題庫仍在驗證時不拿內建題冒充教材精選', () => {
+  const { context, run } = loadApp();
+  context.__alert = '';
+  run(`
+    syncGate = () => true;
+    alert = (message) => { globalThis.__alert = String(message); };
+    CONTENT.packs = {};
+    curatedState = { status:'loading', count:0, loadedPackCount:125, packCount:933 };
+    startAdaptiveTextbook(10);
+  `);
+  assert.match(context.__alert, /125\/933/);
+  assert.match(context.__alert, /不會先塞內建補位題/);
+  assert.equal(run('prac'), null);
+});
+
 test('私有 manifest 以短效簽署網址且禁用 HTTP 快取下載', async () => {
   const { context, run } = loadApp();
   context.crypto = crypto.webcrypto;

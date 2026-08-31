@@ -4,7 +4,7 @@
   "releaseAuthority": false,
   "privateAppIntegration": {
     "status": "deployed-and-hash-verified",
-    "appVersion": "0830c",
+    "appVersion": "0831a",
     "supabaseProjectRef": "rrihysbxhsbxjteqmtdu",
     "bucket": "matha-papers",
     "integratedPapers": 14,

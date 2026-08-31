@@ -82,7 +82,7 @@
 - [x] 建立 fail-closed Storage verifier 與登入使用者 App loader verifier；前者證明全量遠端物件與簽核真值，後者才證明 App 的 JWT／RLS／signed URL 載入路徑，兩者不得互相替代。
 - [x] 原 11 批與擴充 2 批共 434 題完成直接審核；374 題通過、60 題隔離，14 單元各 23–29 題，角色為 181／63／105／25。
 - [x] Supabase 以同一 374 題 bundle 完成 D1、綁定 D1 的回滾與較晚且不同記錄的 D2；回滾實際恢復 217 題舊 alias，D2 再安全切到 374 題。
-- [x] D2 後全量回讀固定 alias 與 683 個版本物件；再以啟用中的真實使用者走 App loader 實載 307 題包與 374/374 題圖，兩份 repo 外證據均綁定 D2、`APP_VER 0830c`、`app.js` 與簽核題源。
+- [x] D2 後全量回讀固定 alias 與 2,229 個版本物件；再以啟用中的真實使用者走 App loader 實載 933 題包與 1,294/1,294 題圖，兩份 repo 外證據均綁定 D2、`APP_VER 0831a`、`app.js` 與簽核題源。
 - [x] 正式題本 73 頁、官方詳解 8 頁、地區詳解 32 頁均以新的 authenticated download 回讀並逐檔驗 SHA／bytes；舊本機快取不能通過發布閘門。
 - [x] 乾淨 HEAD 推上 `main` 後，驗證同一 HEAD 的 CI、Pages 與四個正式信任檔逐 bytes 一致；任何新提交都會使舊證據失效，必須重取。
 - [x] M3 已達 374 題，超過 350 題安全門檻；只續用既有 hash-bound 產物，未重跑付費 OCR／去筆跡。

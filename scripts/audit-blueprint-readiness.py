@@ -2757,6 +2757,19 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                       f"targetMinimum:{STARTER_CAPACITY_MINIMUM}", "remainingMinimum:0"],
             required_for_delivery=False,
         )
+    elif starter_count >= STARTER_CAPACITY_MINIMUM:
+        blocked_gates = [
+            row["label"] for row in (review, deployment_gate, runtime_gate, app_loader_gate)
+            if row["status"] != "pass"
+        ]
+        starter_capacity = gate(
+            "starter-capacity", "Starter 題庫容量與難度平衡", "blocked",
+            f"正式庫容量已達 {starter_count} 題；仍待題庫發布證據鏈通過，不能把容量達標誤報成完整交付",
+            evidence=[f"current:{starter_count}",
+                      f"targetMinimum:{STARTER_CAPACITY_MINIMUM}", "remainingMinimum:0"],
+            blockers=[f"先完成：{'、'.join(blocked_gates)}"],
+            required_for_delivery=False,
+        )
     else:
         remaining = max(0, STARTER_CAPACITY_MINIMUM - starter_count)
         starter_capacity = gate(

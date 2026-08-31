@@ -120,10 +120,28 @@ test('隔日訂正沿用全頁原卷工作台，新筆跡與第一次紅筆分�
   assert.match(css, /\.paper-review-session #paper-ai-canvas\s*\{\s*z-index:\s*4/);
   assert.match(css, /\.paper-detail-shortcut\s*\{[\s\S]*?min-height:\s*44px/);
   assert.match(css, /\.paper-detail-drawer\s*\{[\s\S]*?position:\s*absolute/);
+  assert.match(css, /@media \(min-width: 1101px\) and \(orientation: landscape\)[\s\S]*?\.paper-detail-drawer\s*\{\s*width:\s*min\(390px, 24vw\)/,
+    '橫向平板詳解必須只佔右側留白，不能再蓋住印刷題目');
   assert.match(source, /class='paper-review-effort'/,
     '沒有完整算式時仍要能在同一全頁工作台留下方向、單元與卡點');
   assert.match(css, /\.paper-review-effort\s*\{[\s\S]*?min-width:\s*min\(330px, 100%\)/);
   assert.doesNotMatch(source, /paper-review-layout|paper-review-ink-canvas/);
+});
+
+test('原卷浮動工具列最終規則維持可讀字級與 S Pen 觸控尺寸', () => {
+  const css = read('style.css');
+  assert.match(css, /\.paper-session-shell \.paper-icon-btn,\s*\.paper-session-shell \.paper-ink-tools button\s*\{\s*min-width:\s*48px;\s*min-height:\s*48px/);
+  assert.match(css, /\.paper-session-shell \.paper-ink-tools button\s*\{[^}]*font-size:\s*14px/);
+  assert.match(css, /\.paper-session-shell \.paper-save-status\s*\{[^}]*min-height:\s*44px;[^}]*font-size:\s*14px/);
+  assert.match(css, /\.paper-session-shell \.paper-pen-width input\s*\{\s*min-height:\s*44px/);
+  assert.match(css, /\.paper-ui-toggle\s*\{[^}]*font-size:\s*14px/);
+  assert.match(css, /\.paper-detail-shortcut\s*\{[^}]*font-size:\s*14px/);
+});
+
+test('私人教材作答頁會實際掛載已驗證的原 PDF 題目裁圖', () => {
+  const source = read('app.js');
+  assert.match(source, /function renderQuestion\(q, cfg\)[\s\S]*?typesetIn\(app\(\)\);[\s\S]*?inkStart\(q\.id, qsess\.t0\);/);
+  assert.match(source, /function typesetIn\(el\)[\s\S]*?hydratePrivateStems\(el\);[\s\S]*?hydratePrivateFigures\(el\);/);
 });
 
 test('AI 回饋欄位統一經數學字串修復後再渲染', () => {

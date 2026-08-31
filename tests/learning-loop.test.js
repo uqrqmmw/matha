@@ -299,6 +299,27 @@ test('教材混合精選不被正式卷題型比例限制，並排除眼刷留�
   assert.ok(result.maxTopic <= 2);
 });
 
+test('原 PDF 裁圖題即使共用提示文字，10 題精選仍依裁圖內容雜湊保留十題', () => {
+  const { run } = loadApp();
+  const result = plain(run(`(() => {
+    BANK.length = 0;
+    const topics = Object.keys(TOPICS).slice(0, 5);
+    const placeholder = '完整題目、公式、選項與圖形請見原 PDF 題目裁圖。';
+    BANK.push(...Array.from({length:10}, (_, i) => ({
+      id:'original-crop-adaptive-' + i, topic:topics[i % topics.length], type:'fill', diff:i % 3 + 1,
+      q:placeholder, ans:[String(i)], sol:'以官方答案裁圖為準', src:'私人教材-' + (i % 5),
+      bookId:'private-book-' + (i % 5), role:i % 3 === 0 ? 'example' : i % 3 === 2 ? 'chapter-end-hard' : 'unclassified',
+      displayTruth:'original-pdf-crop', stemAsset:{ sha256:String(i + 1).padStart(64, '0') }
+    })));
+    BANK_MAP = null;
+    const queue = adaptiveTextbookQueue(10);
+    return { n:queue.length, ids:queue.map((q) => q.id), skeletons:queue.map(qSkeleton) };
+  })()`));
+  assert.equal(result.n, 10);
+  assert.equal(new Set(result.ids).size, 10);
+  assert.equal(new Set(result.skeletons).size, 10);
+});
+
 test('私人教材尚未匯入的單元仍由核心題補位，不因十本題量大而形成範圍盲區', () => {
   const { run } = loadApp();
   const result = plain(run(`(() => {

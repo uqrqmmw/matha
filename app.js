@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0830c'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0831a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 // 這是資料庫已核准的模考提交協定，不是瀏覽器快取版號。只有提交 schema／
 // 來源合約一起遷移時才更動，避免一般前端改版讓尚未交卷的考試失效。
 const PAPER_PROTOCOL_APP_VERSION = '0830b';
@@ -781,6 +781,20 @@ function persistCuratedHealth() {
   try { localStorage.setItem(CURATED_HEALTH_LS, JSON.stringify(curatedState)); } catch (_) {}
 }
 let curatedState = { status: 'idle', count: 0, error: '', ...(loadCuratedHealth() || {}) };
+const CURATED_DOWNLOAD_CONCURRENCY = 8;
+async function curatedConcurrentMap(items, worker, concurrency = CURATED_DOWNLOAD_CONCURRENCY) {
+  const source = Array.isArray(items) ? items : [];
+  const output = new Array(source.length);
+  let next = 0;
+  const run = async () => {
+    while (next < source.length) {
+      const index = next++;
+      output[index] = await worker(source[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length:Math.min(source.length, Math.max(1, Number(concurrency) || 1)) }, run));
+  return output;
+}
 function curatedPackCurrent(pack) {
   return !!(pack && pack.curated
     && pack.corpusGeneration === CURATED_TRUST.generation
@@ -893,7 +907,6 @@ async function pullCuratedContent() {
   curatedState = { ...curatedState, status: 'loading', count: curatedState.count || 0, error: '' };
   syncState.msg = '正在核對私有題庫'; syncPill();
   const previousTrustedQuestions = trustedCuratedQuestions;
-  trustedCuratedQuestions = new WeakSet();
   try {
     const bucket = supa.storage.from(CURATED_BUCKET);
     const manifestRes = await downloadCuratedManifestFresh(bucket);
@@ -905,9 +918,9 @@ async function pullCuratedContent() {
     if (manifestError) throw new Error(manifestError);
     const keep = new Set(manifest.packs.map((p) => p.id));
     let changed = false;
-    let manifestCount = 0;
-    for (const meta of manifest.packs) {
-      manifestCount += Number(meta.count) || 0;
+    const manifestCount = manifest.packs.reduce((sum, meta) => sum + (Number(meta.count) || 0), 0);
+    let loadedPackCount = 0;
+    const verifiedPacks = await curatedConcurrentMap(manifest.packs, async (meta) => {
       const local = CONTENT.packs[meta.id];
       let bytes = local && local.curated && local.sha256 === meta.sha256
         ? exactStoredBytes(local.verifiedBytes) : null;
@@ -921,7 +934,21 @@ async function pullCuratedContent() {
       const envelope = JSON.parse(new TextDecoder().decode(bytes));
       if (!envelope || envelope.kind !== 'qpack' || !Array.isArray(envelope.items)) throw new Error(`${meta.name || meta.file} 不是題包`);
       if (envelope.items.length !== Number(meta.count)) throw new Error(`${meta.name || meta.file} 題數與 manifest 不一致`);
-      for (const q of envelope.items) if (q && typeof q === 'object') trustedCuratedQuestions.add(q);
+      loadedPackCount++;
+      curatedState = { ...curatedState, loadedPackCount, packCount:manifest.packs.length };
+      if (loadedPackCount === manifest.packs.length || loadedPackCount % 25 === 0) {
+        syncState.msg = `正在核對私有題庫 ${loadedPackCount}/${manifest.packs.length} 包`;
+        syncPill();
+      }
+      return { meta, local, bytes, envelope };
+    });
+    const nextTrustedQuestions = new WeakSet();
+    for (const verified of verifiedPacks) {
+      for (const q of verified.envelope.items) if (q && typeof q === 'object') nextTrustedQuestions.add(q);
+    }
+    trustedCuratedQuestions = nextTrustedQuestions;
+    for (const verified of verifiedPacks) {
+      const { meta, local, bytes, envelope } = verified;
       const items = envelope.items.filter((q) => !validateQ(q) && !questionMissingVisualAsset(q) && !outOfRange(q));
       CONTENT.packs[meta.id] = {
         kind: 'qpack', name: meta.name || envelope.name || meta.id,
@@ -949,6 +976,7 @@ async function pullCuratedContent() {
       pendingVisualCount,
       total: BUILTIN_N + count,
       packCount: manifest.packs.length,
+      loadedPackCount: manifest.packs.length,
       generatedAt: manifest.generatedAt || null,
       corpusGeneration: manifest.corpusGeneration,
       sourceInventorySha256: manifest.sourceInventorySha256,
@@ -5414,7 +5442,15 @@ function mDispOpt(s) { return typeof s === 'string' ? texVal(s) : s; }
 function attemptsOf(qid) { return S.attempts.filter((a) => a.qid === qid); }
 /* 一輪隊列裡同一題組的小題只取一題（共用題幹連著出會像「一直重複」）；不夠再補回 */
 // 「去數字後同骨架」＝只改數字的近重複題（如兩題排列組合只換了 8→7）：同一輪最多出一題，其餘留待補位。
-function qSkeleton(q) { return String(q.q).replace(/<[^>]+>/g, '').replace(/\d+/g, '#').replace(/\s+/g, '').toLowerCase(); }
+function qSkeleton(q) {
+  /* 私有教材以「原 PDF 題目裁圖」作為完整題面，q 只是所有題共用的提示字串。
+     若仍拿提示字串去重，整批裁圖會被誤判成同一題，10 題精選最後只剩 1 題。
+     這裡只接受已帶 64 位內容雜湊的裁圖；相同裁圖仍會去重，不同裁圖則保留。 */
+  const assetHash = q && q.displayTruth === 'original-pdf-crop' && q.stemAsset
+    ? String(q.stemAsset.sha256 || '').toLowerCase() : '';
+  if (/^[a-f0-9]{64}$/.test(assetHash)) return `original-pdf-crop:${assetHash}`;
+  return String(q && q.q || '').replace(/<[^>]+>/g, '').replace(/\d+/g, '#').replace(/\s+/g, '').toLowerCase();
+}
 function dedupeStems(list, cnt) {
   const seen = new Set(), skel = new Set(), out = [];
   for (const q of list) {
@@ -5634,6 +5670,9 @@ function renderQuestion(q, cfg) {
     <div id="qhint"></div><!-- 提示放在書寫卡「外面、上方」：出現時把整張卡連同手寫往下推、不蓋到手寫（卡內任何面板都會蓋到滿版書寫層） -->
     ${cfg.redo ? `<div class="card redo-sol"><p><b>📖 解答攤開著——照它的路，自己再走一遍（寫完照樣批改）：</b></p>${rtTxt(q.sol)}${q.solFig ? `<div class="qfig">${sanitizeSVG(q.solFig)}</div>` : ''}${q.tip ? `<p class="tip">💡 ${rtTxt(q.tip)}</p>` : ''}${teachBlock(q.id)}</div>` : ''}
     ${bkCard(q, cfg.head, 'qSubmit', actions)}`;
+  // 原 PDF 裁圖與私有題圖是非同步掛載；漏掉這一步時，題包雖已預載完成，
+  // 作答頁仍會永遠停在「原題載入中」。同時在畫布量尺寸前完成數學排版初始化。
+  typesetIn(app());
   scrollQuestionTop();
   sessionChrome(true);
   inkStart(q.id, qsess.t0);
@@ -6098,6 +6137,7 @@ function renderMockIntro() {
   const activePaper = visionActivePaperEntries();
   const activeDone = activePaper ? activePaper.filter((x) => x.paperSeen).length : 0;
   const completedPapers = visionCompletedPaperCount();
+  const firstPrivateLoad = curatedState.status === 'loading' && !hasCurrentCuratedContent();
   app().innerHTML = `
     <div class="hero compact"><h1>模考與破題</h1><p>同一批混合題，分成兩種完全不同的訓練：完整模考建立真實成績；眼睛刷題只練從題目找到第一個切入點。</p></div>
     <section class="paper-library is-primary"><div class="paper-library-head"><div><span class="eyebrow">最常用｜完整原卷</span><h2>原版模考</h2></div><p>出版社三回、111–115 學測、110 試辦與八回地區模考都保留原版內容，可直接在題目與留白上寫。正式答案只在交卷後解鎖；第二次模考依原卷為 19 題，其餘十六回各 20 題。</p></div>
@@ -6105,7 +6145,7 @@ function renderMockIntro() {
         || Number(!!b.fullPaperSource) - Number(!!a.fullPaperSource)).map(paperSourceCardHTML).join('')}</div>
       ${paperRunHistoryHTML()}
     </section>
-    <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的題排在前面，再依目前證據混合打底、銜接與伸展題。</p><small>不顯示單題速度；正常情況同單元、同一本教材各最多 2 題，尚未安全匯入的單元由核心題補位。</small></div><button class="btn primary big" onclick="startAdaptiveTextbook(10)">開始今日精選</button></section>
+    <section class="card adaptive-textbook-card"><div><span class="eyebrow">日常主訓練｜私人教材</span><h2>10 題跨章混合精選</h2><p>不用章節順序翻書；系統把已答錯、猜中、沒方向、第二／三級與尚未校準的題排在前面，再依目前證據混合打底、銜接與伸展題。</p><small>${firstPrivateLoad ? `第一次載入正在逐包驗證題庫（${Number(curatedState.loadedPackCount) || 0}/${Number(curatedState.packCount) || '—'}）；完成前不會拿內建題冒充教材精選。` : '不顯示單題速度；正常情況同單元、同一本教材各最多 2 題，尚未安全匯入的單元由核心題補位。'}</small></div><button class="btn primary big" ${firstPrivateLoad ? 'disabled aria-busy="true"' : 'onclick="startAdaptiveTextbook(10)"'}>${firstPrivateLoad ? '正在載入私人題庫…' : '開始今日精選'}</button></section>
     ${due.length ? `<div class="card next-action"><div><span class="eyebrow">第二天到期</span><h2>${due.length} 題昨天沒有方向</h2><p>今天再看一次題目。仍無方向，才開詳解。</p></div><button class="btn primary" onclick="startVisionScan('${due[0].id}')">再想一次</button></div>` : ''}
     <div class="training-choice">
     <section class="card choice-card"><span class="eyebrow">完整一回</span><h2>全真模考</h2>
@@ -12526,6 +12566,10 @@ function adaptiveTextbookQueue(cnt) {
 }
 function startAdaptiveTextbook(cnt) {
   if (!syncGate()) return;
+  if (curatedState.status === 'loading' && !hasCurrentCuratedContent()) {
+    alert(`私人教材題庫正在完成第一次完整性驗證（${Number(curatedState.loadedPackCount) || 0}/${Number(curatedState.packCount) || '—'} 包）。完成前不會先塞內建補位題；同步燈顯示題數後即可開始。`);
+    return;
+  }
   const count = Math.max(8, Math.min(12, Number(cnt) || 10));
   const queue = adaptiveTextbookQueue(count);
   if (!queue.length) { alert('私人教材題庫尚未載入，請先確認登入與題庫同步。'); return; }
@@ -12984,7 +13028,7 @@ function packCard() {
   const curatedLine = curatedState.status === 'ready'
     ? `<p class="okc fs13">私有題庫已通過完整性驗證並快取。</p>${healthMeta}`
     : curatedState.status === 'loading'
-      ? `<p class="dim fs13">正在核對私有題庫與本機快取…</p>${healthMeta}`
+      ? `<p class="dim fs13">正在核對私有題庫與本機快取… ${Number(curatedState.loadedPackCount) || 0}/${Number(curatedState.packCount) || '—'} 包</p>${healthMeta}`
       : curatedState.status === 'error'
         ? `<p class="warnc fs13">這次私有題庫核對失敗：${escH(curatedState.error)}。${curatedState.count ? '下方仍顯示上次成功驗證的快取資訊。' : `內建 ${BUILTIN_N} 題仍可正常練習。`}</p>${healthMeta}`
         : curatedState.status === 'quarantined'

@@ -10,7 +10,7 @@
 - 詳批完成 receipt 綁定凍結模型輸入、結果與 metadata digest；App 重算全部 digest 後才保存，篡改或不同世代結果一律拒絕。
 - `openai-proxy` 遠端版本 37 已部署；下載回讀的 9 個執行檔與本機逐檔 SHA-256 完全一致。無登入 POST 回 401、CORS 預檢回 204；驗證期間未呼叫 OpenAI API。
 - Supabase migration 001–011 已由只讀交付驗證器重新比對為 local／remote 完全一致；舊的「remote 必須為空」部署前檢查不再代表現在狀態。
-- App 快取版本為 `0830c`，正式卷協定版本另固定為 `0830b`；一般前端快取更新不會使既有或進行中的正式卷失效。
+- App 快取版本為 `0831a`，正式卷協定版本另固定為 `0830b`；一般前端快取更新不會使既有或進行中的正式卷失效。
 
 ## 私有教材正式庫
 
@@ -24,7 +24,7 @@
 - 部署器會在固定 alias 切換前，先以原子寫檔保存上一版 alias bytes、新舊雜湊與完整上傳清冊；即使網路回應遺失或程序在切換途中終止，prepared record 仍可直接驅動安全回滾。
 - 2026-08-31 同一 upload plan 已實際完成 D1 → 綁定 D1 的回滾 → 時間較晚且記錄不同的 D2。回滾成功恢復 374 題前版 alias，D2 再切到 1,294 題正式 alias，未重跑或重付任何 OCR／去筆跡服務。
 - D2 後 Storage verifier 已全量回讀固定 alias 與 2,229 個版本化物件，核對 1,294 題、933 題包、14 單元、角色分布、全部題圖引用及 33 批簽核鏈；結果 `status: verified`、雜湊錯配 0。
-- 啟用中的真實登入使用者已用 JWT／RLS 讀回 933 題包與 1,294/1,294 題圖；17 張 signed URL 樣本覆蓋 14 單元與例題／簡單／中等／困難 4 種角色。此 App loader 證據與 Storage 證據均綁 D2、`APP_VER 0830c`、`app.js` SHA 與正式 alias SHA。
+- 啟用中的真實登入使用者已用 JWT／RLS 讀回 933 題包與 1,294/1,294 題圖；17 張 signed URL 樣本覆蓋 14 單元與例題／簡單／中等／困難 4 種角色。此 App loader 證據與 Storage 證據均綁 D2、`APP_VER 0831a`、`app.js` SHA 與正式 alias SHA。
 
 ## 平板資料安全壓測
 
@@ -48,7 +48,8 @@
 
 ## 自動測試
 
-- 2026-08-31 本地 1,294 題封存版：Web／PWA 319 項（317 通過、2 項按設計跳過、0 失敗）；Python 383/383 通過；PostgreSQL 23 項（22 通過、1 項按設計跳過、0 失敗）；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
+- 2026-09-01 本地 1,294 題封存版：Web／PWA 324 項（322 通過、2 項按設計跳過、0 失敗）；Python 383/383 通過；PostgreSQL 23 項（22 通過、1 項按設計跳過、0 失敗）；Supabase Edge 47/47 通過，Deno fmt／check 亦通過。
+- 人類操作 QA 另以實際登入與接近平板的直／橫向視窗走過開卷、書寫、翻頁、重整復原、全新瀏覽器雲端復原、批改、訂正、逐題詳解與 10 題私有教材流程；結果與限制見 `docs/HUMAN-QA-20260901.md`。
 - CI 與 Pages 現在都明確執行 `npm test`、`npm run test:figures`、`npm run test:edge`；不再由 CI 只跑部分 Edge 檔。
 - 核心交付使用 `python scripts/audit-blueprint-readiness.py --require-delivery-ready`。`--require-complete` 是整份藍圖關卡，會在 5 道真實使用證據尚未完成時刻意失敗。
 - GitHub 交付另由 `verify-github-delivery.py` 先掃描完整 tracked tree，拒絕私有題圖／答案／bundle、credential 檔與常見 secret 格式，再核對乾淨 `main == origin/main`、同一 HEAD 的 CI／Pages 成功，以及線上 `index.html`、`app.js`、`sw.js`、`textbook-catalog.js` 與本機逐 bytes 相同。
