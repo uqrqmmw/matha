@@ -2,7 +2,7 @@
    設計原則：優先練破題方向；每次作答留下可追查證據，再用數據決定下一步。 */
 'use strict';
 
-const APP_VER = '0831a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
+const APP_VER = '0901a'; // 版本戳：顯示在做題畫面右上，用來確認裝置載到的是不是最新版。改版時 index.html ?v= 與 sw.js APP_STAMP 要同步（tests/assets.test.js 會驗）
 // 這是資料庫已核准的模考提交協定，不是瀏覽器快取版號。只有提交 schema／
 // 來源合約一起遷移時才更動，避免一般前端改版讓尚未交卷的考試失效。
 const PAPER_PROTOCOL_APP_VERSION = '0830b';
@@ -6414,6 +6414,7 @@ function paperRecoveryApply(run) {
   }
   if (Number.isFinite(Number(recovery.remainingMs))) run.remainingMs = Math.max(0, Number(recovery.remainingMs));
   if (Number.isFinite(Number(recovery.page))) run.paperPage = Math.max(0, Number(recovery.page));
+  if (Number.isInteger(Number(recovery.questionNo))) run.paperQuestionNo = Number(recovery.questionNo);
   run.resumeAt = null;
   run.status = 'paused';
   run.recoveredAt = Date.now();
@@ -6429,9 +6430,9 @@ function paperRecoverySnapshot(session = paperSourceSession) {
     runId: recoveryRunId,
     sourceId: session.source && session.source.id || session.run.sourceId,
     page: Number(session.page) || 0,
+    questionNo: paperWorkspaceQuestionNo(session),
     remainingMs: session.reviewMode ? null : paperRunLeft(session.run),
     mode: session.reviewMode ? 'paper-correction' : 'paper-source',
-    questionNo: session.reviewMode && paperReview ? Number(paperReview.nos[paperReview.i]) || null : null,
     updatedAt: Date.now(),
     lastLocalAt: Number(durability.localAt) || null,
     lastCloudAt: Number(durability.cloudAt) || null,
@@ -6618,6 +6619,8 @@ async function startPaperSource(sourceId) {
       source, run, urls, inkPages,
       page: Number.isFinite(savedPage) ? savedPage : 0,
       zoom: 1,
+      viewMode: run.paperViewMode === 'original' ? 'original' : 'comfort',
+      questionNo: Number(run.paperQuestionNo) || null,
       inkMode: 'pen',
       inkWidth: paperInkWidthValue(run.paperInkWidth),
       inkColor,
@@ -8546,6 +8549,7 @@ function paperWorkspacePage(delta, method = 'button') {
   if (nextPage === paperSourceSession.page) return false;
   const auditToken = paperRuntimeAuditPageToken(paperSourceSession, paperSourceSession.page, nextPage, method);
   paperSourceSession.page = nextPage;
+  paperSourceSession.questionNo = paperPageQuestionNos(paperSourceSession.source, nextPage)[0] || null;
   if (paperSourceSession.reviewMode) paperSourceSession.run.reviewPage = paperSourceSession.page;
   else paperSourceSession.run.paperPage = paperSourceSession.page;
   paperSourceSession.run.mt = Date.now();
@@ -8578,8 +8582,11 @@ function paperWorkspaceObserveFit() {
     paperFitObserver = new ResizeObserver(() => paperWorkspaceFit());
     paperFitObserver.observe(pane);
   }
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(paperWorkspaceFit);
-  else paperWorkspaceFit();
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => {
+    paperWorkspaceFit();
+    requestAnimationFrame(() => paperWorkspaceComfortFocus(true));
+  });
+  else { paperWorkspaceFit(); paperWorkspaceComfortFocus(true); }
 }
 function paperWorkspaceSetZoom(value, focus) {
   if (!paperSourceSession) return;
@@ -8603,6 +8610,104 @@ function paperWorkspaceSetZoom(value, focus) {
   }
   clearTimeout(paperZoomPaintTimer); paperZoomPaintTimer = setTimeout(paperInkPaint, 35);
 }
+function paperPageQuestionNos(source, page) {
+  if (!source || !Number.isInteger(Number(page))) return [];
+  const result = [];
+  for (let no = 1; no <= Number(source.questions || 0); no++) {
+    if (paperQuestionScanIndex(source, no) === Number(page)) result.push(no);
+  }
+  return result;
+}
+function paperWorkspaceQuestionNo(session = paperSourceSession) {
+  if (!session || !session.source) return null;
+  const page = Number(session.page) || 0;
+  const onPage = paperPageQuestionNos(session.source, page);
+  let no = Number(session.reviewMode && paperReview
+    ? paperReview.nos && paperReview.nos[paperReview.i]
+    : session.questionNo);
+  if (!Number.isInteger(no) || !onPage.includes(no)) no = onPage[0] || null;
+  session.questionNo = no;
+  return no;
+}
+function paperWorkspaceViewData() {
+  return paperSourceSession && paperSourceSession.viewMode === 'original' ? 'original' : 'comfort';
+}
+function paperWorkspaceNavigationHTML(source, page, scan, lockedQuestionNo = null) {
+  const comfort = paperWorkspaceViewData() === 'comfort';
+  const currentNo = Number(lockedQuestionNo) || paperWorkspaceQuestionNo();
+  const toggle = `<button id="paper-view-toggle" class="paper-view-toggle" onclick="paperViewToggle()" aria-pressed="${comfort}">${comfort ? '舒適作答' : '整頁原卷'}</button>`;
+  const zoom = `<button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round((paperSourceSession && paperSourceSession.zoom || 1) * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button>`;
+  if (comfort && currentNo) {
+    const previous = lockedQuestionNo ? '' : `<button class="paper-icon-btn" onclick="paperWorkspaceQuestion(-1)" ${currentNo <= 1 ? 'disabled' : ''} aria-label="上一題">${uiIcon('arrow-left')}</button>`;
+    const next = lockedQuestionNo ? '' : `<button class="paper-icon-btn" onclick="paperWorkspaceQuestion(1)" ${currentNo >= Number(source.questions) ? 'disabled' : ''} aria-label="下一題">${uiIcon('arrow-right')}</button>`;
+    return `${toggle}${zoom}${previous}<span class="paper-question-label"><b>第 ${currentNo} 題</b><small>${lockedQuestionNo ? '本題訂正' : `${currentNo} / ${source.questions}`}</small></span>${next}`;
+  }
+  return `${toggle}${zoom}<span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button>`;
+}
+function paperWorkspaceRenderCurrent() {
+  if (!paperSourceSession) return;
+  if (paperSourceSession.reviewMode) renderPaperAnswerReview();
+  else if (paperSourceSession.readOnly) renderPaperGradeResult();
+  else renderPaperSource();
+}
+function paperViewToggle() {
+  if (!paperSourceSession) return;
+  if (!paperSourceSession.readOnly) paperInkCommitCurrent();
+  paperSourceSession.viewMode = paperWorkspaceViewData() === 'comfort' ? 'original' : 'comfort';
+  paperSourceSession.zoom = 1;
+  paperSourceSession.fitWidth = null;
+  if (paperSourceSession.run) {
+    paperSourceSession.run.paperViewMode = paperSourceSession.viewMode;
+    paperSourceSession.run.mt = Date.now();
+    save();
+  }
+  paperWorkspaceRenderCurrent();
+}
+function paperWorkspaceQuestion(delta) {
+  if (!paperSourceSession || paperSourceSession.reviewMode) return false;
+  const source = paperSourceSession.source;
+  const current = paperWorkspaceQuestionNo() || 1;
+  const next = Math.max(1, Math.min(Number(source.questions) || 1, current + Number(delta || 0)));
+  if (next === current) return false;
+  if (!paperSourceSession.readOnly) {
+    paperInkCommitCurrent();
+    paperInkPersist(true);
+  }
+  paperSourceSession.questionNo = next;
+  paperSourceSession.page = paperQuestionScanIndex(source, next);
+  paperSourceSession.zoom = 1;
+  paperSourceSession.fitWidth = null;
+  paperSourceSession.run.paperQuestionNo = next;
+  paperSourceSession.run.paperPage = paperSourceSession.page;
+  paperSourceSession.run.mt = Date.now();
+  if (!paperSourceSession.readOnly) paperRecoveryWrite(true);
+  paperWorkspaceRenderCurrent();
+  return true;
+}
+function paperWorkspaceComfortFocus(force = false) {
+  const session = paperSourceSession;
+  if (!session || paperWorkspaceViewData() !== 'comfort') return false;
+  const pane = document.querySelector('.paper-page-viewport'), sheet = $('#paper-write-sheet');
+  if (!pane || !sheet || !pane.clientWidth || !pane.clientHeight) return false;
+  const no = paperWorkspaceQuestionNo();
+  const key = `${Number(session.page) || 0}:${no || 0}:${pane.clientWidth}x${pane.clientHeight}`;
+  if (!force && session.comfortFocusKey === key) return false;
+  session.comfortFocusKey = key;
+  if (Math.abs(Number(session.zoom || 1) - 1) < .02) paperWorkspaceSetZoom(1.3);
+  const questions = paperPageQuestionNos(session.source, Number(session.page) || 0);
+  const index = Math.max(0, questions.indexOf(no));
+  const top = .045 + (questions.length ? index / questions.length : 0) * .91;
+  const sheetHeight = Number(sheet.offsetHeight) || sheet.getBoundingClientRect().height;
+  const sheetWidth = Number(sheet.offsetWidth) || sheet.getBoundingClientRect().width;
+  const sheetTop = Number(sheet.offsetTop) || 0;
+  const sheetLeft = Number(sheet.offsetLeft) || 0;
+  // Keep the focused question comfortably below the two floating tool rows,
+  // including short landscape tablet viewports where 20vh is not enough.
+  const focusY = Math.max(210, pane.clientHeight * .2);
+  pane.scrollTop = Math.max(0, sheetTop + top * sheetHeight - focusY);
+  pane.scrollLeft = Math.max(0, sheetLeft + sheetWidth * .42 - pane.clientWidth * .46);
+  return true;
+}
 function paperUiToggle() {
   const shell = document.querySelector('.paper-session-shell'); if (!shell) return;
   const hidden = shell.classList.toggle('paper-ui-hidden');
@@ -8612,6 +8717,7 @@ function paperUiToggle() {
     button.setAttribute('aria-label', hidden ? '顯示工具' : '收起工具');
     const label = button.querySelector('span'); if (label) label.textContent = hidden ? '工具' : '收起';
   }
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => paperWorkspaceComfortFocus(true));
 }
 function paperImageLoad(url) {
   return new Promise((resolve, reject) => {
@@ -9418,10 +9524,11 @@ function renderPaperSource() {
   if (paperSourceSession.readOnly) return renderPaperGradeResult();
   const { source, run, urls } = paperSourceSession;
   const left = paperRunLeft(run), page = paperSourceSession.page, scan = source.scans[page];
-  app().innerHTML = `<div class="paper-session-shell">
+  const workspaceNav = paperWorkspaceNavigationHTML(source, page, scan);
+  app().innerHTML = `<div class="paper-session-shell" data-paper-view="${paperWorkspaceViewData()}">
     <div class="paper-workbar"><div class="paper-work-title"><b>${escH(source.title)}</b><small>${paperSourceSession.recoveredNotice ? escH(paperSourceSession.recoveredNotice) : '單指左右滑動翻頁'}</small></div>
       <span id="paper-clock" class="timer paper-timer">${fmtClock(left)}</span>
-      <div class="paper-workgroup right"><button id="paper-ink-status" class="paper-save-status" data-state="local" onclick="paperRecoveryOpen()" aria-label="查看當機保護與救援">${escH(paperInkStatusText(paperSourceSession))}</button><button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="exitFlow()" aria-label="離開">${uiIcon('x')}</button></div></div>
+      <div class="paper-workgroup right"><button id="paper-ink-status" class="paper-save-status" data-state="local" onclick="paperRecoveryOpen()" aria-label="查看當機保護與救援">${escH(paperInkStatusText(paperSourceSession))}</button>${workspaceNav}<button class="paper-icon-btn" onclick="exitFlow()" aria-label="離開">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace"><section class="paper-source-pane"><div class="paper-ink-tools"><button id="paper-tool-pen" onclick="paperInkModeSet('pen')">${uiIcon('pencil')}筆</button><button id="paper-tool-erase" onclick="paperInkModeSet('erase')">${uiIcon('erase')}橡皮擦</button><button onclick="paperInkUndo()">${uiIcon('undo')}復原</button><button onclick="paperInkClear()">${uiIcon('x')}清空本頁</button><div class="paper-color-group" role="group" aria-label="畫筆顏色"><button id="paper-color-black" class="paper-color-button" onclick="paperInkColorSet('black')" aria-label="黑色筆" aria-pressed="${paperSourceSession.inkColor === 'black'}"><i style="--ink:${PAPER_INK_COLORS.black}"></i><span>黑</span></button><button id="paper-color-blue" class="paper-color-button" onclick="paperInkColorSet('blue')" aria-label="藍色筆" aria-pressed="${paperSourceSession.inkColor === 'blue'}"><i style="--ink:${PAPER_INK_COLORS.blue}"></i><span>藍</span></button><button id="paper-color-green" class="paper-color-button" onclick="paperInkColorSet('green')" aria-label="綠色筆" aria-pressed="${paperSourceSession.inkColor === 'green'}"><i style="--ink:${PAPER_INK_COLORS.green}"></i><span>綠</span></button></div><label class="paper-pen-width" for="paper-pen-width"><span>筆粗 <b id="paper-pen-width-label">${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}%</b></span><input id="paper-pen-width" type="range" min="35" max="200" step="5" value="${Math.round(paperInkWidthValue(paperSourceSession.inkWidth) * 100)}" oninput="paperInkWidthSet(this.value)" aria-label="調整畫筆粗細"></label></div><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="整個畫面皆可直接書寫並左右滑動翻頁"></canvas><canvas id="paper-ai-canvas" aria-hidden="true"></canvas></div></div></div></section></div>
     <div class="paper-finish-bar"><span>${source.questions} 題・${source.minutes} 分鐘</span><div class="actr"><button id="paper-export-answer-pdf" class="btn" onclick="paperExportAnswerPdf()">${uiIcon('save')}輸出作答 PDF</button><button class="btn primary" onclick="paperSourceGrade('主動交卷')">交卷並第一次批改</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
@@ -9446,6 +9553,7 @@ async function paperSourcePause() {
   run.remainingMs = remaining; run.resumeAt = null; run.status = 'paused'; run.mt = Date.now();
   paperRuntimeAuditPause(session, remaining, 'paused');
   run.paperPage = Number(session.page) || 0;
+  run.paperQuestionNo = paperWorkspaceQuestionNo(session);
   paperRecoveryClose(run, 'paused');
   save();
   const journalOk = await paperInkJournalDrain(session);
@@ -10075,6 +10183,7 @@ function renderPaperGradeResult() {
   const { source, run, urls } = paperSourceSession, grade = run.aiGrade;
   if (!grade) return paperSourceGradeLoading(source, '批改未完成', '找不到完整批改結果，請重新批改。', '批改資料尚未完成');
   const page = paperSourceSession.page, scan = source.scans[page];
+  const workspaceNav = paperWorkspaceNavigationHTML(source, page, scan);
   const uncertain = Array.isArray(grade.uncertainNos) ? grade.uncertainNos : [];
   if (!(paperSourceSession.gradeVisualVisitedPages instanceof Set)) paperSourceSession.gradeVisualVisitedPages = new Set();
   paperSourceSession.gradeVisualVisitedPages.add(page);
@@ -10086,9 +10195,9 @@ function renderPaperGradeResult() {
   const regradeButton = paperSourceRegradeAvailable(run, source)
     ? '<button class="btn" onclick="paperSourceRegrade()">重新 AI 簡批</button>'
     : `<button class="btn subtle" onclick="paperSourceExplicitNewGrade()">${source.id === 'paper-mock-1' ? '舊卷無安全重批收據' : '此卷不可安全重批'}</button>`;
-  app().innerHTML = `<div class="paper-session-shell is-graded">
+  app().innerHTML = `<div class="paper-session-shell is-graded" data-paper-view="${paperWorkspaceViewData()}">
     <div class="paper-workbar"><div class="paper-work-title"><b>第一次批改｜對錯、分數、正確答案</b><small>${escH(source.title)}</small></div><strong class="paper-result-score">${grade.score} / 100</strong>
-      <div class="paper-workgroup right">${paperAiToggleButtonHTML()}<button class="paper-icon-btn" onclick="paperWorkspaceZoom(-.25)" aria-label="縮小題本">−</button><span id="paper-zoom-label" class="paper-zoom-label">${Math.round(paperSourceSession.zoom * 100)}%</span><button class="paper-icon-btn" onclick="paperWorkspaceZoom(.25)" aria-label="放大題本">＋</button><span class="paper-page-label"><b>${page + 1} / ${source.scans.length}</b><small>${escH(scan.label)}</small></span><button class="paper-icon-btn" onclick="paperWorkspacePage(-1)" ${page <= 0 ? 'disabled' : ''} aria-label="上一頁">${uiIcon('arrow-left')}</button><button class="paper-icon-btn" onclick="paperWorkspacePage(1)" ${page >= source.scans.length - 1 ? 'disabled' : ''} aria-label="下一頁">${uiIcon('arrow-right')}</button><button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
+      <div class="paper-workgroup right">${paperAiToggleButtonHTML()}${workspaceNav}<button class="paper-icon-btn" onclick="paperSourceCloseResult()" aria-label="關閉批改結果">${uiIcon('x')}</button></div></div>
     <div class="paper-workspace" aria-label="你的原筆跡＋AI 紅筆標記"><section class="paper-source-pane"><div class="paper-page-viewport"><div class="paper-spread"><div id="paper-write-sheet" class="paper-write-sheet" data-side="${scan.side}"><div class="paper-question-crop"><img id="paper-source-image" src="${urls[page]}" alt="${escH(source.title)} ${escH(scan.label)}"></div><div class="paper-note-margin" aria-hidden="true"></div><canvas id="paper-ink-canvas" aria-label="可左右滑動查看 AI 紅筆批改的題本頁"></canvas><canvas id="paper-ai-canvas" aria-label="AI 紅筆批改標記"></canvas></div></div></div></section></div>
     <div class="paper-finish-bar paper-result-bar"><span>錯題：${grade.wrongNos.length ? grade.wrongNos.join('、') : '無'}${uncertain.length ? `｜看不清楚：${uncertain.join('、')}` : ''}｜逐題詳解於 ${run.due} 開放</span><div class="paper-result-actions"><button class="btn" onclick="paperGradeAuditOpen(${page})">AI 看錯／修正這頁</button>${visualButton}<button class="btn" onclick="paperRuntimeAuditOpen('${jsA(run.id)}')">真機驗收</button>${regradeButton}<button id="paper-export-pdf" class="btn" onclick="paperExportGradedPdf()">${uiIcon('save')}輸出 PDF</button><button class="btn primary" onclick="paperSourceCloseResult()">完成</button></div></div>
     <button id="paper-ui-toggle" class="paper-ui-toggle" onclick="paperUiToggle()" aria-label="收起工具" aria-pressed="false">${uiIcon('pencil')}<span>收起</span></button></div>`;
@@ -10193,6 +10302,7 @@ async function openPaperGradeResult(runId) {
     const inkPages = await paperAcceptedInkLoadAll(run, source);
     paperSourceSession = {
       source, run, urls, inkPages, page:0, zoom:1, inkMode:'pen',
+      viewMode:run.paperViewMode === 'original' ? 'original' : 'comfort', questionNo:Number(run.paperQuestionNo) || 1,
       inkWidth:paperInkWidthValue(run.paperInkWidth), inkColor:'black', readOnly:true,
       inkUserId:syncState.user ? syncState.user.id : null,
       inkClientIds:Object.fromEntries(source.scans.map((_, page) => [page, paperInkClientFor(run, page)])),
@@ -11580,6 +11690,7 @@ async function startPaperAnswerReview(runId, allowArchived = false) {
     };
     paperSourceSession = {
       source, run, inkRun, urls, baseInkPages, inkPages, page, zoom: 1,
+      viewMode:run.paperViewMode === 'original' ? 'original' : 'comfort', questionNo:currentNo,
       inkMode: 'pen', reviewMode: true, recoveryRunId: inkRun.id,
       inkWidth: paperInkWidthValue(run.reviewInkWidth || run.paperInkWidth),
       inkColor: PAPER_INK_COLORS[run.reviewInkColor] ? run.reviewInkColor : 'blue',
@@ -12086,6 +12197,8 @@ function renderPaperAnswerReviewWorkspace() {
   }
   const page = Number(paperSourceSession.page) || 0;
   const scan = paperReview.source.scans[page];
+  paperSourceSession.questionNo = no;
+  const workspaceNav = paperWorkspaceNavigationHTML(paperReview.source, page, scan, no);
   const answer = String(q && q.answer || '');
   const detailAvailable = !!state.aiDetail;
   const detailUnlocked = detailAvailable || !!paperCorrectionRetryReceiptRef(state.correctionRetryReceipt);
@@ -12103,7 +12216,7 @@ function renderPaperAnswerReviewWorkspace() {
   const reviewLabel = paperReview.archivedReview ? '歷史卷驗收訂正' : '隔日訂正';
   const archivedNote = paperReview.archivedReview
     ? `<span class='paper-review-eval-note'>只作詳批驗收，不計入目前級分、弱點或推薦</span>` : '';
-  app().innerHTML = `<div class='paper-session-shell paper-review-session'><div class='paper-workbar'><div class='paper-work-title'><b>${reviewLabel}｜第 ${no} 題</b><small>步驟 ${paperReviewStage(state)} / 4｜${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small>${archivedNote}</div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'>${paperAiToggleButtonHTML()}<button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button><button class='paper-icon-btn' onclick='paperWorkspaceZoom(-.25)' aria-label='縮小題本'>−</button><span id='paper-zoom-label' class='paper-zoom-label'>${Math.round(paperSourceSession.zoom * 100)}%</span><button class='paper-icon-btn' onclick='paperWorkspaceZoom(.25)' aria-label='放大題本'>＋</button><span class='paper-page-label'><b>${page + 1} / ${paperReview.source.scans.length}</b><small>${escH(scan.label)}</small></span><button class='paper-icon-btn' onclick='paperWorkspacePage(-1)' ${page <= 0 ? 'disabled' : ''} aria-label='上一頁'>${uiIcon('arrow-left')}</button><button class='paper-icon-btn' onclick='paperWorkspacePage(1)' ${page >= paperReview.source.scans.length - 1 ? 'disabled' : ''} aria-label='下一頁'>${uiIcon('arrow-right')}</button><button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'>${effortFields}${paperReviewStageHTML(state)}<div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
+  app().innerHTML = `<div class='paper-session-shell paper-review-session' data-paper-view='${paperWorkspaceViewData()}'><div class='paper-workbar'><div class='paper-work-title'><b>${reviewLabel}｜第 ${no} 題</b><small>步驟 ${paperReviewStage(state)} / 4｜${paperReview.i + 1} / ${paperReview.nos.length} 題錯題</small>${archivedNote}</div><div class='paper-review-quick-actions'><span class='paper-answer-chip'><small>只看答案</small><b>${escH(answer)}</b></span>${detailShortcut}</div><div class='paper-workgroup right'>${paperAiToggleButtonHTML()}<button id='paper-ink-status' class='paper-save-status' data-state='local' onclick='paperRecoveryOpen()' aria-label='查看訂正保存狀態'>${escH(paperInkStatusText(paperSourceSession))}</button>${workspaceNav}<button class='paper-icon-btn' onclick='paperReviewBack()' aria-label='暫停訂正'>${uiIcon('x')}</button></div></div><div class='paper-workspace' aria-label='可直接書寫的隔日訂正卷'><section class='paper-source-pane'>${paperReviewInkToolsHTML()}<div class='paper-page-viewport'><div class='paper-spread'><div id='paper-write-sheet' class='paper-write-sheet' data-side='${scan.side}'><div class='paper-question-crop'><img id='paper-source-image' src='${paperReview.urls[page]}' alt='${escH(paperReview.source.title)} ${escH(scan.label)}'></div><div class='paper-note-margin' aria-hidden='true'></div><canvas id='paper-base-ink-canvas' aria-label='考試當天原筆跡'></canvas><canvas id='paper-ink-canvas' aria-label='整頁可直接書寫隔日訂正'></canvas><canvas id='paper-ai-canvas' aria-label='第一次與訂正批改紅筆'></canvas></div></div></div></section></div>${paperReviewStatusHTML(state)}${paperReviewDetailDrawerHTML(state)}<div class='paper-finish-bar paper-review-finish'>${effortFields}${paperReviewStageHTML(state)}<div class='paper-result-actions'>${actions}</div></div><button id='paper-ui-toggle' class='paper-ui-toggle' onclick='paperUiToggle()' aria-label='收起工具' aria-pressed='false'>${uiIcon('pencil')}<span>收起</span></button></div>`;
   sessionChrome(true); paperInkAttach(); paperInkStatusRender();
   startTicker(() => {
     if (!paperReview || !paperSourceSession || sessionMode !== 'paper-review') return stopTicker();

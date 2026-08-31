@@ -138,6 +138,29 @@ test('原卷浮動工具列最終規則維持可讀字級與 S Pen 觸控尺寸'
   assert.match(css, /\.paper-detail-shortcut\s*\{[^}]*font-size:\s*14px/);
 });
 
+test('原卷、批改與訂正共用舒適作答模式，保留整頁原卷切換與題號導覽', () => {
+  const css = read('style.css');
+  const source = read('app.js');
+  assert.match(source, /function paperWorkspaceNavigationHTML\(source, page, scan, lockedQuestionNo = null\)/);
+  assert.match(source, /function paperWorkspaceQuestion\(delta\)/);
+  assert.match(source, /function paperWorkspaceComfortFocus\(force = false\)/);
+  assert.match(source, /paperWorkspaceSetZoom\(1\.3\)/);
+  assert.match(source, /data-paper-view="\$\{paperWorkspaceViewData\(\)\}"/);
+  assert.match(source, /data-paper-view='\$\{paperWorkspaceViewData\(\)\}'/);
+  assert.match(source, /舒適作答/);
+  assert.match(source, /整頁原卷/);
+  assert.match(css, /\.paper-session-shell \.paper-spread\s*\{[\s\S]*?padding-top:[\s\S]*?padding-bottom:/);
+  assert.match(css, /\.paper-view-toggle\[aria-pressed="true"\]/);
+  assert.match(css, /\.paper-question-label b\s*\{[^}]*font-size:\s*15px/);
+
+  const { run } = loadApp();
+  const mapped = JSON.parse(JSON.stringify(run(`(() => {
+    const source = { questions:8, questionPageMap:[1,1,1,2,2,2,3,3], scans:[{}, {}, {}] };
+    return [paperPageQuestionNos(source, 0), paperPageQuestionNos(source, 1), paperPageQuestionNos(source, 2)];
+  })()`)));
+  assert.deepEqual(mapped, [[1, 2, 3], [4, 5, 6], [7, 8]]);
+});
+
 test('私人教材作答頁會實際掛載已驗證的原 PDF 題目裁圖', () => {
   const source = read('app.js');
   assert.match(source, /function renderQuestion\(q, cfg\)[\s\S]*?typesetIn\(app\(\)\);[\s\S]*?inkStart\(q\.id, qsess\.t0\);/);

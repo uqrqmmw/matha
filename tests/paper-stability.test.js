@@ -1004,13 +1004,13 @@ test('當機後用最後心跳凍結剩餘時間與頁碼，不把離線時間�
   };
   context.localStorage.setItem(
     'mathA13_anonymous_v1:paper-recovery:crash-run',
-    JSON.stringify({ version:1, runId:'crash-run', sourceId:'paper-1', remainingMs:555000, page:4, updatedAt:now - 10000, closed:false }),
+    JSON.stringify({ version:1, runId:'crash-run', sourceId:'paper-1', remainingMs:555000, page:4, questionNo:17, updatedAt:now - 10000, closed:false }),
   );
   const result = plain(run(`(() => {
     const recovery = paperRecoveryApply(__run);
-    return { recovery:!!recovery, remainingMs:__run.remainingMs, page:__run.paperPage, status:__run.status, resumeAt:__run.resumeAt };
+    return { recovery:!!recovery, remainingMs:__run.remainingMs, page:__run.paperPage, questionNo:__run.paperQuestionNo, status:__run.status, resumeAt:__run.resumeAt };
   })()`));
-  assert.deepEqual(result, { recovery:true, remainingMs:555000, page:4, status:'paused', resumeAt:null });
+  assert.deepEqual(result, { recovery:true, remainingMs:555000, page:4, questionNo:17, status:'paused', resumeAt:null });
 });
 
 test('當機恢復必須讓當機前與重載後的整份筆跡 SHA-256 完全相同', async () => {

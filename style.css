@@ -292,8 +292,8 @@ button.bk-opt { appearance: none; border: 0; background: transparent; color: inh
 .private-qfig-actions { position: relative; z-index: 4; display: flex; justify-content: center; margin-top: 8px; }
 .private-qstem { margin: 0; min-height: 100px; }
 .private-qstem > img {
-  display: block; width: 100%; height: auto; max-height: none; object-fit: contain; object-position: left top;
-  background: #fff; border: 1px solid var(--paper-border); touch-action: pan-x pan-y pinch-zoom;
+  display: block; width: calc(100% - 28px); height: auto; max-height: none; object-fit: contain; object-position: left top;
+  margin: 14px; background: #fff; border: 1px solid var(--paper-border); touch-action: pan-x pan-y pinch-zoom;
 }
 .crop-answer-grid { flex-direction: row; flex-wrap: wrap; gap: 8px 14px; }
 .crop-answer-grid .bk-opt { min-width: 72px; justify-content: center; padding-right: 8px; }
@@ -1557,6 +1557,30 @@ select:focus, textarea:focus, input:focus { outline: 2px solid rgba(117, 103, 92
   width: 100%;
   min-height: 100%;
   margin: 0;
+  padding-top: max(128px, calc(env(safe-area-inset-top) + 128px));
+  padding-bottom: max(82px, calc(env(safe-area-inset-bottom) + 82px));
+  box-sizing: border-box;
+  transition: padding-top .16s ease;
+}
+.paper-session-shell.paper-ui-hidden .paper-spread { padding-top: max(10px, env(safe-area-inset-top)); }
+.paper-view-toggle {
+  min-width: 94px; min-height: 44px; padding: 0 11px; border: 1px solid #aaa197;
+  border-radius: 7px; background: #fffefa; color: var(--text); font: inherit; font-size: 13px; font-weight: 700;
+}
+.paper-view-toggle[aria-pressed="true"] { border-color: var(--accent-deep); background: #e8eee8; color: #405846; }
+.paper-question-label {
+  min-width: 82px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  line-height: 1.15; font-variant-numeric: tabular-nums;
+}
+.paper-question-label b { font-size: 15px; }
+.paper-question-label small { margin-top: 3px; color: var(--dim); font-size: 10px; white-space: nowrap; }
+.paper-session-shell[data-paper-view="comfort"] .paper-write-sheet { background: #fffefa; }
+.paper-session-shell[data-paper-view="comfort"] .paper-question-crop { box-shadow: 0 0 0 1px rgba(88,78,67,.08); }
+@media (max-width: 1100px) and (orientation: landscape) {
+  .paper-session-shell .paper-save-status {
+    width: 44px; max-width: 44px; padding: 0; justify-content: center; font-size: 0;
+  }
+  .paper-session-shell .paper-save-status::before { width: 9px; height: 9px; }
 }
 .paper-session-shell .paper-write-sheet {
   max-width: none;
